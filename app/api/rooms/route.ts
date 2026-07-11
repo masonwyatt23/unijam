@@ -72,6 +72,23 @@ export async function POST(request: Request): Promise<Response> {
     let revision = 1;
     if ((insert.meta.changes ?? 0) === 0) {
       if (existing.revision !== expectedRevision) {
+        const desiredStateAlreadyCommitted =
+          existing.guest_token_hash === guestHash &&
+          existing.guest_can_contribute === (input.guestCanContribute ? 1 : 0) &&
+          existing.locked === (input.locked ? 1 : 0) &&
+          existing.host_approval === (input.hostApproval ? 1 : 0) &&
+          existing.guest_expires_at_ms === guestExpiresAtMs;
+        if (desiredStateAlreadyCommitted) {
+          return json({
+            roomId,
+            revision: existing.revision,
+            guestCanContribute: input.guestCanContribute,
+            locked: input.locked,
+            hostApproval: input.hostApproval,
+            guestExpiresAtMs,
+            recovered: true,
+          });
+        }
         return json({ error: "Room changed in another host session", currentRevision: existing.revision }, 409);
       }
       const update = await db.prepare(
