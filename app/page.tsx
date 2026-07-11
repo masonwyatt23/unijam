@@ -11,12 +11,14 @@ import {
   ChevronDown,
   ChevronRight,
   CircleEllipsis,
+  CirclePlus,
   Clock3,
+  ClipboardPaste,
   Copy,
   Download,
+  Eye,
   Globe2,
   GripVertical,
-  Headphones,
   Heart,
   History,
   Home,
@@ -29,20 +31,23 @@ import {
   MessageCircle,
   MoreHorizontal,
   Music2,
-  Pause,
   Play,
   Plus,
+  QrCode,
   RadioTower,
   RefreshCw,
   RotateCcw,
   Search,
+  Send,
   Settings,
   Share2,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
-  Upload,
+  ThumbsUp,
+  Timer,
   UserPlus,
+  UserRoundCheck,
   Users,
   WandSparkles,
   X,
@@ -58,6 +63,8 @@ type ModalName =
   | "share"
   | "match"
   | "account"
+  | "guest-preview"
+  | "publish"
   | null;
 type Platform = "spotify" | "apple" | "both";
 type SyncState = "synced" | "review" | "unavailable";
@@ -100,10 +107,10 @@ type Jam = {
 
 const navItems: { id: View; label: string; icon: typeof Home }[] = [
   { id: "home", label: "Home", icon: Home },
-  { id: "library", label: "Library", icon: LibraryBig },
-  { id: "playlists", label: "Playlists", icon: ListMusic },
-  { id: "jams", label: "Jams", icon: RadioTower },
-  { id: "activity", label: "Activity", icon: Activity },
+  { id: "jams", label: "Rooms", icon: RadioTower },
+  { id: "library", label: "Song inbox", icon: LibraryBig },
+  { id: "playlists", label: "Destinations", icon: ListMusic },
+  { id: "activity", label: "History", icon: Activity },
 ];
 
 const tracks: Track[] = [
@@ -223,7 +230,7 @@ const tracks: Track[] = [
 const initialPlaylists: Playlist[] = [
   {
     id: 1,
-    name: "Friday Night Jam",
+    name: "Friday Night Room",
     description: "Good energy, no skips. Built together.",
     tracks: 24,
     duration: "1 hr 38 min",
@@ -298,7 +305,7 @@ const initialPlaylists: Playlist[] = [
 const initialJams: Jam[] = [
   {
     id: 1,
-    name: "Friday Night Jam",
+    name: "Friday Night Room",
     tracks: 24,
     members: ["Mason", "Alex", "Maya"],
     status: "live",
@@ -332,7 +339,7 @@ const activityItems = [
     initials: "MY",
     action: "added",
     subject: "Pink + White",
-    destination: "Friday Night Jam",
+    destination: "Friday Night Room",
     time: "Just now",
     tone: "coral",
   },
@@ -342,7 +349,7 @@ const activityItems = [
     initials: "AL",
     action: "added",
     subject: "Dreams",
-    destination: "Friday Night Jam",
+    destination: "Friday Night Room",
     time: "4 min ago",
     tone: "sage",
   },
@@ -530,7 +537,6 @@ export default function UniJamApp() {
   const [view, setView] = useState<View>("home");
   const [modal, setModal] = useState<ModalName>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const [isPlaying, setIsPlaying] = useState(false);
   const [selectedPlaylist, setSelectedPlaylist] = useState<Playlist | null>(null);
   const [selectedJam, setSelectedJam] = useState<Jam | null>(initialJams[0]);
   const [librarySearch, setLibrarySearch] = useState("");
@@ -542,6 +548,11 @@ export default function UniJamApp() {
   const [createStep, setCreateStep] = useState(1);
   const [jamName, setJamName] = useState("Saturday in Staunton");
   const [jamPermission, setJamPermission] = useState("Anyone with the link can add songs");
+  const [roomTemplate, setRoomTemplate] = useState("Road trip");
+  const [fairQueue, setFairQueue] = useState(true);
+  const [guestStep, setGuestStep] = useState(1);
+  const [guestName, setGuestName] = useState("Jordan");
+  const [guestSearch, setGuestSearch] = useState("");
   const [importStep, setImportStep] = useState(1);
   const [importSource, setImportSource] = useState<"spotify" | "apple">("spotify");
   const [syncStep, setSyncStep] = useState(1);
@@ -591,7 +602,11 @@ export default function UniJamApp() {
   const openModal = (name: ModalName) => {
     if (name === "create-jam") setCreateStep(1);
     if (name === "import") setImportStep(1);
-    if (name === "sync") {
+    if (name === "guest-preview") {
+      setGuestStep(1);
+      setGuestSearch("");
+    }
+    if (name === "sync" || name === "publish") {
       setSyncStep(1);
       setSyncProgress(0);
     }
@@ -609,7 +624,7 @@ export default function UniJamApp() {
   const createJam = () => {
     const newJam: Jam = {
       id: Date.now(),
-      name: jamName || "Untitled Jam",
+      name: jamName || "Untitled Room",
       tracks: 0,
       members: ["Mason"],
       status: "live",
@@ -655,10 +670,10 @@ export default function UniJamApp() {
 
   const copyShareLink = async () => {
     try {
-      await navigator.clipboard.writeText("https://unijam.music/jam/friday-night");
-      notify("Jam link copied to your clipboard.");
+      await navigator.clipboard.writeText("https://unijam.music/room/friday-night");
+      notify("Room link copied to your clipboard.");
     } catch {
-      notify("Jam link ready to share.");
+      notify("Room link ready to share.");
     }
   };
 
@@ -670,31 +685,33 @@ export default function UniJamApp() {
     <div className="home-view page-enter">
       <section className="home-intro">
         <div className="intro-copy">
-          <span className="eyebrow">SATURDAY, JUL 11</span>
+          <span className="eyebrow">FRIDAY NIGHT ROOM · 9 PEOPLE</span>
           <h1>
-            Your music,
+            One room.
             <br />
-            finally together.
+            Every music app.
           </h1>
-          <p>Spotify and Apple Music stay in tune, automatically.</p>
+          <p>Send one link. Friends add songs without an account. Publish the finished playlist everywhere when you are ready.</p>
           <div className="hero-actions">
             <button type="button" className="button button-primary" onClick={() => openModal("create-jam")}>
               <Plus size={17} />
-              Start a jam
+              Create a room
             </button>
-            <button type="button" className="button button-outline" onClick={() => openModal("import")}>
-              <Upload size={17} />
-              Import playlist
+            <button type="button" className="button button-outline" onClick={() => openModal("guest-preview")}>
+              <Eye size={17} />
+              Try the guest link
             </button>
           </div>
+          <div className="friction-proof"><UserRoundCheck size={15} /><span>No guest login</span><i /><ClipboardPaste size={15} /><span>Any song link works</span></div>
         </div>
 
-        <div className="accounts-stack" aria-label="Connected music accounts">
+        <div className="accounts-stack" aria-label="Publish destinations">
+          <div className="destination-heading"><span className="eyebrow">PUBLISH DESTINATIONS</span><small>Connect only when the room is ready</small></div>
           <button type="button" className="account-row" onClick={() => openModal("account")}>
             <span className="service-mark spotify-mark large">≋</span>
             <span>
               <strong>Spotify</strong>
-              <small>@masonwyatt</small>
+              <small>Ready for 4 additions</small>
             </span>
             <span className="connected-label">
               Connected <span className="connected-dot" />
@@ -707,7 +724,7 @@ export default function UniJamApp() {
             </span>
             <span>
               <strong>Apple Music</strong>
-              <small>US storefront</small>
+              <small>Ready for 4 additions</small>
             </span>
             <span className="connected-label">
               Connected <span className="connected-dot" />
@@ -723,19 +740,19 @@ export default function UniJamApp() {
             <div className="jam-topline">
               <GripVertical size={18} />
               <span className="live-label">
-                <span /> Live now
+                <span /> Collecting now
               </span>
             </div>
-            <h2>Friday Night Jam</h2>
+            <h2>Friday Night Room</h2>
             <div className="jam-meta">
               <span>
-                <Music2 size={17} /> 24 tracks
+                <Music2 size={17} /> 24 suggestions
               </span>
               <span>
-                <Users size={17} /> 3 collaborators
+                <Users size={17} /> 9 contributors
               </span>
               <span className="live-sync">
-                <span /> Live sync
+                <span /> Fair queue on
               </span>
             </div>
             <div className="collaborators">
@@ -751,32 +768,18 @@ export default function UniJamApp() {
                 <Avatar name="Maya" tone="coral" size="lg" />
                 <span>Maya</span>
               </div>
-              <button type="button" className="invite-avatar" onClick={() => openModal("share")} aria-label="Invite collaborator">
+              <button type="button" className="invite-avatar" onClick={() => openModal("share")} aria-label="Invite contributors">
                 <UserPlus size={18} />
               </button>
             </div>
-            <div className="jam-player">
-              <button
-                type="button"
-                className="play-button"
-                aria-label={isPlaying ? "Pause Friday Night Jam" : "Play Friday Night Jam"}
-                onClick={() => setIsPlaying((playing) => !playing)}
-              >
-                {isPlaying ? <Pause size={22} fill="currentColor" /> : <Play size={22} fill="currentColor" />}
-              </button>
-              <div className="wave-wrap">
-                <div className={"waveform" + (isPlaying ? " playing" : "")} aria-hidden="true">
-                  {Array.from({ length: 42 }).map((_, index) => (
-                    <span key={index} style={{ height: 8 + ((index * 13) % 27) + "px" }} />
-                  ))}
-                </div>
-                <div className="player-times">
-                  <span>1:24</span>
-                  <span>3:58</span>
-                </div>
+            <div className="jam-player room-progress">
+              <span className="room-progress-icon"><Timer size={20} /></span>
+              <div className="room-progress-copy">
+                <div><strong>9 of 12 invitees joined</strong><span>Median first add: 42 sec</span></div>
+                <span className="room-progress-track"><i /></span>
               </div>
-              <button type="button" className="icon-button clean" onClick={() => { setSelectedJam(initialJams[0]); goTo("jams"); }} aria-label="Open jam queue">
-                <ListMusic size={20} />
+              <button type="button" className="button button-quiet compact-room-button" onClick={() => { setSelectedJam(initialJams[0]); goTo("jams"); }} aria-label="Open room">
+                Open room <ArrowRight size={15} />
               </button>
             </div>
           </div>
@@ -787,10 +790,10 @@ export default function UniJamApp() {
               setSelectedJam(initialJams[0]);
               goTo("jams");
             }}
-            aria-label="Open Friday Night Jam"
+            aria-label="Open Friday Night Room"
           >
             <span className="mosaic-overlay">
-              Open jam <ArrowRight size={16} />
+              Open room <ArrowRight size={16} />
             </span>
           </button>
         </article>
@@ -798,35 +801,35 @@ export default function UniJamApp() {
         <div className="home-stats">
           <article className="stat-card sync-health-card">
             <header>
-              <span>Sync health</span>
-              <button type="button" className="text-icon-button" onClick={() => openModal("sync")} aria-label="View sync status">
-                <RefreshCw size={16} />
+              <span>Invite conversion</span>
+              <button type="button" className="text-icon-button" onClick={() => openModal("share")} aria-label="View invites">
+                <UserRoundCheck size={16} />
               </button>
             </header>
             <div className="health-content">
               <span className="health-ring">
-                <Check size={22} />
+                75%
               </span>
               <div>
-                <strong>All caught up</strong>
-                <small>Last checked 2 min ago</small>
+                <strong>9 people joined</strong>
+                <small>12 invite opens · 0 login drop-offs</small>
               </div>
             </div>
           </article>
 
-          <button type="button" className="stat-card library-stat" onClick={() => goTo("library")}>
+          <button type="button" className="stat-card library-stat" onClick={() => openModal("guest-preview")}>
             <header>
-              <span>Unified library</span>
+              <span>Time to first add</span>
               <ArrowRight size={16} />
             </header>
             <div>
               <span className="stat-icon">
-                <Music2 size={19} />
+                <Timer size={19} />
               </span>
-              <strong>2,481</strong>
-              <span>songs</span>
+              <strong>42</strong>
+              <span>seconds</span>
             </div>
-            <small>+38 this week</small>
+            <small>3× faster without account creation</small>
           </button>
 
           <article className="stat-card activity-card">
@@ -859,12 +862,22 @@ export default function UniJamApp() {
           <Sparkles size={18} />
         </span>
         <div>
-          <strong>Your libraries are 84% in sync.</strong>
-          <span>UniJam found 7 version upgrades and 3 tracks that need a quick look.</span>
+          <strong>The room is ready to publish.</strong>
+          <span>Four new songs are matched on both services. Nothing will be removed or reordered.</span>
         </div>
-        <button type="button" className="button button-quiet" onClick={() => openModal("sync")}>
-          Review changes <ArrowRight size={16} />
+        <button type="button" className="button button-quiet" onClick={() => openModal("publish")}>
+          Publish 4 updates <ArrowRight size={16} />
         </button>
+      </section>
+
+      <section className="impact-board">
+        <header><div><span className="eyebrow">FRICTION REMOVED</span><h3>Why this room is working</h3></div><button type="button" className="text-link" onClick={() => openModal("guest-preview")}>See the guest experience <ArrowRight size={14} /></button></header>
+        <div className="impact-grid">
+          <article><span className="impact-check"><Check size={15} /></span><div><strong>No account wall</strong><small>Guests joined with a nickname only.</small></div><b>0 drop-offs</b></article>
+          <article><span className="impact-check"><Check size={15} /></span><div><strong>Any link works</strong><small>Spotify, Apple Music, or plain search.</small></div><b>3 sources</b></article>
+          <article><span className="impact-check"><Check size={15} /></span><div><strong>No queue hijacking</strong><small>Fair rotation balances every contributor.</small></div><b>2 moved</b></article>
+          <article><span className="impact-check"><Check size={15} /></span><div><strong>No mystery sync</strong><small>The room is canonical; publishing is previewed.</small></div><b>4 staged</b></article>
+        </div>
       </section>
     </div>
   );
@@ -873,40 +886,40 @@ export default function UniJamApp() {
     <div className="page-view page-enter">
       <header className="page-heading">
         <div>
-          <span className="eyebrow">2,481 TRACKS · TWO SOURCES</span>
-          <h1>Your library</h1>
-          <p>Every song you love, with its source and match history intact.</p>
+          <span className="eyebrow">24 SUGGESTIONS · 9 PEOPLE · THREE LINK TYPES</span>
+          <h1>Song inbox</h1>
+          <p>Every contribution lands here first—matched, deduplicated, and ready for the host to approve.</p>
         </div>
         <div className="heading-actions">
-          <button type="button" className="button button-outline" onClick={() => openModal("import")}>
-            <Upload size={17} /> Import
+          <button type="button" className="button button-outline" onClick={() => openModal("guest-preview")}>
+            <Eye size={17} /> Preview guest link
           </button>
-          <button type="button" className="button button-primary" onClick={() => openModal("sync")}>
-            <RefreshCw size={17} /> Sync now
+          <button type="button" className="button button-primary" onClick={() => openModal("publish")}>
+            <Send size={17} /> Publish 4
           </button>
         </div>
       </header>
 
       <section className="library-overview">
         <article>
+          <span className="overview-icon unified"><Users size={18} /></span>
+          <div><strong>9</strong><span>Contributors</span></div>
+          <small>No accounts required</small>
+        </article>
+        <article>
           <span className="overview-icon spotify-mark">≋</span>
-          <div><strong>1,927</strong><span>Spotify tracks</span></div>
-          <small>98% matched</small>
+          <div><strong>7</strong><span>Spotify links</span></div>
+          <small>Converted to canonical tracks</small>
         </article>
         <article>
           <span className="overview-icon apple-mark"><Apple size={18} /></span>
-          <div><strong>2,114</strong><span>Apple Music tracks</span></div>
-          <small>97% matched</small>
-        </article>
-        <article>
-          <span className="overview-icon unified"><Link2 size={18} /></span>
-          <div><strong>1,560</strong><span>Shared matches</span></div>
-          <small>84% overlap</small>
+          <div><strong>11</strong><span>Apple Music links</span></div>
+          <small>Converted to canonical tracks</small>
         </article>
         <article className="needs-attention" onClick={() => setLibraryFilter("review")}>
           <span className="overview-icon warning"><AlertTriangle size={18} /></span>
-          <div><strong>10</strong><span>Need attention</span></div>
-          <small>Review matches</small>
+          <div><strong>2</strong><span>Need host input</span></div>
+          <small>Version or explicit rule</small>
         </article>
       </section>
 
@@ -917,8 +930,8 @@ export default function UniJamApp() {
             <input
               value={librarySearch}
               onChange={(event) => setLibrarySearch(event.target.value)}
-              placeholder="Search songs, artists, or albums"
-              aria-label="Search library"
+              placeholder="Search suggestions, people, or artists"
+              aria-label="Search song inbox"
             />
             {librarySearch && (
               <button type="button" onClick={() => setLibrarySearch("")} aria-label="Clear search">
@@ -926,10 +939,10 @@ export default function UniJamApp() {
               </button>
             )}
           </div>
-          <div className="filter-tabs" aria-label="Library source">
+          <div className="filter-tabs" aria-label="Song inbox filter">
             {[
               ["all", "All"],
-              ["both", "Matched"],
+              ["both", "Ready"],
               ["spotify", "Spotify"],
               ["apple", "Apple"],
               ["review", "Needs review"],
@@ -952,7 +965,7 @@ export default function UniJamApp() {
         {selectedTrackIds.length > 0 && (
           <div className="selection-bar">
             <span>{selectedTrackIds.length} selected</span>
-            <button type="button" onClick={() => notify("Selected tracks added to Friday Night Jam.")}>
+            <button type="button" onClick={() => notify("Selected tracks added to Friday Night Room.")}>
               <Plus size={15} /> Add to playlist
             </button>
             <button type="button" onClick={() => notify("Matching refreshed for selected tracks.")}>
@@ -1006,8 +1019,7 @@ export default function UniJamApp() {
                       type="button"
                       className="track-title-cell"
                       onClick={() => {
-                        setIsPlaying(true);
-                        notify("Now playing “" + track.title + "”.");
+                        notify("Opening “" + track.title + "” in your preferred music app.");
                       }}
                     >
                       <TrackArt art={track.art} />
@@ -1057,7 +1069,7 @@ export default function UniJamApp() {
           </div>
         )}
         <footer className="panel-footer">
-          <span>Showing {filteredTracks.length} of 2,481 tracks</span>
+            <span>Showing {filteredTracks.length} of 24 suggestions</span>
           <button type="button" onClick={() => notify("More tracks loaded.")}>Load more <ChevronDown size={15} /></button>
         </footer>
       </section>
@@ -1086,9 +1098,8 @@ export default function UniJamApp() {
             <span>{playlist.collaborators} collaborators</span>
           </div>
           <div className="detail-actions">
-            <button type="button" className="button button-primary" onClick={() => setIsPlaying((playing) => !playing)}>
-              {isPlaying ? <Pause size={17} /> : <Play size={17} fill="currentColor" />}
-              {isPlaying ? "Pause" : "Play"}
+            <button type="button" className="button button-primary" onClick={() => notify("Opening this playlist in your preferred music app.")}>
+              Open in my app <ArrowRight size={16} />
             </button>
             <button type="button" className="button button-outline" onClick={() => openModal("share")}>
               <Share2 size={17} /> Share
@@ -1169,16 +1180,16 @@ export default function UniJamApp() {
       <div className="page-view page-enter">
         <header className="page-heading">
           <div>
-            <span className="eyebrow">12 PLAYLISTS · 8 LIVE SYNCS</span>
-            <h1>Playlists</h1>
-            <p>Curate once. Keep every version, platform, and collaborator together.</p>
+            <span className="eyebrow">TWO DESTINATIONS · FOUR STAGED UPDATES</span>
+            <h1>Destinations</h1>
+            <p>The room stays canonical. Spotify and Apple Music receive deliberate, previewed updates.</p>
           </div>
           <div className="heading-actions">
             <button type="button" className="button button-outline" onClick={() => openModal("import")}>
-              <Upload size={17} /> Import
+              <Plus size={17} /> Add destination
             </button>
-            <button type="button" className="button button-primary" onClick={() => openModal("create-jam")}>
-              <Plus size={17} /> New playlist
+            <button type="button" className="button button-primary" onClick={() => openModal("publish")}>
+              <Send size={17} /> Publish updates
             </button>
           </div>
         </header>
@@ -1186,12 +1197,12 @@ export default function UniJamApp() {
         <section className="playlist-feature-banner">
           <div className="banner-mosaic" />
           <div>
-            <span className="eyebrow">SMART CURATION</span>
-            <h2>Make a good playlist great.</h2>
-            <p>UniJam reads the arc, energy, and taste of your group—then suggests songs that belong.</p>
+            <span className="eyebrow">SAFE BY DEFAULT</span>
+            <h2>A bridge you can actually trust.</h2>
+            <p>Additions are staged. Removals and reorders always require approval. Every publish creates a restore point.</p>
           </div>
-          <button type="button" className="button button-light" onClick={() => openModal("enhance")}>
-            <Sparkles size={17} /> Try playlist enhance
+          <button type="button" className="button button-light" onClick={() => openModal("publish")}>
+            <ShieldCheck size={17} /> Review publish plan
           </button>
         </section>
 
@@ -1231,44 +1242,48 @@ export default function UniJamApp() {
   const renderJamDetail = (jam: Jam) => (
     <div className="page-view page-enter detail-view">
       <button type="button" className="back-link" onClick={() => setSelectedJam(null)}>
-        <ArrowLeft size={16} /> All jams
+        <ArrowLeft size={16} /> All rooms
       </button>
       <section className="jam-room-header">
         <div>
           <div className="detail-kicker">
-            <span className={"room-status " + jam.status}><span /> {jam.status === "live" ? "3 listening now" : jam.status}</span>
+            <span className={"room-status " + jam.status}><span /> {jam.status === "live" ? "9 contributing now" : jam.status}</span>
             <span>{jam.permission}</span>
+            <span className="fair-queue-label"><ShieldCheck size={13} /> Fair queue on</span>
           </div>
           <h1>{jam.name}</h1>
-          <p>A shared queue that works whether your friends use Spotify or Apple Music.</p>
+          <p>Guests add from any music link. The room decides what belongs before anything is published.</p>
         </div>
         <div className="jam-room-actions">
           <div className="stacked-avatars">
             {jam.members.slice(0, 4).map((member, index) => <Avatar key={member} name={member} tone={["gold", "sage", "coral", "blue"][index]} size="md" />)}
           </div>
           <button type="button" className="button button-outline" onClick={() => openModal("share")}><UserPlus size={17} /> Invite</button>
-          <button type="button" className="button button-primary" onClick={() => notify("Listening session started for everyone in the jam.")}><Headphones size={17} /> Listen together</button>
+          <button type="button" className="button button-primary" onClick={() => openModal("publish")}><Send size={17} /> Publish 4 updates</button>
         </div>
       </section>
 
-      <section className="now-playing-card">
+      <section className="room-value-strip">
+        <article><UserRoundCheck size={17} /><div><strong>9 of 12 joined</strong><span>No account required</span></div></article>
+        <article><Timer size={17} /><div><strong>42 sec</strong><span>Median first contribution</span></div></article>
+        <article><CircleEllipsis size={17} /><div><strong>2 duplicates blocked</strong><span>Before they hit the queue</span></div></article>
+        <article><ShieldCheck size={17} /><div><strong>4 staged</strong><span>Zero destructive changes</span></div></article>
+      </section>
+
+      <section className="now-playing-card room-top-pick">
         <TrackArt art="art-a" large />
         <div className="now-playing-copy">
-          <span className="eyebrow">NOW PLAYING FOR THE ROOM</span>
+          <span className="eyebrow">TOP PICK · 7 VOTES</span>
           <h2>Pink + White</h2>
-          <p>Frank Ocean · Blonde</p>
+          <p>Frank Ocean · Added by Maya from an Apple Music link</p>
         </div>
-        <div className="now-wave">
-          <div className={"waveform room-wave" + (isPlaying ? " playing" : "")}>
-            {Array.from({ length: 46 }).map((_, index) => <span key={index} style={{ height: 8 + ((index * 17) % 31) + "px" }} />)}
-          </div>
-          <div className="player-times"><span>1:24</span><span>3:04</span></div>
+        <div className="top-pick-reasons">
+          <span><ThumbsUp size={14} /> 7 votes</span>
+          <span><Users size={14} /> 3 people love this artist</span>
+          <span><CheckCircle2 size={14} /> Matched on both services</span>
         </div>
         <div className="room-controls">
-          <button type="button" className="play-button light" onClick={() => setIsPlaying((value) => !value)}>
-            {isPlaying ? <Pause size={22} fill="currentColor" /> : <Play size={22} fill="currentColor" />}
-          </button>
-          <button type="button" className="icon-button dark-button" aria-label="Like track"><Heart size={19} /></button>
+          <button type="button" className="button button-light" onClick={() => notify("Opening Pink + White in your preferred music app.")}>Open in my app <ArrowRight size={15} /></button>
         </div>
       </section>
 
@@ -1287,7 +1302,7 @@ export default function UniJamApp() {
                 <div className="queue-title"><strong>{track.title}</strong><span>{track.artist}</span></div>
                 <PlatformMark platform={track.platform} small />
                 <div className="added-person"><Avatar name={index % 2 === 0 ? "Alex" : "Maya"} tone={index % 2 === 0 ? "sage" : "coral"} size="sm" /><span>{index % 2 === 0 ? "Alex" : "Maya"}</span></div>
-                <span className="muted-cell">{track.duration}</span>
+                <button type="button" className="queue-vote" onClick={() => notify("Your vote for “" + track.title + "” was counted.")}><ThumbsUp size={13} /> {Math.max(2, 7 - index)}</button>
                 <button type="button" className="icon-button clean" aria-label={"More options for " + track.title}><MoreHorizontal size={17} /></button>
               </div>
             ))}
@@ -1296,12 +1311,12 @@ export default function UniJamApp() {
         <aside className="jam-chat">
           <div className="chat-heading"><div><span className="eyebrow">LIVE</span><h3>Room activity</h3></div><span className="online-label"><span /> 3 online</span></div>
           <div className="chat-feed">
-            <div className="system-message">Maya joined from Apple Music</div>
+            <div className="system-message">Maya joined with a nickname—no account needed</div>
             <div className="chat-message"><Avatar name="Alex" tone="sage" size="sm" /><div><span>Alex · 8:41</span><p>Dreams absolutely has to stay at #2</p></div></div>
-            <div className="activity-message"><Music2 size={15} /><span>Maya added <strong>Pink + White</strong></span></div>
+            <div className="activity-message"><Music2 size={15} /><span>Maya pasted an Apple Music link for <strong>Pink + White</strong></span></div>
             <div className="chat-message"><Avatar name="Maya" tone="coral" size="sm" /><div><span>Maya · 8:42</span><p>Correct decision</p></div></div>
           </div>
-          <div className="chat-input"><input placeholder="Say something…" aria-label="Message the jam" /><button type="button" aria-label="Send message" onClick={() => notify("Message sent to the jam.")}><ArrowRight size={17} /></button></div>
+          <div className="chat-input"><input placeholder="Say something…" aria-label="Message the room" /><button type="button" aria-label="Send message" onClick={() => notify("Message sent to the room.")}><ArrowRight size={17} /></button></div>
         </aside>
       </div>
     </div>
@@ -1313,12 +1328,12 @@ export default function UniJamApp() {
       <div className="page-view page-enter">
         <header className="page-heading">
           <div>
-            <span className="eyebrow">THREE SHARED ROOMS</span>
-            <h1>Your jams</h1>
-            <p>One link, one queue, and no debate about which music app everyone uses.</p>
+            <span className="eyebrow">THREE ROOMS · 15 CONTRIBUTORS</span>
+            <h1>Rooms</h1>
+            <p>One neutral link for the group. Accounts and destination services come later.</p>
           </div>
           <button type="button" className="button button-primary" onClick={() => openModal("create-jam")}>
-            <Plus size={17} /> Start a jam
+            <Plus size={17} /> Create a room
           </button>
         </header>
         <section className="jams-list">
@@ -1347,7 +1362,7 @@ export default function UniJamApp() {
             <span className="flow-line"><span /><RefreshCw size={18} /><span /></span>
             <span className="explainer-service"><span className="service-mark apple-mark large"><Apple size={18} /></span> Apple Music friends</span>
           </div>
-          <p>Everyone adds songs from the app they already use. UniJam matches, deduplicates, and keeps both playlists current.</p>
+          <p>Everyone adds through one neutral room using search or any song link. UniJam matches and deduplicates first; the host publishes approved updates to each service.</p>
         </section>
       </div>
     );
@@ -1359,7 +1374,7 @@ export default function UniJamApp() {
         <div>
           <span className="eyebrow">EVERY CHANGE, REMEMBERED</span>
           <h1>Activity</h1>
-          <p>A clear record of songs, syncs, collaborators, and decisions.</p>
+          <p>A clear record of contributions, votes, publishes, and host decisions.</p>
         </div>
         <button type="button" className="button button-outline" onClick={() => notify("Activity log exported as CSV.")}>
           <Download size={17} /> Export history
@@ -1369,7 +1384,7 @@ export default function UniJamApp() {
         <section className="content-panel activity-timeline">
           <div className="panel-toolbar activity-toolbar">
             <div className="filter-tabs">
-              {["All activity", "People", "Syncs", "Matches"].map((filter) => (
+              {["All activity", "People", "Publishes", "Matches"].map((filter) => (
                 <button key={filter} type="button" className={activityFilter === filter ? "active" : ""} onClick={() => setActivityFilter(filter)}>{filter}</button>
               ))}
             </div>
@@ -1395,7 +1410,7 @@ export default function UniJamApp() {
         <aside className="activity-summary">
           <section className="side-card">
             <span className="eyebrow">THIS WEEK</span>
-            <div className="summary-metric"><strong>74</strong><span>songs synchronized</span></div>
+            <div className="summary-metric"><strong>74</strong><span>songs contributed</span></div>
             <div className="metric-bar"><span style={{ width: "82%" }} /></div>
             <small>18% more than last week</small>
           </section>
@@ -1423,14 +1438,14 @@ export default function UniJamApp() {
         <div>
           <span className="eyebrow">YOUR RULES, YOUR MUSIC</span>
           <h1>Settings</h1>
-          <p>Choose how UniJam matches, syncs, and protects your library.</p>
+          <p>Choose how rooms accept contributions, resolve versions, and publish safely.</p>
         </div>
         <span className="saved-indicator"><Check size={15} /> Changes save automatically</span>
       </header>
       <div className="settings-grid">
         <div className="settings-main">
           <section className="settings-section">
-            <div className="settings-heading"><div><span className="settings-icon"><Link2 size={18} /></span><div><h2>Connected accounts</h2><p>Your source libraries and storefronts.</p></div></div></div>
+            <div className="settings-heading"><div><span className="settings-icon"><Link2 size={18} /></span><div><h2>Publish destinations</h2><p>Connect host accounts only when a room is ready to publish.</p></div></div></div>
             <div className="connection-card">
               <span className="service-mark spotify-mark large">≋</span>
               <div><strong>Spotify</strong><span>@masonwyatt · Connected Jul 3</span></div>
@@ -1446,10 +1461,10 @@ export default function UniJamApp() {
           </section>
 
           <section className="settings-section">
-            <div className="settings-heading"><div><span className="settings-icon"><RefreshCw size={18} /></span><div><h2>Sync behavior</h2><p>Control when and how changes move between platforms.</p></div></div></div>
-            <div className="setting-row"><div><strong>Automatic bidirectional sync</strong><span>Apply trusted changes from either platform within a few minutes.</span></div><Toggle checked={settingsState.autoSync} onChange={() => setSetting("autoSync")} label="Automatic bidirectional sync" /></div>
+            <div className="settings-heading"><div><span className="settings-icon"><Send size={18} /></span><div><h2>Publish behavior</h2><p>The room is canonical; destination playlists are controlled outputs.</p></div></div></div>
+            <div className="setting-row"><div><strong>Stage approved additions automatically</strong><span>Prepare destination updates without publishing them until the host reviews.</span></div><Toggle checked={settingsState.autoSync} onChange={() => setSetting("autoSync")} label="Stage approved additions automatically" /></div>
             <div className="setting-row"><div><strong>Automatic deduplication</strong><span>Collapse exact duplicates while preserving useful regional versions.</span></div><Toggle checked={settingsState.dedupe} onChange={() => setSetting("dedupe")} label="Automatic deduplication" /></div>
-            <div className="setting-row"><div><strong>Preview risky changes</strong><span>Always ask before removals, low-confidence matches, or large reorders.</span></div><span className="locked-setting"><Lock size={13} /> Always on</span></div>
+            <div className="setting-row"><div><strong>Preview destructive changes</strong><span>Removals, reorders, and low-confidence matches can never publish silently.</span></div><span className="locked-setting"><Lock size={13} /> Always on</span></div>
           </section>
 
           <section className="settings-section">
@@ -1460,9 +1475,9 @@ export default function UniJamApp() {
           </section>
 
           <section className="settings-section">
-            <div className="settings-heading"><div><span className="settings-icon"><ShieldCheck size={18} /></span><div><h2>Privacy & presence</h2><p>Your listening data is private by default.</p></div></div></div>
+            <div className="settings-heading"><div><span className="settings-icon"><ShieldCheck size={18} /></span><div><h2>Privacy & presence</h2><p>Guest identities and room activity stay minimal by default.</p></div></div></div>
             <div className="setting-row"><div><strong>Local-first Master Library</strong><span>Keep the canonical library index on this device when available.</span></div><Toggle checked={settingsState.localFirst} onChange={() => setSetting("localFirst")} label="Local-first Master Library" /></div>
-            <div className="setting-row"><div><strong>Show listening presence in jams</strong><span>Let collaborators see when you are listening in a shared room.</span></div><Toggle checked={settingsState.listeningPresence} onChange={() => setSetting("listeningPresence")} label="Listening presence" /></div>
+            <div className="setting-row"><div><strong>Show room presence</strong><span>Let contributors see who is actively adding and voting.</span></div><Toggle checked={settingsState.listeningPresence} onChange={() => setSetting("listeningPresence")} label="Room presence" /></div>
             <div className="setting-row"><div><strong>Activity notifications</strong><span>Notify you about conflicts and collaborator changes.</span></div><Toggle checked={settingsState.notifications} onChange={() => setSetting("notifications")} label="Activity notifications" /></div>
           </section>
         </div>
@@ -1502,16 +1517,24 @@ export default function UniJamApp() {
   };
 
   const renderCreateJamModal = () => (
-    <Modal title={createStep === 3 ? "Your jam is live." : "Start a new jam"} eyebrow={createStep < 3 ? "CROSS-PLATFORM ROOM" : "READY TO SHARE"} onClose={closeModal}>
+    <Modal title={createStep === 3 ? "Your room is live." : "Create a room"} eyebrow={createStep < 3 ? "ONE LINK · EVERY MUSIC APP" : "READY TO SHARE"} onClose={closeModal}>
       {createStep === 1 && (
         <div className="modal-body">
           <div className="step-indicator"><span className="active">1</span><i /><span>2</span><i /><span>3</span></div>
-          <label className="field-label">Jam name<input value={jamName} onChange={(event) => setJamName(event.target.value)} autoFocus /></label>
+          <label className="field-label">Room name<input value={jamName} onChange={(event) => setJamName(event.target.value)} autoFocus /></label>
           <div className="field-label">
-            Start with
-            <div className="choice-grid">
-              <button type="button" className="choice-card selected"><span className="choice-icon"><Sparkles size={20} /></span><strong>Fresh queue</strong><small>Start empty and build it together</small><CheckCircle2 size={17} /></button>
-              <button type="button" className="choice-card"><span className="choice-icon"><ListMusic size={20} /></span><strong>A playlist</strong><small>Turn an existing playlist into a jam</small></button>
+            What is the room for?
+            <div className="choice-grid room-template-grid">
+              {[
+                ["Road trip", "Fair rotation, offline-friendly links", RadioTower],
+                ["House party", "Fast voting and explicit controls", Users],
+                ["Wedding", "Guest requests with host approval", Heart],
+                ["Blank room", "Start simple and choose rules later", Sparkles],
+              ].map(([title, copy, Icon]) => (
+                <button key={title as string} type="button" className={"choice-card room-template" + (roomTemplate === title ? " selected" : "")} onClick={() => setRoomTemplate(title as string)}>
+                  <span className="choice-icon"><Icon size={19} /></span><strong>{title as string}</strong><small>{copy as string}</small>{roomTemplate === title && <CheckCircle2 size={17} />}
+                </button>
+              ))}
             </div>
           </div>
           <div className="modal-actions"><button type="button" className="button button-quiet" onClick={closeModal}>Cancel</button><button type="button" className="button button-primary" onClick={() => setCreateStep(2)}>Choose access <ArrowRight size={16} /></button></div>
@@ -1523,8 +1546,8 @@ export default function UniJamApp() {
           <label className="field-label">Who can participate?</label>
           <div className="radio-stack">
             {[
-              ["Anyone with the link can add songs", "Fastest for a party, road trip, or group chat", Globe2],
-              ["Only invited people can add songs", "Everyone else opens the jam as a listener", Users],
+              ["Anyone with the link can add songs", "Guests enter a nickname—no account or music login", Globe2],
+              ["Only invited people can add songs", "Everyone else opens the room as a listener", Users],
               ["View only", "You control the queue; friends can listen and react", Lock],
             ].map(([title, copy, Icon]) => (
               <button key={title as string} type="button" className={"radio-card" + (jamPermission === title ? " selected" : "")} onClick={() => setJamPermission(title as string)}>
@@ -1532,18 +1555,18 @@ export default function UniJamApp() {
               </button>
             ))}
           </div>
-          <div className="toggle-inline"><div><strong>Live listening</strong><span>Keep playback position in sync for the room.</span></div><Toggle checked={true} onChange={() => notify("Live listening can be changed later.")} label="Live listening" /></div>
-          <div className="modal-actions split"><button type="button" className="button button-quiet" onClick={() => setCreateStep(1)}><ArrowLeft size={16} /> Back</button><button type="button" className="button button-primary" onClick={createJam}>Create jam <ArrowRight size={16} /></button></div>
+          <div className="toggle-inline"><div><strong>Fair queue</strong><span>Rotate contributors so one person cannot take over.</span></div><Toggle checked={fairQueue} onChange={() => setFairQueue((value) => !value)} label="Fair queue" /></div>
+          <div className="modal-actions split"><button type="button" className="button button-quiet" onClick={() => setCreateStep(1)}><ArrowLeft size={16} /> Back</button><button type="button" className="button button-primary" onClick={createJam}>Create room <ArrowRight size={16} /></button></div>
         </div>
       )}
       {createStep === 3 && (
         <div className="modal-body success-body">
           <span className="success-orbit"><Music2 size={27} /></span>
           <h3>{jamName}</h3>
-          <p>Spotify and Apple Music friends can join with the same link.</p>
-          <div className="share-field"><Link2 size={16} /><span>unijam.music/jam/saturday-staunton</span><button type="button" onClick={copyShareLink}><Copy size={16} /> Copy</button></div>
-          <div className="platform-ready-row"><span><span className="service-mark spotify-mark">≋</span> Spotify ready</span><span><span className="service-mark apple-mark"><Apple size={12} /></span> Apple Music ready</span></div>
-          <div className="modal-actions"><button type="button" className="button button-outline" onClick={copyShareLink}><Share2 size={16} /> Share link</button><button type="button" className="button button-primary" onClick={() => { closeModal(); setView("jams"); }}>Open jam <ArrowRight size={16} /></button></div>
+          <p>Guests can join with a nickname and add songs from search, Spotify, Apple Music, or any copied link.</p>
+          <div className="share-field"><Link2 size={16} /><span>unijam.music/room/saturday-staunton</span><button type="button" onClick={copyShareLink}><Copy size={16} /> Copy</button></div>
+          <div className="platform-ready-row"><span><UserRoundCheck size={14} /> No guest account</span><span><ClipboardPaste size={14} /> Any song link</span><span><ShieldCheck size={14} /> {fairQueue ? "Fair queue on" : "Host ordering"}</span></div>
+          <div className="modal-actions"><button type="button" className="button button-outline" onClick={copyShareLink}><Share2 size={16} /> Share link</button><button type="button" className="button button-primary" onClick={() => { closeModal(); setView("jams"); }}>Open room <ArrowRight size={16} /></button></div>
         </div>
       )}
     </Modal>
@@ -1589,6 +1612,105 @@ export default function UniJamApp() {
           <span className="processing-rings"><RefreshCw size={24} /></span>
           <h3>Building your unified playlist…</h3>
           <p>Writing matched tracks and preserving the original order.</p>
+        </div>
+      )}
+    </Modal>
+  );
+
+  const renderGuestPreviewModal = () => (
+    <Modal
+      title={guestStep === 3 ? "You are in the room." : "Join Friday Night Room"}
+      eyebrow={guestStep === 3 ? "SONG ADDED" : "GUEST EXPERIENCE · NO ACCOUNT NEEDED"}
+      onClose={closeModal}
+    >
+      {guestStep === 1 && (
+        <div className="modal-body guest-join-body">
+          <div className="guest-room-mark"><QrCode size={28} /></div>
+          <h3>What should we call you?</h3>
+          <p>This name appears next to the songs you add. No email, password, Spotify login, or Apple account.</p>
+          <label className="field-label guest-name-field">Your name<input value={guestName} onChange={(event) => setGuestName(event.target.value)} autoFocus /></label>
+          <div className="guest-trust-row"><span><UserRoundCheck size={14} /> Nickname only</span><span><ShieldCheck size={14} /> No tracking profile</span><span><Timer size={14} /> About 20 seconds</span></div>
+          <div className="modal-actions"><button type="button" className="button button-quiet" onClick={closeModal}>Not now</button><button type="button" className="button button-primary" onClick={() => setGuestStep(2)}>Enter room <ArrowRight size={16} /></button></div>
+        </div>
+      )}
+      {guestStep === 2 && (
+        <div className="modal-body guest-song-body">
+          <div className="guest-welcome"><Avatar name={guestName || "Guest"} tone="blue" size="md" /><div><strong>Hi, {guestName || "Guest"}.</strong><span>What song belongs in this room?</span></div><span className="room-status live"><span /> 9 here</span></div>
+          <div className="universal-input">
+            <Search size={18} />
+            <input value={guestSearch} onChange={(event) => setGuestSearch(event.target.value)} placeholder="Search a song or paste any music link" aria-label="Search a song or paste any music link" autoFocus />
+            <button type="button" aria-label="Paste a song link" onClick={() => setGuestSearch("https://music.apple.com/us/album/pink-white/1146195596")}><ClipboardPaste size={17} /></button>
+          </div>
+          <div className="input-source-hints"><span className="service-mark spotify-mark">≋</span><span className="service-mark apple-mark"><Apple size={12} /></span><span className="plain-link-mark"><Link2 size={13} /></span><small>Spotify, Apple Music, YouTube, or plain search</small></div>
+          <div className="guest-results">
+            <span className="eyebrow">{guestSearch.includes("http") ? "LINK MATCHED" : "POPULAR IN THIS ROOM"}</span>
+            <button type="button" className="guest-result selected" onClick={() => setGuestStep(3)}>
+              <TrackArt art="art-a" large />
+              <span><strong>Pink + White</strong><small>Frank Ocean · Blonde</small><em><CheckCircle2 size={12} /> Available on both destinations</em></span>
+              <span className="guest-add-action"><CirclePlus size={18} /> Add</span>
+            </button>
+            <button type="button" className="guest-result" onClick={() => { setGuestSearch("Dreams — Fleetwood Mac"); }}>
+              <TrackArt art="art-b" large />
+              <span><strong>Dreams</strong><small>Fleetwood Mac · Rumours</small><em><ThumbsUp size={12} /> Already has 6 votes</em></span>
+              <span className="guest-add-action"><CirclePlus size={18} /> Add</span>
+            </button>
+          </div>
+          <div className="duplicate-guard"><ShieldCheck size={15} /><span>Duplicates and unavailable versions are caught before you add them.</span></div>
+        </div>
+      )}
+      {guestStep === 3 && (
+        <div className="modal-body guest-success-body">
+          <span className="success-orbit"><Check size={27} /></span>
+          <h3>Pink + White is in.</h3>
+          <p>You added it as {guestName || "Guest"}. The host will see the same canonical song whether your link came from Spotify or Apple Music.</p>
+          <div className="guest-added-card"><TrackArt art="art-a" large /><div><strong>Pink + White</strong><span>Frank Ocean · 7 votes</span></div><span className="match-pill">Both services</span></div>
+          <div className="guest-impact-note"><Timer size={15} /><span>Joined and contributed in under 30 seconds—with no account.</span></div>
+          <div className="modal-actions split"><button type="button" className="button button-outline" onClick={() => { setGuestSearch(""); setGuestStep(2); }}><Plus size={16} /> Add another</button><button type="button" className="button button-primary" onClick={() => { closeModal(); setSelectedJam(initialJams[0]); goTo("jams"); }}>See the room <ArrowRight size={16} /></button></div>
+        </div>
+      )}
+    </Modal>
+  );
+
+  const renderPublishModal = () => (
+    <Modal title={syncStep === 3 ? "Published everywhere." : "Publish room updates"} eyebrow="THE ROOM IS THE SOURCE OF TRUTH" onClose={closeModal} wide>
+      {syncStep === 1 && (
+        <div className="modal-body publish-body">
+          <div className="canonical-flow">
+            <div className="canonical-room"><span className="canonical-icon"><Music2 size={20} /></span><span><strong>Friday Night Room</strong><small>24 approved songs · canonical order</small></span></div>
+            <span className="publish-arrow"><ArrowRight size={18} /></span>
+            <div className="publish-destinations">
+              <button type="button" className="publish-destination selected"><span className="service-mark spotify-mark">≋</span><span><strong>Spotify</strong><small>4 additions staged</small></span><CheckCircle2 size={16} /></button>
+              <button type="button" className="publish-destination selected"><span className="service-mark apple-mark"><Apple size={12} /></span><span><strong>Apple Music</strong><small>4 additions staged</small></span><CheckCircle2 size={16} /></button>
+            </div>
+          </div>
+          <div className="publish-policy-bar"><ShieldCheck size={17} /><div><strong>Add-only publish</strong><span>No removals. No reorders. No silent changes.</span></div><button type="button" onClick={() => notify("Add-only is the safest default for shared rooms.")}>Why?</button></div>
+          <div className="publish-list">
+            <header><span>Four approved additions</span><small>Matched on both services</small></header>
+            {tracks.slice(0, 4).map((track, index) => (
+              <div className="publish-row" key={track.id}><span className="publish-number">{String(index + 1).padStart(2, "0")}</span><TrackArt art={track.art} /><div><strong>{track.title}</strong><span>{track.artist} · Added by {["Maya", "Alex", "Jordan", "Mason"][index]}</span></div><PlatformMark platform="both" small /><span className="match-pill">Ready</span></div>
+            ))}
+          </div>
+          <div className="publish-summary"><span><Plus size={14} /> 8 writes</span><span><X size={14} /> 0 removals</span><span><GripVertical size={14} /> 0 reorders</span><span><History size={14} /> Restore point created</span></div>
+          <div className="modal-actions split"><button type="button" className="button button-outline" onClick={() => notify("Detailed destination diff opened.")}>Inspect destination diff</button><button type="button" className="button button-primary" onClick={startSync}>Publish to both <Send size={16} /></button></div>
+        </div>
+      )}
+      {syncStep === 2 && (
+        <div className="modal-body processing-body">
+          <span className="processing-rings"><Send size={23} /></span>
+          <h3>Publishing approved songs…</h3>
+          <p>Writing the room to each destination independently. A failed destination will never affect the other one.</p>
+          <div className="progress-track"><span style={{ width: syncProgress + "%" }} /></div>
+          <span className="progress-label">{syncProgress}% complete</span>
+        </div>
+      )}
+      {syncStep === 3 && (
+        <div className="modal-body success-body">
+          <span className="success-orbit"><Check size={27} /></span>
+          <h3>Four songs, two destinations.</h3>
+          <p>Both playlists received the approved additions. The room remains the canonical collaboration space.</p>
+          <div className="publish-success-destinations"><span><span className="service-mark spotify-mark">≋</span><strong>Spotify</strong><small>24 songs · current</small></span><span><span className="service-mark apple-mark"><Apple size={12} /></span><strong>Apple Music</strong><small>24 songs · current</small></span></div>
+          <div className="completed-breakdown"><span><Check size={14} /> 8 writes succeeded</span><span><Check size={14} /> 0 destructive changes</span><span><Check size={14} /> Restore point saved</span></div>
+          <div className="modal-actions"><button type="button" className="button button-outline" onClick={() => goTo("activity")}><History size={16} /> View history</button><button type="button" className="button button-primary" onClick={closeModal}>Done</button></div>
         </div>
       )}
     </Modal>
@@ -1660,14 +1782,15 @@ export default function UniJamApp() {
   );
 
   const renderShareModal = () => (
-    <Modal title="Share across platforms" eyebrow="ONE LINK FOR EVERYONE" onClose={closeModal}>
+    <Modal title="Invite people, not accounts" eyebrow="ONE LINK · ZERO APP POLITICS" onClose={closeModal}>
       <div className="modal-body">
-        <div className="share-visual"><span className="service-mark spotify-mark large">≋</span><span className="link-orbit"><Link2 size={20} /></span><span className="service-mark apple-mark large"><Apple size={18} /></span></div>
-        <p className="center-copy">Friends open UniJam, connect their preferred app, and add songs without switching services.</p>
-        <div className="share-field"><Link2 size={16} /><span>unijam.music/jam/friday-night</span><button type="button" onClick={copyShareLink}><Copy size={16} /> Copy</button></div>
+        <div className="share-visual"><span className="service-mark spotify-mark large">≋</span><span className="link-orbit"><QrCode size={21} /></span><span className="service-mark apple-mark large"><Apple size={18} /></span></div>
+        <p className="center-copy">Friends enter a nickname and add with search or any music link. They never have to connect Spotify or Apple Music.</p>
+        <div className="share-field"><Link2 size={16} /><span>unijam.music/room/friday-night</span><button type="button" onClick={copyShareLink}><Copy size={16} /> Copy</button></div>
         <label className="field-label">Link permission<button type="button" className="select-field simple"><span><Globe2 size={17} /> Anyone with the link can add songs</span><ChevronDown size={16} /></button></label>
+        <div className="guest-trust-row share-trust-row"><span><UserRoundCheck size={14} /> Nickname only</span><span><ClipboardPaste size={14} /> Any song link</span><span><ShieldCheck size={14} /> Fair queue</span></div>
         <div className="invite-list"><div className="person-row"><Avatar name="Maya" tone="coral" size="sm" /><div><strong>Maya</strong><span>Apple Music · Editor</span></div><span className="presence-dot" /></div><div className="person-row"><Avatar name="Alex" tone="sage" size="sm" /><div><strong>Alex</strong><span>Spotify · Editor</span></div><span className="presence-dot" /></div></div>
-        <div className="modal-actions"><button type="button" className="button button-outline" onClick={() => notify("Invitation message ready.")}><MessageCircle size={16} /> Send message</button><button type="button" className="button button-primary" onClick={copyShareLink}><Copy size={16} /> Copy jam link</button></div>
+        <div className="modal-actions"><button type="button" className="button button-outline" onClick={() => notify("Invitation message ready.")}><MessageCircle size={16} /> Send message</button><button type="button" className="button button-primary" onClick={copyShareLink}><Copy size={16} /> Copy room link</button></div>
       </div>
     </Modal>
   );
@@ -1737,17 +1860,6 @@ export default function UniJamApp() {
         {renderCurrentView()}
       </main>
 
-      {isPlaying && (
-        <div className="global-player">
-          <TrackArt art="art-a" />
-          <div><strong>Pink + White</strong><span>Frank Ocean · Friday Night Jam</span></div>
-          <button type="button" className="mini-play" onClick={() => setIsPlaying(false)} aria-label="Pause"><Pause size={17} fill="currentColor" /></button>
-          <div className="global-progress"><span /></div>
-          <span>1:24 / 3:04</span>
-          <button type="button" className="icon-button dark-button" aria-label="Open player"><ChevronDown size={17} /></button>
-        </div>
-      )}
-
       {toast && <div className="toast" role="status"><CheckCircle2 size={18} /><span>{toast}</span></div>}
       {modal === "create-jam" && renderCreateJamModal()}
       {modal === "import" && renderImportModal()}
@@ -1756,6 +1868,8 @@ export default function UniJamApp() {
       {modal === "share" && renderShareModal()}
       {modal === "match" && renderMatchModal()}
       {modal === "account" && renderAccountModal()}
+      {modal === "guest-preview" && renderGuestPreviewModal()}
+      {modal === "publish" && renderPublishModal()}
     </div>
   );
 }
