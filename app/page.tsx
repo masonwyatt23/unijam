@@ -16,10 +16,12 @@ import {
   ClipboardPaste,
   Copy,
   Download,
+  ExternalLink,
   Eye,
   Globe2,
   GripVertical,
   Heart,
+  Headphones,
   History,
   Home,
   LibraryBig,
@@ -42,6 +44,8 @@ import {
   Settings,
   Share2,
   ShieldCheck,
+  SkipForward,
+  SmilePlus,
   SlidersHorizontal,
   Sparkles,
   ThumbsUp,
@@ -49,10 +53,15 @@ import {
   UserPlus,
   UserRoundCheck,
   Users,
+  Volume2,
   WandSparkles,
+  Wifi,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { buildFairQueue } from "@/lib/room-engine";
+import { chooseDeepLinkHandoff } from "@/lib/provider-state-engine";
+import type { LiveRoomEventPayload, LiveRoomEventType, StoredLiveRoomEvent } from "@/lib/live-room-events";
 
 type View = "home" | "library" | "playlists" | "jams" | "activity" | "settings";
 type ModalName =
@@ -65,6 +74,7 @@ type ModalName =
   | "account"
   | "guest-preview"
   | "publish"
+  | "brief"
   | null;
 type Platform = "spotify" | "apple" | "both";
 type SyncState = "synced" | "review" | "unavailable";
@@ -103,6 +113,110 @@ type Jam = {
   status: "live" | "quiet" | "scheduled";
   updated: string;
   permission: "Owner" | "Editor";
+  access: string;
+  fairQueue: boolean;
+  template: string;
+  lastServedContributor?: string;
+};
+
+type RoomBrief = {
+  occasion: string;
+  direction: string;
+  pickLimit: string;
+  explicitRule: string;
+  versionRule: string;
+};
+
+type RoomLaunchState = {
+  seedSongAdded: boolean;
+  roomShared: boolean;
+  guestPreviewed: boolean;
+};
+
+type RoomFinishState = {
+  previewed: boolean;
+  matchResolved: boolean;
+  appleNeedsReconnect: boolean;
+};
+
+type MusicPreference = "spotify" | "apple" | "ask";
+type LiveRoomRole = "host" | "guest";
+type LiveRoomPhase = "idle" | "handoff" | "started";
+type RealtimeStatus = "connecting" | "connected" | "local";
+type ShareExpiry = "24 hours" | "7 days" | "Never";
+
+type RoomCredentials = {
+  roomId: string;
+  hostToken: string;
+  guestToken: string;
+  revision: number;
+  guestExpiresAtMs: number | null;
+  expiryPolicy: ShareExpiry;
+};
+
+type SharedGuestCapability = {
+  roomId: string;
+  guestToken: string;
+};
+
+type PendingSuggestion = {
+  id: string;
+  title: string;
+  submittedBy: string;
+  service: MusicPreference;
+};
+
+const defaultRoomBrief: RoomBrief = {
+  occasion: "Friday night at the house",
+  direction: "Warm start, big singalongs after 10",
+  pickLimit: "3 picks each",
+  explicitRule: "Explicit after 10 PM",
+  versionRule: "Studio versions",
+};
+
+const defaultLaunchState: RoomLaunchState = { seedSongAdded: false, roomShared: false, guestPreviewed: false };
+const defaultFinishState: RoomFinishState = { previewed: false, matchResolved: false, appleNeedsReconnect: false };
+
+const roomSlug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "music-room";
+const roomCredentialKey = (room: Pick<Jam, "id" | "name">) => `${room.id}:${roomSlug(room.name)}`;
+
+const createRoomCredentials = (): RoomCredentials => ({
+  roomId: `room-${crypto.randomUUID()}`,
+  hostToken: `host-${crypto.randomUUID()}-${crypto.randomUUID()}`,
+  guestToken: `guest-${crypto.randomUUID()}-${crypto.randomUUID()}`,
+  revision: 0,
+  guestExpiresAtMs: Date.now() + 7 * 24 * 60 * 60 * 1_000,
+  expiryPolicy: "7 days",
+});
+
+const roomCredentialStorageKey = "unijam.room-capabilities.v1";
+
+const initialRoomCredentials = (): Record<string, RoomCredentials> => {
+  const defaults = Object.fromEntries(initialJams.map((room) => [roomCredentialKey(room), createRoomCredentials()]));
+  if (typeof window !== "undefined") {
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(roomCredentialStorageKey) ?? "null") as Record<string, RoomCredentials> | null;
+      if (stored && typeof stored === "object") {
+        const migrated = Object.fromEntries(Object.entries(stored).map(([key, value]) => [key, {
+          ...value,
+          revision: Number.isSafeInteger(value.revision) ? value.revision : 0,
+          guestExpiresAtMs: value.guestExpiresAtMs === null || Number.isSafeInteger(value.guestExpiresAtMs)
+            ? value.guestExpiresAtMs
+            : guestExpiryAt("7 days"),
+          expiryPolicy: value.expiryPolicy === "24 hours" || value.expiryPolicy === "Never" ? value.expiryPolicy : "7 days",
+        } satisfies RoomCredentials]));
+        return { ...defaults, ...migrated };
+      }
+    } catch {
+      // A corrupt device-local cache is replaced with fresh opaque capabilities.
+    }
+  }
+  return defaults;
+};
+
+const guestExpiryAt = (choice: ShareExpiry, now = Date.now()): number | null => {
+  if (choice === "Never") return null;
+  return now + (choice === "24 hours" ? 24 : 24 * 7) * 60 * 60 * 1_000;
 };
 
 const navItems: { id: View; label: string; icon: typeof Home }[] = [
@@ -311,6 +425,10 @@ const initialJams: Jam[] = [
     status: "live",
     updated: "Maya added a song just now",
     permission: "Owner",
+    access: "Anyone with the link can suggest",
+    fairQueue: true,
+    template: "House party",
+    lastServedContributor: "Maya",
   },
   {
     id: 2,
@@ -320,6 +438,10 @@ const initialJams: Jam[] = [
     status: "quiet",
     updated: "Evan reordered 3 tracks · 2h",
     permission: "Owner",
+    access: "Invited people can suggest",
+    fairQueue: true,
+    template: "Road trip",
+    lastServedContributor: "Evan",
   },
   {
     id: 3,
@@ -329,6 +451,9 @@ const initialJams: Jam[] = [
     status: "scheduled",
     updated: "Listening session Sunday at 8:00 PM",
     permission: "Editor",
+    access: "Invited people can suggest",
+    fairQueue: false,
+    template: "Blank room",
   },
 ];
 
@@ -454,7 +579,7 @@ function SyncBadge({ state }: { state: Playlist["sync"] }) {
   return (
     <span className={"sync-badge " + state}>
       <span className="status-dot" />
-      {state === "live" ? "Live sync" : state === "review" ? "Needs review" : "Paused"}
+      {state === "live" ? "Prepared" : state === "review" ? "Needs review" : "Paused"}
     </span>
   );
 }
@@ -496,28 +621,64 @@ function Modal({
   wide?: boolean;
 }) {
   const closeRef = useRef<HTMLButtonElement>(null);
+  const modalRef = useRef<HTMLElement>(null);
+  const titleId = useId();
   useEffect(() => {
-    closeRef.current?.focus();
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    window.requestAnimationFrame(() => {
+      const meaningfulControl = modalRef.current?.querySelector<HTMLElement>(
+        ".modal-body input:not([disabled]), .modal-body textarea:not([disabled]), .modal-body button:not([disabled])",
+      );
+      (meaningfulControl ?? closeRef.current)?.focus();
+    });
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab" || !modalRef.current) return;
+      const focusable = Array.from(modalRef.current.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      )).filter((element) => element.getClientRects().length > 0);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !modalRef.current.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
   }, [onClose]);
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section
+        ref={modalRef}
         className={"modal-card" + (wide ? " modal-wide" : "")}
         role="dialog"
         aria-modal="true"
-        aria-label={title}
+        aria-labelledby={titleId}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header className="modal-header">
           <div>
             {eyebrow && <span className="eyebrow">{eyebrow}</span>}
-            <h2>{title}</h2>
+            <h2 id={titleId}>{title}</h2>
           </div>
           <button ref={closeRef} type="button" className="icon-button" onClick={onClose} aria-label="Close dialog">
             <X size={20} />
@@ -537,6 +698,9 @@ export default function UniJamApp() {
   const [view, setView] = useState<View>("home");
   const [modal, setModal] = useState<ModalName>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [isMobileLayout, setIsMobileLayout] = useState(false);
+  const mobileMenuRef = useRef<HTMLButtonElement>(null);
+  const [modalOpener, setModalOpener] = useState<HTMLElement | null>(null);
   const [selectedPlaylist, setSelectedPlaylist] = useState<Playlist | null>(null);
   const [selectedJam, setSelectedJam] = useState<Jam | null>(initialJams[0]);
   const [librarySearch, setLibrarySearch] = useState("");
@@ -553,6 +717,42 @@ export default function UniJamApp() {
   const [guestStep, setGuestStep] = useState(1);
   const [guestName, setGuestName] = useState("Jordan");
   const [guestSearch, setGuestSearch] = useState("");
+  const [guestService, setGuestService] = useState<MusicPreference>("apple");
+  const [liveRoomActive, setLiveRoomActive] = useState(false);
+  const [liveRoomRole, setLiveRoomRole] = useState<LiveRoomRole>("guest");
+  const [listeningMode, setListeningMode] = useState<"speaker" | "native">("speaker");
+  const [speakerService, setSpeakerService] = useState<"spotify" | "apple">("spotify");
+  const [liveRoomPhase, setLiveRoomPhase] = useState<LiveRoomPhase>("idle");
+  const [nowTrackIndex, setNowTrackIndex] = useState(0);
+  const [startedAtMs, setStartedAtMs] = useState<number | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [guestReady, setGuestReady] = useState(false);
+  const [reactionCount, setReactionCount] = useState(8);
+  const [handoffReceipt, setHandoffReceipt] = useState<{ service: "spotify" | "apple"; trackId: number } | null>(null);
+  const [liveComposer, setLiveComposer] = useState("");
+  const [pendingSuggestions, setPendingSuggestions] = useState<PendingSuggestion[]>([]);
+  const [approvedSuggestions, setApprovedSuggestions] = useState<PendingSuggestion[]>([]);
+  const [duplicateVoted, setDuplicateVoted] = useState(false);
+  const [liveActivity, setLiveActivity] = useState<string[]>(["Maya joined from Apple Music", "Alex co-signed Dreams"]);
+  const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("connecting");
+  const [liveClientId] = useState(() => `client-${crypto.randomUUID()}`);
+  const [roomCredentials, setRoomCredentials] = useState<Record<string, RoomCredentials>>(initialRoomCredentials);
+  const [sharedGuestCapability, setSharedGuestCapability] = useState<SharedGuestCapability | null>(null);
+  const [serverGuestCanContribute, setServerGuestCanContribute] = useState<boolean | null>(null);
+  const roomEventCursorsRef = useRef<Record<string, number>>({});
+  const [quickAddMode, setQuickAddMode] = useState(false);
+  const [quickAddStartedEmpty, setQuickAddStartedEmpty] = useState(false);
+  const [hostPreviewMode, setHostPreviewMode] = useState(false);
+  const [roomLaunchStates, setRoomLaunchStates] = useState<Record<number, RoomLaunchState>>({});
+  const [roomBriefs, setRoomBriefs] = useState<Record<number, RoomBrief>>({});
+  const [roomFinishStates, setRoomFinishStates] = useState<Record<number, RoomFinishState>>({});
+  const [queueVotes, setQueueVotes] = useState<Record<number, number>>({ 2: 6, 3: 5, 4: 4, 5: 3, 6: 3, 7: 2, 8: 2 });
+  const [votedTrackIds, setVotedTrackIds] = useState<number[]>([]);
+  const [hostApproval, setHostApproval] = useState(true);
+  const [roomLocked, setRoomLocked] = useState(false);
+  const [selectedMatchId, setSelectedMatchId] = useState<"studio" | "live">("studio");
+  const [matchReturnTarget, setMatchReturnTarget] = useState<"publish" | null>(null);
+  const [hostQueueOrders, setHostQueueOrders] = useState<Record<number, number[]>>({});
   const [importStep, setImportStep] = useState(1);
   const [importSource, setImportSource] = useState<"spotify" | "apple">("spotify");
   const [syncStep, setSyncStep] = useState(1);
@@ -570,9 +770,42 @@ export default function UniJamApp() {
     listeningPresence: true,
   });
 
+  const selectedRoomId = selectedJam?.id ?? initialJams[0].id;
+  const roomBrief = roomBriefs[selectedRoomId] ?? defaultRoomBrief;
+  const roomLaunchState = roomLaunchStates[selectedRoomId] ?? defaultLaunchState;
+  const { seedSongAdded, roomShared, guestPreviewed } = roomLaunchState;
+  const roomFinishState = roomFinishStates[selectedRoomId] ?? defaultFinishState;
+  const { previewed: finishPreviewed, matchResolved, appleNeedsReconnect } = roomFinishState;
+  const guestCanSuggest = selectedJam?.access.startsWith("Anyone with the link") ?? true;
+  const guestCanContribute = (sharedGuestCapability ? serverGuestCanContribute === true : guestCanSuggest) && !roomLocked;
+  const canLiveContribute = liveRoomRole === "host" || guestCanContribute;
+  const liveActor = liveRoomRole === "host" ? "Mason" : guestName || "Guest";
+  const liveSource: MusicPreference = liveRoomRole === "host" ? speakerService : guestService;
+  const credentialKey = roomCredentialKey(selectedJam ?? initialJams[0]);
+  const hostRoomCredentials = roomCredentials[credentialKey];
+  const shareExpiry: ShareExpiry = hostRoomCredentials?.expiryPolicy ?? "7 days";
+  const activeRoomId = sharedGuestCapability?.roomId ?? hostRoomCredentials?.roomId ?? `room-local-${credentialKey}`;
+  const activeRoomToken = liveRoomRole === "host"
+    ? hostRoomCredentials?.hostToken
+    : sharedGuestCapability?.guestToken ?? hostRoomCredentials?.guestToken;
+
+  const updateLaunchState = (patch: Partial<RoomLaunchState>) => {
+    setRoomLaunchStates((current) => ({ ...current, [selectedRoomId]: { ...(current[selectedRoomId] ?? defaultLaunchState), ...patch } }));
+  };
+
+  const updateRoomBrief = (patch: Partial<RoomBrief>) => {
+    setRoomBriefs((current) => ({ ...current, [selectedRoomId]: { ...(current[selectedRoomId] ?? defaultRoomBrief), ...patch } }));
+  };
+
+  const updateFinishState = (patch: Partial<RoomFinishState>) => {
+    setRoomFinishStates((current) => ({ ...current, [selectedRoomId]: { ...(current[selectedRoomId] ?? defaultFinishState), ...patch } }));
+  };
+
   const filteredTracks = useMemo(() => {
     const query = librarySearch.trim().toLowerCase();
     return tracks.filter((track) => {
+      const effectiveState: SyncState = track.id === 3 && matchResolved ? "synced" : track.state;
+      const effectivePlatform: Platform = track.id === 3 && matchResolved ? "both" : track.platform;
       const matchesSearch =
         !query ||
         track.title.toLowerCase().includes(query) ||
@@ -580,12 +813,262 @@ export default function UniJamApp() {
         track.album.toLowerCase().includes(query);
       const matchesFilter =
         libraryFilter === "all" ||
-        (libraryFilter === "review" && track.state !== "synced") ||
-        track.platform === libraryFilter ||
-        (libraryFilter !== "review" && track.platform === "both");
+        (libraryFilter === "review" && effectiveState !== "synced") ||
+        effectivePlatform === libraryFilter ||
+        (libraryFilter !== "review" && effectivePlatform === "both");
       return matchesSearch && matchesFilter;
     });
-  }, [libraryFilter, librarySearch]);
+  }, [libraryFilter, librarySearch, matchResolved]);
+
+  const fairQueueEntries = useMemo(() => {
+    const queueItems = tracks.slice(1, 8).map((track, index) => ({
+      id: String(track.id),
+      contributorId: ["Alex", "Maya", "Nora", "Alex", "Maya", "Jordan", "Nora"][index],
+      submittedAtMs: index + 1,
+      votes: queueVotes[track.id] ?? 0,
+    }));
+    if (selectedJam?.fairQueue === false) {
+      const storedOrder = hostQueueOrders[selectedRoomId] ?? queueItems.map((item) => Number(item.id));
+      const orderIndex = new Map(storedOrder.map((id, index) => [id, index]));
+      return [...queueItems]
+        .sort((left, right) => (orderIndex.get(Number(left.id)) ?? Number.MAX_SAFE_INTEGER) - (orderIndex.get(Number(right.id)) ?? Number.MAX_SAFE_INTEGER))
+        .map((item, index) => ({ item, position: index + 1, round: 1 }));
+    }
+    return buildFairQueue(queueItems, { afterContributorId: selectedJam?.lastServedContributor });
+  }, [hostQueueOrders, queueVotes, selectedJam?.fairQueue, selectedJam?.lastServedContributor, selectedRoomId]);
+  const launchStepCount = [seedSongAdded, roomShared, guestPreviewed].filter(Boolean).length;
+  const finishReadyCount = matchResolved ? 4 : 3;
+  const hostDecisionCount = tracks.filter((track) => track.state !== "synced" && !(track.id === 3 && matchResolved)).length;
+  const liveQueueTracks = tracks.slice(0, 5);
+  const currentLiveTrack = liveQueueTracks[nowTrackIndex % liveQueueTracks.length];
+  const nextLiveTracks = [1, 2, 3].map((offset) => liveQueueTracks[(nowTrackIndex + offset) % liveQueueTracks.length]);
+  const readyCount = 2 + (guestReady ? 1 : 0);
+
+  const serviceSearchUrl = (service: "spotify" | "apple", track: Track) => {
+    const query = encodeURIComponent(`${track.title} ${track.artist}`);
+    const provider = service === "spotify" ? "spotify" : "apple_music";
+    const webUrl = service === "spotify" ? `https://open.spotify.com/search/${query}` : `https://music.apple.com/us/search?term=${query}`;
+    const handoff = chooseDeepLinkHandoff({
+      surface: "web",
+      preferredProvider: provider,
+      targets: [{ provider, available: true, webUrl }],
+    });
+    return handoff.available ? handoff.url : webUrl;
+  };
+
+  const applyRemoteLiveEvent = useCallback((event: StoredLiveRoomEvent) => {
+    const textValue = (key: string) => typeof event.payload[key] === "string" ? String(event.payload[key]) : "";
+    const numberValue = (key: string) => typeof event.payload[key] === "number" ? Number(event.payload[key]) : undefined;
+    const activity = (message: string) => setLiveActivity((current) => current[0] === message ? current : [message, ...current]);
+
+    switch (event.type) {
+      case "participant_joined":
+        activity(`${event.actorName} joined the durable room from ${textValue("service") || "the shared link"}`);
+        break;
+      case "ready_changed":
+        activity(`${event.actorName} is ${event.payload.ready === true ? "ready" : "not ready"} for the current track`);
+        break;
+      case "reaction_added":
+        setReactionCount((count) => count + 1);
+        activity(`${event.actorName} reacted to the current track`);
+        break;
+      case "suggestion_staged": {
+        const title = textValue("title");
+        if (!title) break;
+        const service = textValue("service");
+        const suggestion: PendingSuggestion = {
+          id: textValue("suggestionId") || `suggestion-${event.sequence}`,
+          title,
+          submittedBy: event.actorName,
+          service: service === "spotify" || service === "apple" ? service : "ask",
+        };
+        setPendingSuggestions((current) => current.some(({ id }) => id === suggestion.id) ? current : [suggestion, ...current]);
+        activity(`${event.actorName} staged ${title}`);
+        break;
+      }
+      case "suggestion_approved": {
+        const suggestionId = textValue("suggestionId");
+        const title = textValue("title");
+        if (!suggestionId || !title) break;
+        setPendingSuggestions((current) => current.filter(({ id }) => id !== suggestionId));
+        setApprovedSuggestions((current) => current.some(({ id }) => id === suggestionId) ? current : [...current, {
+          id: suggestionId,
+          title,
+          submittedBy: textValue("submittedBy") || event.actorName,
+          service: textValue("service") === "spotify" ? "spotify" : textValue("service") === "apple" ? "apple" : "ask",
+        }]);
+        activity(`${event.actorName} approved ${title} for the next round`);
+        break;
+      }
+      case "suggestion_rejected": {
+        const suggestionId = textValue("suggestionId");
+        if (suggestionId) setPendingSuggestions((current) => current.filter(({ id }) => id !== suggestionId));
+        activity(`${event.actorName} passed on ${textValue("title") || "a staged pick"}`);
+        break;
+      }
+      case "vote_changed": {
+        const trackId = numberValue("trackId");
+        const delta = numberValue("delta");
+        if (trackId !== undefined && delta !== undefined) {
+          setQueueVotes((current) => ({ ...current, [trackId]: Math.max(0, (current[trackId] ?? 0) + delta) }));
+        }
+        activity(`${event.actorName} ${delta === -1 ? "removed a queue vote" : "voted in the shared queue"}`);
+        break;
+      }
+      case "speaker_service_changed": {
+        const service = textValue("service");
+        if (service !== "spotify" && service !== "apple") break;
+        setSpeakerService(service);
+        setLiveRoomPhase("idle");
+        setStartedAtMs(null);
+        setElapsedSeconds(0);
+        setHandoffReceipt(null);
+        activity(`${event.actorName} switched speaker duty to ${service === "spotify" ? "Spotify" : "Apple Music"}`);
+        break;
+      }
+      case "handoff_requested":
+        if (textValue("role") === "host") setLiveRoomPhase("handoff");
+        activity(`${event.actorName} requested a ${textValue("service") || "music-app"} handoff`);
+        break;
+      case "playback_confirmed":
+        setLiveRoomPhase("started");
+        setStartedAtMs(event.createdAtMs);
+        setElapsedSeconds(Math.max(0, Math.floor((Date.now() - event.createdAtMs) / 1_000)));
+        activity(`${event.actorName} confirmed the shared-speaker start`);
+        break;
+      case "track_advanced": {
+        const trackIndex = numberValue("trackIndex");
+        setNowTrackIndex((current) => trackIndex ?? (current + 1) % 5);
+        setLiveRoomPhase("idle");
+        setStartedAtMs(null);
+        setElapsedSeconds(0);
+        setReactionCount(0);
+        setHandoffReceipt(null);
+        activity(`${event.actorName} advanced the room`);
+        break;
+      }
+    }
+  }, []);
+
+  const bootstrapDurableRoom = useCallback(async (settings?: {
+    locked?: boolean;
+    hostApproval?: boolean;
+    guestCanContribute?: boolean;
+    guestExpiresAtMs?: number | null;
+    expiryPolicy?: ShareExpiry;
+  }, credentialsOverride?: RoomCredentials): Promise<boolean> => {
+    const credentials = credentialsOverride ?? hostRoomCredentials;
+    if (!credentials || sharedGuestCapability) return false;
+    try {
+      const requestedExpiry = settings?.guestExpiresAtMs === undefined
+        ? credentials.expiryPolicy === "Never"
+          ? null
+          : credentials.guestExpiresAtMs === null || credentials.guestExpiresAtMs <= Date.now()
+            ? guestExpiryAt(credentials.expiryPolicy)
+            : credentials.guestExpiresAtMs
+        : settings.guestExpiresAtMs;
+      const response = await fetch("/api/rooms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          roomId: credentials.roomId,
+          hostToken: credentials.hostToken,
+          guestToken: credentials.guestToken,
+          expectedRevision: credentials.revision,
+          guestCanContribute: settings?.guestCanContribute ?? guestCanSuggest,
+          locked: settings?.locked ?? roomLocked,
+          hostApproval: settings?.hostApproval ?? hostApproval,
+          guestExpiresAtMs: requestedExpiry,
+        }),
+      });
+      if (!response.ok) throw new Error("room bootstrap failed");
+      const result = await response.json() as { revision?: number; guestExpiresAtMs?: number | null };
+      if (!Number.isSafeInteger(result.revision)) throw new Error("room revision missing");
+      const updatedCredentials: RoomCredentials = {
+        ...credentials,
+        revision: Number(result.revision),
+        guestExpiresAtMs: result.guestExpiresAtMs === undefined ? credentials.guestExpiresAtMs : result.guestExpiresAtMs,
+        expiryPolicy: settings?.expiryPolicy ?? credentials.expiryPolicy,
+      };
+      setRoomCredentials((current) => ({ ...current, [credentialKey]: updatedCredentials }));
+      setRealtimeStatus("connected");
+      return true;
+    } catch {
+      setRealtimeStatus("local");
+      return false;
+    }
+  }, [credentialKey, guestCanSuggest, hostApproval, hostRoomCredentials, roomLocked, sharedGuestCapability]);
+
+  const resetGuestCapability = () => {
+    if (!hostRoomCredentials) return;
+    const rotated = { ...hostRoomCredentials, guestToken: `guest-${crypto.randomUUID()}-${crypto.randomUUID()}` };
+    void bootstrapDurableRoom(undefined, rotated).then((saved) => {
+      notify(saved
+        ? "Guest capability rotated. Previously copied room links can no longer contribute."
+        : "Couldn’t rotate the guest capability. The existing link is still active.");
+    });
+  };
+
+  const saveHostApproval = (next: boolean) => {
+    void bootstrapDurableRoom({ hostApproval: next }).then((saved) => {
+      if (saved) setHostApproval(next);
+      else notify("Host approval wasn’t changed because the room could not be saved.");
+    });
+  };
+
+  const saveRoomLock = (next: boolean) => {
+    void bootstrapDurableRoom({ locked: next }).then((saved) => {
+      if (saved) {
+        setRoomLocked(next);
+        notify(next ? "Room locked. Existing contributions stay visible." : "Room reopened for suggestions.");
+      } else {
+        notify("The room lock wasn’t changed because the room could not be saved.");
+      }
+    });
+  };
+
+  const saveGuestExpiry = (choice: ShareExpiry) => {
+    void bootstrapDurableRoom({
+      guestExpiresAtMs: guestExpiryAt(choice),
+      expiryPolicy: choice,
+    }).then((saved) => {
+      notify(saved ? `Guest capability now expires ${choice === "Never" ? "only when reset" : `after ${choice}`}.` : "Guest expiry wasn’t changed because the room could not be saved.");
+    });
+  };
+
+  const publishLiveEvent = useCallback(async (
+    type: LiveRoomEventType,
+    payload: LiveRoomEventPayload,
+    actorName = liveActor,
+    capabilityOverride?: { roomId: string; token: string },
+  ) => {
+    const roomId = capabilityOverride?.roomId ?? activeRoomId;
+    const token = capabilityOverride?.token ?? activeRoomToken;
+    if (!token) {
+      setRealtimeStatus("local");
+      return;
+    }
+    const eventId = `event-${crypto.randomUUID()}`;
+    const body = JSON.stringify({ eventId, clientId: liveClientId, actorName, type, payload });
+    for (const delayMs of [0, 350, 1_000]) {
+      if (delayMs > 0) await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+      try {
+        const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/events`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body,
+        });
+        if (response.ok) {
+          setRealtimeStatus("connected");
+          return;
+        }
+        if (response.status === 401 || response.status === 403 || response.status === 409) break;
+      } catch {
+        // Retry the exact same event ID so the server can safely deduplicate it.
+      }
+    }
+    setRealtimeStatus("local");
+  }, [activeRoomId, activeRoomToken, liveActor, liveClientId]);
 
   const notify = (message: string) => {
     setToast(message);
@@ -597,28 +1080,214 @@ export default function UniJamApp() {
     setSelectedPlaylist(null);
     setMobileNavOpen(false);
     window.scrollTo({ top: 0, behavior: "smooth" });
+    window.requestAnimationFrame(() => document.getElementById("main-content")?.focus());
+  };
+
+  const openMobileNavigation = () => {
+    setMobileNavOpen(true);
+    window.requestAnimationFrame(() => document.querySelector<HTMLElement>("#primary-sidebar button")?.focus());
+  };
+
+  const closeMobileNavigation = () => {
+    setMobileNavOpen(false);
+    window.requestAnimationFrame(() => mobileMenuRef.current?.focus());
+  };
+
+  const enterLiveRoom = (role: LiveRoomRole) => {
+    setLiveRoomRole(role);
+    setLiveRoomActive(true);
+    setListeningMode("speaker");
+    setModal(null);
+    if (role === "guest") {
+      setLiveActivity((current) => [`${guestName || "Guest"} joined with ${guestService === "apple" ? "Apple Music" : guestService === "spotify" ? "Spotify" : "no default service"}`, ...current]);
+    }
+    const actor = role === "host" ? "Mason" : guestName || "Guest";
+    const service = role === "host" ? speakerService : guestService;
+    if (hostRoomCredentials && !sharedGuestCapability) {
+      void bootstrapDurableRoom().then((saved) => {
+        if (saved) void publishLiveEvent("participant_joined", { role, service }, actor, {
+          roomId: hostRoomCredentials.roomId,
+          token: role === "host" ? hostRoomCredentials.hostToken : hostRoomCredentials.guestToken,
+        });
+        else notify("Durable room sync is unavailable. This session is staying local.");
+      });
+    } else {
+      void publishLiveEvent("participant_joined", { role, service }, actor);
+    }
+  };
+
+  const leaveLiveRoom = () => {
+    setLiveRoomActive(false);
+    setHandoffReceipt(null);
+    setGuestReady(false);
+    window.requestAnimationFrame(() => document.getElementById("main-content")?.focus());
+  };
+
+  const advanceLiveTrack = () => {
+    const nextIndex = (nowTrackIndex + 1) % liveQueueTracks.length;
+    setNowTrackIndex(nextIndex);
+    setLiveRoomPhase("idle");
+    setStartedAtMs(null);
+    setElapsedSeconds(0);
+    setHandoffReceipt(null);
+    setReactionCount(0);
+    setLiveActivity((current) => ["Mason advanced the shared speaker queue", ...current]);
+    void publishLiveEvent("track_advanced", { trackIndex: nextIndex }, "Mason");
+  };
+
+  const addLiveSuggestion = () => {
+    const title = liveComposer.trim();
+    if (!title || !canLiveContribute) return;
+    const suggestion = { id: `suggestion-${crypto.randomUUID()}`, title, submittedBy: liveActor, service: liveSource } satisfies PendingSuggestion;
+    if (liveRoomRole === "host" || !hostApproval) {
+      setApprovedSuggestions((current) => [...current, suggestion]);
+      setLiveActivity((current) => [`${liveActor} added ${title} to the next round`, ...current]);
+      notify("Pick added to the next round.");
+      if (liveRoomRole === "host") {
+        void publishLiveEvent("suggestion_approved", { suggestionId: suggestion.id, title, submittedBy: liveActor, service: liveSource });
+      } else {
+        void publishLiveEvent("suggestion_staged", { suggestionId: suggestion.id, title, service: liveSource });
+      }
+    } else {
+      setPendingSuggestions((current) => [suggestion, ...current]);
+      setLiveActivity((current) => [`${liveActor} suggested ${title}`, ...current]);
+      notify("Suggestion added to the host approval lane.");
+      void publishLiveEvent("suggestion_staged", { suggestionId: suggestion.id, title, service: liveSource });
+    }
+    setLiveComposer("");
+  };
+
+  const coSignDreams = () => {
+    if (!canLiveContribute) return;
+    setDuplicateVoted((voted) => !voted);
+    setQueueVotes((current) => ({ ...current, 2: Math.max(0, (current[2] ?? 0) + (duplicateVoted ? -1 : 1)) }));
+    setLiveActivity((current) => [`${liveActor} ${duplicateVoted ? "removed a co-sign from" : "co-signed"} Dreams`, ...current]);
+    notify(duplicateVoted ? "Vote removed." : "Vote joined. Your fair-queue turn is still open.");
+    void publishLiveEvent("vote_changed", { trackId: 2, delta: duplicateVoted ? -1 : 1 });
+  };
+
+  const toggleLiveQueueVote = (trackId: number) => {
+    if (!canLiveContribute) return;
+    const voted = votedTrackIds.includes(trackId);
+    setVotedTrackIds((current) => voted ? current.filter((id) => id !== trackId) : [...current, trackId]);
+    setQueueVotes((current) => ({ ...current, [trackId]: Math.max(0, (current[trackId] ?? 0) + (voted ? -1 : 1)) }));
+    setLiveActivity((current) => [`${liveActor} ${voted ? "removed a vote from" : "voted for"} the shared queue`, ...current]);
+    void publishLiveEvent("vote_changed", { trackId, delta: voted ? -1 : 1 });
+  };
+
+  const approveLiveSuggestion = (id: string) => {
+    const suggestion = pendingSuggestions.find((item) => item.id === id);
+    if (!suggestion || liveRoomRole !== "host") return;
+    setPendingSuggestions((current) => current.filter((item) => item.id !== id));
+    setApprovedSuggestions((current) => [...current, suggestion]);
+    setLiveActivity((current) => [`Mason approved ${suggestion.title} for the next round`, ...current]);
+    notify("Suggestion approved and added to the next round.");
+    void publishLiveEvent("suggestion_approved", { suggestionId: suggestion.id, title: suggestion.title, submittedBy: suggestion.submittedBy, service: suggestion.service }, "Mason");
+  };
+
+  const rejectLiveSuggestion = (id: string) => {
+    const suggestion = pendingSuggestions.find((item) => item.id === id);
+    if (!suggestion || liveRoomRole !== "host") return;
+    setPendingSuggestions((current) => current.filter((item) => item.id !== id));
+    setLiveActivity((current) => [`Mason passed on ${suggestion.title}`, ...current]);
+    notify("Suggestion removed from the approval lane.");
+    void publishLiveEvent("suggestion_rejected", { suggestionId: suggestion.id, title: suggestion.title }, "Mason");
+  };
+
+  const changeSpeakerService = (service: "spotify" | "apple") => {
+    if (service === speakerService) return;
+    setSpeakerService(service);
+    setLiveRoomPhase("idle");
+    setStartedAtMs(null);
+    setElapsedSeconds(0);
+    setHandoffReceipt(null);
+    setLiveActivity((current) => [`Mason switched speaker duty to ${service === "spotify" ? "Spotify" : "Apple Music"}; a new handoff is required`, ...current]);
+    void publishLiveEvent("speaker_service_changed", { service }, "Mason");
+  };
+
+  const changeGuestService = (service: "spotify" | "apple") => {
+    setGuestService(service);
+    setHandoffReceipt(null);
+  };
+
+  const addLiveReaction = (reaction: string) => {
+    if (!canLiveContribute) return;
+    setReactionCount((count) => count + 1);
+    void publishLiveEvent("reaction_added", { trackId: currentLiveTrack.id, reaction });
   };
 
   const openModal = (name: ModalName) => {
-    if (name === "create-jam") setCreateStep(1);
+    if (!modal && document.activeElement instanceof HTMLElement) setModalOpener(document.activeElement);
+    if (name === "create-jam") {
+      setCreateStep(1);
+    }
     if (name === "import") setImportStep(1);
     if (name === "guest-preview") {
+      setQuickAddMode(false);
+      setHostPreviewMode(true);
       setGuestStep(1);
       setGuestSearch("");
     }
     if (name === "sync" || name === "publish") {
-      setSyncStep(1);
+      setSyncStep(name === "publish" && finishPreviewed ? 3 : 1);
       setSyncProgress(0);
     }
+    if (name === "match") setMatchReturnTarget(null);
     setModal(name);
   };
 
-  const closeModal = () => setModal(null);
+  const openQuickAdd = () => {
+    setQuickAddMode(true);
+    setHostPreviewMode(false);
+    setQuickAddStartedEmpty(selectedJam?.tracks === 0);
+    setGuestName("Mason");
+    setGuestSearch("");
+    setGuestStep(2);
+    setModal("guest-preview");
+  };
+
+  const closeModal = useCallback(() => {
+    setModal(null);
+    window.requestAnimationFrame(() => {
+      modalOpener?.focus();
+      setModalOpener(null);
+    });
+  }, [modalOpener]);
 
   const toggleTrack = (id: number) => {
     setSelectedTrackIds((current) =>
       current.includes(id) ? current.filter((trackId) => trackId !== id) : [...current, id],
     );
+  };
+
+  const updateSelectedRoom = (patch: Partial<Jam>) => {
+    if (!selectedJam) return;
+    const updatedRoom = { ...selectedJam, ...patch };
+    setSelectedJam(updatedRoom);
+    setJams((current) => current.map((room) => room.id === updatedRoom.id ? updatedRoom : room));
+  };
+
+  const updateSelectedRoomTracks = (trackCount: number, updateMessage: string) => {
+    updateSelectedRoom({ tracks: trackCount, updated: updateMessage });
+  };
+
+  const advanceFairRotation = () => {
+    const nextContributor = fairQueueEntries[0]?.item.contributorId;
+    if (!nextContributor) return;
+    updateSelectedRoom({ lastServedContributor: nextContributor, updated: `${nextContributor}'s turn advanced just now` });
+    notify(`Rotation advanced after ${nextContributor}. The next contributor now leads the queue.`);
+  };
+
+  const moveHostTrackEarlier = (trackId: number) => {
+    const defaultOrder = tracks.slice(1, 8).map((track) => track.id);
+    setHostQueueOrders((current) => {
+      const order = [...(current[selectedRoomId] ?? defaultOrder)];
+      const index = order.indexOf(trackId);
+      if (index <= 0) return current;
+      [order[index - 1], order[index]] = [order[index], order[index - 1]];
+      return { ...current, [selectedRoomId]: order };
+    });
+    notify("Track moved one position earlier in the host order.");
   };
 
   const createJam = () => {
@@ -630,7 +1299,13 @@ export default function UniJamApp() {
       status: "live",
       updated: "Created just now",
       permission: "Owner",
+      access: jamPermission.replace("add songs", "suggest"),
+      fairQueue,
+      template: roomTemplate,
     };
+    setRoomCredentials((current) => ({ ...current, [roomCredentialKey(newJam)]: createRoomCredentials() }));
+    setSharedGuestCapability(null);
+    setServerGuestCanContribute(null);
     setJams((current) => [newJam, ...current]);
     setSelectedJam(newJam);
     setCreateStep(3);
@@ -644,6 +1319,7 @@ export default function UniJamApp() {
     window.setTimeout(() => {
       setSyncProgress(100);
       setSyncStep(3);
+      if (modal === "publish") updateFinishState({ previewed: true });
     }, 1150);
   };
 
@@ -664,22 +1340,177 @@ export default function UniJamApp() {
       };
       setPlaylists((current) => [imported, ...current]);
       closeModal();
-      notify("18 tracks matched and synced to both platforms.");
+      notify("18 tracks matched and prepared for destination review.");
     }, 1200);
   };
 
   const copyShareLink = async () => {
     try {
-      await navigator.clipboard.writeText("https://unijam.music/room/friday-night");
+      if (!hostRoomCredentials) throw new Error("Room credentials unavailable");
+      const saved = await bootstrapDurableRoom();
+      if (!saved) throw new Error("Room capability could not be saved");
+      const slug = roomSlug(selectedJam?.name ?? "Friday Night Room");
+      const roomName = selectedJam?.name ?? "Friday Night Room";
+      const trackCount = selectedJam?.tracks ?? 24;
+      const access = selectedJam?.access ?? "Anyone with the link can suggest";
+      const queueMode = selectedJam?.fairQueue === false ? "0" : "1";
+      await navigator.clipboard.writeText(`${window.location.origin}/?room=${slug}&rid=${encodeURIComponent(hostRoomCredentials.roomId)}&name=${encodeURIComponent(roomName)}&tracks=${trackCount}&access=${encodeURIComponent(access)}&fair=${queueMode}&guest=1#cap=${encodeURIComponent(hostRoomCredentials.guestToken)}`);
+      updateLaunchState({ roomShared: true });
       notify("Room link copied to your clipboard.");
     } catch {
-      notify("Room link ready to share.");
+      notify("Couldn’t copy the link. Select it and copy manually.");
     }
   };
 
   const setSetting = (key: keyof typeof settingsState) => {
     setSettingsState((current) => ({ ...current, [key]: !current[key] }));
   };
+
+  useEffect(() => {
+    window.localStorage.setItem(roomCredentialStorageKey, JSON.stringify(roomCredentials));
+  }, [roomCredentials]);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 980px)");
+    const updateLayout = () => setIsMobileLayout(media.matches);
+    const frame = window.requestAnimationFrame(updateLayout);
+    media.addEventListener("change", updateLayout);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      media.removeEventListener("change", updateLayout);
+    };
+  }, []);
+
+  useEffect(() => {
+    const manageMobileNavigation = (event: KeyboardEvent) => {
+      if (!mobileNavOpen || !isMobileLayout) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setMobileNavOpen(false);
+        window.requestAnimationFrame(() => mobileMenuRef.current?.focus());
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const sidebar = document.getElementById("primary-sidebar");
+      const focusable = sidebar ? Array.from(sidebar.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])')).filter((element) => element.getClientRects().length > 0) : [];
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", manageMobileNavigation);
+    return () => window.removeEventListener("keydown", manageMobileNavigation);
+  }, [isMobileLayout, mobileNavOpen]);
+
+  useEffect(() => {
+    const parameters = new URLSearchParams(window.location.search);
+    if (parameters.get("room") && parameters.get("guest") === "1") {
+      const timer = window.setTimeout(() => {
+        const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+        const slug = parameters.get("room") ?? "friday-night-room";
+        const linkedRoomId = parameters.get("rid")?.trim();
+        const linkedGuestToken = fragment.get("cap")?.trim();
+        if (linkedRoomId?.startsWith("room-") && linkedGuestToken?.startsWith("guest-")) {
+          setSharedGuestCapability({ roomId: linkedRoomId, guestToken: linkedGuestToken });
+        }
+        setServerGuestCanContribute(null);
+        const linkedName = parameters.get("name")?.trim() || slug.split("-").map((part) => part ? part[0].toUpperCase() + part.slice(1) : part).join(" ");
+        const linkedTracks = Math.max(0, Number.parseInt(parameters.get("tracks") ?? "0", 10) || 0);
+        const linkedAccess = parameters.get("access")?.trim() || "Anyone with the link can suggest";
+        const linkedFairQueue = parameters.get("fair") !== "0";
+        const knownRoom = initialJams.find((room) => roomSlug(room.name) === slug);
+        setSelectedJam(knownRoom ?? {
+          id: -1,
+          name: linkedName,
+          tracks: linkedTracks,
+          members: ["Host"],
+          status: "live",
+          updated: "Shared demo room",
+          permission: "Editor",
+          access: linkedAccess,
+          fairQueue: linkedFairQueue,
+          template: "Shared room",
+        });
+        setQuickAddMode(false);
+        setHostPreviewMode(false);
+        setGuestStep(1);
+        setGuestSearch("");
+        setModal("guest-preview");
+      }, 0);
+      return () => window.clearTimeout(timer);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (liveRoomPhase !== "started" || startedAtMs === null) return;
+    const updateElapsed = () => setElapsedSeconds(Math.floor((Date.now() - startedAtMs) / 1000));
+    const interval = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(interval);
+  }, [liveRoomPhase, startedAtMs]);
+
+  useEffect(() => {
+    if (!liveRoomActive) return;
+    const frame = window.requestAnimationFrame(() => document.getElementById("live-main")?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [liveRoomActive]);
+
+  useEffect(() => {
+    if (!liveRoomActive) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      if (!activeRoomToken) {
+        setRealtimeStatus("local");
+        return;
+      }
+      const after = roomEventCursorsRef.current[activeRoomId] ?? 0;
+      if (after === 0) setRealtimeStatus("connecting");
+      try {
+        const response = await fetch(`/api/rooms/${encodeURIComponent(activeRoomId)}/events?after=${after}`, {
+          cache: "no-store",
+          headers: { Authorization: `Bearer ${activeRoomToken}` },
+        });
+        if (!response.ok) throw new Error("room event log unavailable");
+        const body = await response.json() as {
+          events?: StoredLiveRoomEvent[];
+          cursor?: number;
+          hasMore?: boolean;
+          role?: LiveRoomRole;
+          room?: { guestCanContribute?: boolean; locked?: boolean; hostApproval?: boolean };
+        };
+        if (cancelled) return;
+        for (const event of body.events ?? []) {
+          if (event.clientId !== liveClientId) {
+            applyRemoteLiveEvent(event);
+          }
+        }
+        if (typeof body.cursor === "number") roomEventCursorsRef.current[activeRoomId] = body.cursor;
+        if (body.role === "guest" && body.room) {
+          if (typeof body.room.guestCanContribute === "boolean") setServerGuestCanContribute(body.room.guestCanContribute);
+          if (typeof body.room.locked === "boolean") setRoomLocked(body.room.locked);
+          if (typeof body.room.hostApproval === "boolean") setHostApproval(body.room.hostApproval);
+        }
+        setRealtimeStatus("connected");
+        timer = window.setTimeout(poll, body.hasMore ? 50 : 1_500);
+      } catch {
+        if (cancelled) return;
+        setRealtimeStatus("local");
+        timer = window.setTimeout(poll, 5_000);
+      }
+    };
+
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [activeRoomId, activeRoomToken, applyRemoteLiveEvent, liveClientId, liveRoomActive]);
 
   const renderHome = () => (
     <div className="home-view page-enter">
@@ -691,7 +1522,7 @@ export default function UniJamApp() {
             <br />
             Every music app.
           </h1>
-          <p>Send one link. Friends add songs without an account. Publish the finished playlist everywhere when you are ready.</p>
+          <p>Send one link. Friends add songs without an account. Preview destination updates when the room is ready.</p>
           <div className="hero-actions">
             <button type="button" className="button button-primary" onClick={() => openModal("create-jam")}>
               <Plus size={17} />
@@ -714,7 +1545,7 @@ export default function UniJamApp() {
               <small>Ready for 4 additions</small>
             </span>
             <span className="connected-label">
-              Connected <span className="connected-dot" />
+              Demo destination <span className="connected-dot" />
             </span>
             <ChevronRight size={16} className="account-chevron" />
           </button>
@@ -724,10 +1555,10 @@ export default function UniJamApp() {
             </span>
             <span>
               <strong>Apple Music</strong>
-              <small>Ready for 4 additions</small>
+              <small>{matchResolved ? "Ready for 4 additions" : "3 ready · 1 match hold"}</small>
             </span>
             <span className="connected-label">
-              Connected <span className="connected-dot" />
+              Demo destination <span className="connected-dot" />
             </span>
             <ChevronRight size={16} className="account-chevron" />
           </button>
@@ -862,11 +1693,11 @@ export default function UniJamApp() {
           <Sparkles size={18} />
         </span>
         <div>
-          <strong>The room is ready to publish.</strong>
-          <span>Four new songs are matched on both services. Nothing will be removed or reordered.</span>
+          <strong>{finishPreviewed ? "The finish preview is ready to share." : matchResolved ? "Four songs are ready for the finish." : "Three songs are ready everywhere. One has an Apple hold."}</strong>
+          <span>{finishPreviewed ? "Review the destination results and the group shareback before connecting live accounts." : matchResolved ? "Every destination match is confirmed; the add-only preview is clean." : "Spotify can take four while Apple Music safely holds the unresolved match."}</span>
         </div>
         <button type="button" className="button button-quiet" onClick={() => openModal("publish")}>
-          Publish 4 updates <ArrowRight size={16} />
+          {finishPreviewed ? "View finish recap" : "Review safe finish"} <ArrowRight size={16} />
         </button>
       </section>
 
@@ -876,7 +1707,7 @@ export default function UniJamApp() {
           <article><span className="impact-check"><Check size={15} /></span><div><strong>No account wall</strong><small>Guests joined with a nickname only.</small></div><b>0 drop-offs</b></article>
           <article><span className="impact-check"><Check size={15} /></span><div><strong>Any link works</strong><small>Spotify, Apple Music, or plain search.</small></div><b>3 sources</b></article>
           <article><span className="impact-check"><Check size={15} /></span><div><strong>No queue hijacking</strong><small>Fair rotation balances every contributor.</small></div><b>2 moved</b></article>
-          <article><span className="impact-check"><Check size={15} /></span><div><strong>No mystery sync</strong><small>The room is canonical; publishing is previewed.</small></div><b>4 staged</b></article>
+          <article><span className="impact-check"><Check size={15} /></span><div><strong>No mystery sync</strong><small>{matchResolved ? "Every destination match is confirmed." : "Three are ready; one is visibly held for review."}</small></div><b>{matchResolved ? "4 ready" : "1 held"}</b></article>
         </div>
       </section>
     </div>
@@ -895,7 +1726,7 @@ export default function UniJamApp() {
             <Eye size={17} /> Preview guest link
           </button>
           <button type="button" className="button button-primary" onClick={() => openModal("publish")}>
-            <Send size={17} /> Publish 4
+            <Send size={17} /> {finishPreviewed ? "View recap" : `Finish ${finishReadyCount} ready`}
           </button>
         </div>
       </header>
@@ -916,11 +1747,11 @@ export default function UniJamApp() {
           <div><strong>11</strong><span>Apple Music links</span></div>
           <small>Converted to canonical tracks</small>
         </article>
-        <article className="needs-attention" onClick={() => setLibraryFilter("review")}>
+        <button type="button" className="needs-attention" onClick={() => setLibraryFilter("review")}>
           <span className="overview-icon warning"><AlertTriangle size={18} /></span>
-          <div><strong>2</strong><span>Need host input</span></div>
+          <div><strong>{hostDecisionCount}</strong><span>Need host input</span></div>
           <small>Version or explicit rule</small>
-        </article>
+        </button>
       </section>
 
       <section className="content-panel library-panel">
@@ -950,6 +1781,7 @@ export default function UniJamApp() {
               <button
                 key={id}
                 type="button"
+                aria-pressed={libraryFilter === id}
                 className={libraryFilter === id ? "active" : ""}
                 onClick={() => setLibraryFilter(id as typeof libraryFilter)}
               >
@@ -977,7 +1809,8 @@ export default function UniJamApp() {
           </div>
         )}
 
-        <div className="track-table-wrap">
+        <span className="mobile-scroll-hint" id="song-inbox-scroll-hint">Swipe sideways to compare source, match, and duration.</span>
+        <div className="track-table-wrap" role="region" aria-label="Scrollable song inbox" aria-describedby="song-inbox-scroll-hint" tabIndex={0}>
           <table className="track-table">
             <thead>
               <tr>
@@ -1004,8 +1837,11 @@ export default function UniJamApp() {
               </tr>
             </thead>
             <tbody>
-              {filteredTracks.map((track) => (
-                <tr key={track.id} className={track.state !== "synced" ? "needs-review-row" : ""}>
+              {filteredTracks.map((track) => {
+                const effectiveState: SyncState = track.id === 3 && matchResolved ? "synced" : track.state;
+                const effectivePlatform: Platform = track.id === 3 && matchResolved ? "both" : track.platform;
+                return (
+                <tr key={track.id} className={effectiveState !== "synced" ? "needs-review-row" : ""}>
                   <td className="checkbox-cell">
                     <input
                       type="checkbox"
@@ -1033,17 +1869,17 @@ export default function UniJamApp() {
                     </button>
                   </td>
                   <td className="muted-cell">{track.album}</td>
-                  <td><PlatformBadge platform={track.platform} /></td>
+                  <td><PlatformBadge platform={effectivePlatform} /></td>
                   <td>
                     <button
                       type="button"
-                      className={"confidence " + track.state}
-                      onClick={() => track.state !== "synced" && openModal("match")}
+                      className={"confidence " + effectiveState}
+                      onClick={() => effectiveState !== "synced" && openModal("match")}
                     >
-                      {track.state === "unavailable" ? (
+                      {effectiveState === "unavailable" ? (
                         <><AlertTriangle size={14} /> Unavailable</>
                       ) : (
-                        <><span>{track.confidence}%</span>{track.state === "review" ? " Review" : " match"}</>
+                        <><span>{track.confidence}%</span>{effectiveState === "review" ? " Review" : " match"}</>
                       )}
                     </button>
                   </td>
@@ -1054,7 +1890,8 @@ export default function UniJamApp() {
                     </button>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -1145,7 +1982,7 @@ export default function UniJamApp() {
         <aside className="detail-sidebar">
           <section className="side-card">
             <div className="side-card-heading"><h3>Sync status</h3><RefreshCw size={16} /></div>
-            <div className="big-sync-status"><CheckCircle2 size={24} /><div><strong>Perfectly in sync</strong><span>Spotify ↔ Apple Music</span></div></div>
+            <div className="big-sync-status"><CheckCircle2 size={24} /><div><strong>No staged differences</strong><span>Demo snapshot · 8:42 PM</span></div></div>
             <div className="sync-comparison">
               <span><span className="service-mark spotify-mark">≋</span> 24 tracks</span>
               <span className="sync-arrow">↔</span>
@@ -1182,14 +2019,14 @@ export default function UniJamApp() {
           <div>
             <span className="eyebrow">TWO DESTINATIONS · FOUR STAGED UPDATES</span>
             <h1>Destinations</h1>
-            <p>The room stays canonical. Spotify and Apple Music receive deliberate, previewed updates.</p>
+            <p>The room stays canonical. Spotify and Apple Music show the updates UniJam would prepare.</p>
           </div>
           <div className="heading-actions">
             <button type="button" className="button button-outline" onClick={() => openModal("import")}>
               <Plus size={17} /> Add destination
             </button>
             <button type="button" className="button button-primary" onClick={() => openModal("publish")}>
-              <Send size={17} /> Publish updates
+              <Send size={17} /> Preview updates
             </button>
           </div>
         </header>
@@ -1199,7 +2036,7 @@ export default function UniJamApp() {
           <div>
             <span className="eyebrow">SAFE BY DEFAULT</span>
             <h2>A bridge you can actually trust.</h2>
-            <p>Additions are staged. Removals and reorders always require approval. Every publish creates a restore point.</p>
+            <p>Additions are staged. Removals and reorders always require approval. A production publish would create a restore point.</p>
           </div>
           <button type="button" className="button button-light" onClick={() => openModal("publish")}>
             <ShieldCheck size={17} /> Review publish plan
@@ -1239,7 +2076,106 @@ export default function UniJamApp() {
     );
   };
 
-  const renderJamDetail = (jam: Jam) => (
+  const renderRoomLaunchpad = (jam: Jam) => (
+    <div className="page-view page-enter detail-view launchpad-view">
+      <button type="button" className="back-link" onClick={() => setSelectedJam(null)}>
+        <ArrowLeft size={16} /> All rooms
+      </button>
+      <section className="jam-room-header launchpad-header">
+        <div>
+          <div className="detail-kicker">
+            <span className="room-status live"><span /> Ready to launch</span>
+            <span>{jam.access}</span>
+            <span className="fair-queue-label"><ShieldCheck size={13} /> {jam.fairQueue ? "Fair queue on" : "Host ordering"}</span>
+          </div>
+          <h1>{jam.name}</h1>
+          <p>Your room is live, but it is still yours alone. Complete one step to give the group something worth joining.</p>
+        </div>
+        <button type="button" className="button button-outline" onClick={copyShareLink}><Copy size={17} /> Copy room link</button>
+      </section>
+
+      <section className="launchpad-hero">
+        <div className="launchpad-progress">
+          <span className="eyebrow">ROOM LAUNCHPAD</span>
+          <h2>Get the first contribution in.</h2>
+          <p>Rooms take off faster when guests see a clear direction and one seed song. No destination account is needed yet.</p>
+          <div className="launch-progress-track"><span style={{ width: `${(launchStepCount / 3) * 100}%` }} /></div>
+          <small>{launchStepCount} of 3 launch steps complete</small>
+        </div>
+        <div className="launch-link-card">
+          <span><Link2 size={18} /></span>
+          <div><small>YOUR DEMO ROOM LINK</small><strong>This site · {jam.name} guest view</strong></div>
+          <button type="button" onClick={copyShareLink}>Copy</button>
+        </div>
+      </section>
+
+      <section className="launchpad-grid" aria-label="Room launch checklist">
+        <article className={"launch-step featured" + (seedSongAdded ? " done" : "")}>
+          <span className="launch-step-number">{seedSongAdded ? <Check size={14} /> : "01"}</span>
+          <div><span className="eyebrow">START HERE</span><h3>Add the seed song</h3><p>Set the tone so guests immediately understand what belongs.</p></div>
+          <button type="button" className={"button " + (seedSongAdded ? "button-outline" : "button-primary")} onClick={openQuickAdd}>{seedSongAdded ? <RefreshCw size={16} /> : <Plus size={16} />} {seedSongAdded ? "Change seed song" : "Add first song"}</button>
+        </article>
+        <article className={"launch-step" + (roomShared ? " done" : "")}>
+          <span className="launch-step-number">{roomShared ? <Check size={14} /> : "02"}</span>
+          <div><span className="eyebrow">INVITE</span><h3>Bring in the group</h3><p>Guests join with a nickname—no music-service login.</p></div>
+          <button type="button" className="button button-outline" onClick={() => openModal("share")}><UserPlus size={16} /> Share room</button>
+        </article>
+        <article className={"launch-step" + (guestPreviewed ? " done" : "")}>
+          <span className="launch-step-number">{guestPreviewed ? <Check size={14} /> : "03"}</span>
+          <div><span className="eyebrow">TRUST CHECK</span><h3>See what guests see</h3><p>Preview the exact join and suggestion experience before sharing.</p></div>
+          <button type="button" className="button button-outline" onClick={() => openModal("guest-preview")}><Eye size={16} /> Preview guest view</button>
+        </article>
+      </section>
+
+      <section className="launchpad-brief">
+        <div><span className="eyebrow">THE SHARED BRIEF</span><h2>{roomBrief.direction}</h2><p>{roomBrief.occasion}</p></div>
+        <div className="brief-chips"><span>{roomBrief.pickLimit}</span><span>{roomBrief.explicitRule}</span><span>{roomBrief.versionRule}</span></div>
+        <button type="button" className="button button-quiet" onClick={() => openModal("brief")}><SlidersHorizontal size={16} /> Edit brief</button>
+      </section>
+
+      <div className="launchpad-destination-note"><ShieldCheck size={17} /><span><strong>Spotify and Apple Music can wait.</strong> Connect destinations only after the room has approved songs to publish.</span></div>
+    </div>
+  );
+
+  const renderSeededRoom = (jam: Jam) => (
+    <div className="page-view page-enter detail-view seeded-room-view">
+      <button type="button" className="back-link" onClick={() => setSelectedJam(null)}><ArrowLeft size={16} /> All rooms</button>
+      <section className="jam-room-header">
+        <div>
+          <div className="detail-kicker"><span className="room-status live"><span /> Collecting · 1 song</span><span>{jam.access}</span>{jam.fairQueue && <span className="fair-queue-label"><ShieldCheck size={13} /> Fair queue on</span>}</div>
+          <h1>{jam.name}</h1>
+          <p>The seed song is in. Invite the group or preview the contribution experience before you share.</p>
+        </div>
+        <div className="jam-room-actions"><button type="button" className="button button-outline" onClick={() => openModal("share")}><UserPlus size={17} /> Share room</button><button type="button" className="button button-outline" onClick={() => openModal("guest-preview")}><Eye size={17} /> Preview as guest</button><button type="button" className="button button-primary" onClick={() => enterLiveRoom("host")}><Volume2 size={17} /> Start live room</button></div>
+      </section>
+
+      <section className="seeded-room-status">
+        <div><span className="eyebrow">ROOM ACTIVATED</span><h2>There is something to react to now.</h2><p>Pink + White establishes the direction. The next open fair-queue slot belongs to the first guest who contributes.</p></div>
+        <div className="seeded-room-progress"><span className="done"><Check size={14} /> Seed song</span><i /><span className={roomShared ? "done" : ""}>{roomShared ? <Check size={14} /> : <UserPlus size={14} />} Invite</span><i /><span className={guestPreviewed ? "done" : ""}>{guestPreviewed ? <Check size={14} /> : <Eye size={14} />} Preview</span></div>
+      </section>
+
+      <section className="room-brief-strip">
+        <div><span className="eyebrow">THE SHARED BRIEF</span><h2>{roomBrief.direction}</h2><p>{roomBrief.occasion}</p></div>
+        <div className="brief-chips"><span>{roomBrief.pickLimit}</span><span>{roomBrief.explicitRule}</span><span>{roomBrief.versionRule}</span></div>
+        <button type="button" className="button button-quiet" onClick={() => openModal("brief")}><SlidersHorizontal size={16} /> Edit</button>
+      </section>
+
+      <section className="seed-track-panel">
+        <div className="section-title-row"><div><span className="eyebrow">SEED SONG</span><h2>Room direction</h2></div><button type="button" className="button button-outline" onClick={openQuickAdd}><RefreshCw size={16} /> Change seed</button></div>
+        <div className="seed-track-row"><TrackArt art="art-a" large /><div><strong>Pink + White</strong><span>Frank Ocean · added by Mason</span></div><PlatformMark platform="both" /><span className="match-pill">Canonical match</span></div>
+      </section>
+
+      <section className="seeded-next-actions">
+        <article><UserPlus size={20} /><div><strong>Bring in the first guest</strong><span>The room link opens the right room and asks only for a nickname.</span></div><button type="button" onClick={() => openModal("share")}>Share room <ArrowRight size={14} /></button></article>
+        <article><ShieldCheck size={20} /><div><strong>Guardrails are active</strong><span>{jam.fairQueue ? "Fair rotation" : "Host ordering"} · {roomBrief.pickLimit} · host approval</span></div><button type="button" onClick={() => openModal("brief")}>Review rules <ArrowRight size={14} /></button></article>
+      </section>
+    </div>
+  );
+
+  const renderJamDetail = (jam: Jam) => {
+    if (jam.tracks === 0) return renderRoomLaunchpad(jam);
+    if (jam.tracks === 1 && jam.members.length === 1) return renderSeededRoom(jam);
+    return (
     <div className="page-view page-enter detail-view">
       <button type="button" className="back-link" onClick={() => setSelectedJam(null)}>
         <ArrowLeft size={16} /> All rooms
@@ -1249,7 +2185,7 @@ export default function UniJamApp() {
           <div className="detail-kicker">
             <span className={"room-status " + jam.status}><span /> {jam.status === "live" ? "9 contributing now" : jam.status}</span>
             <span>{jam.permission}</span>
-            <span className="fair-queue-label"><ShieldCheck size={13} /> Fair queue on</span>
+            <span className="fair-queue-label"><ShieldCheck size={13} /> {jam.fairQueue ? "Fair queue on" : "Host ordering"}</span>
           </div>
           <h1>{jam.name}</h1>
           <p>Guests add from any music link. The room decides what belongs before anything is published.</p>
@@ -1259,7 +2195,8 @@ export default function UniJamApp() {
             {jam.members.slice(0, 4).map((member, index) => <Avatar key={member} name={member} tone={["gold", "sage", "coral", "blue"][index]} size="md" />)}
           </div>
           <button type="button" className="button button-outline" onClick={() => openModal("share")}><UserPlus size={17} /> Invite</button>
-          <button type="button" className="button button-primary" onClick={() => openModal("publish")}><Send size={17} /> Publish 4 updates</button>
+          <button type="button" className="button button-outline" onClick={() => enterLiveRoom("host")}><Volume2 size={17} /> Live speaker</button>
+          <button type="button" className="button button-primary" onClick={() => openModal("publish")}><Send size={17} /> {finishPreviewed ? "View recap" : "Finish room"}</button>
         </div>
       </section>
 
@@ -1267,7 +2204,13 @@ export default function UniJamApp() {
         <article><UserRoundCheck size={17} /><div><strong>9 of 12 joined</strong><span>No account required</span></div></article>
         <article><Timer size={17} /><div><strong>42 sec</strong><span>Median first contribution</span></div></article>
         <article><CircleEllipsis size={17} /><div><strong>2 duplicates blocked</strong><span>Before they hit the queue</span></div></article>
-        <article><ShieldCheck size={17} /><div><strong>4 staged</strong><span>Zero destructive changes</span></div></article>
+        <article><ShieldCheck size={17} /><div><strong>{matchResolved ? "4 ready" : "3 ready · 1 held"}</strong><span>No destructive changes</span></div></article>
+      </section>
+
+      <section className="room-brief-strip">
+        <div><span className="eyebrow">THE SHARED BRIEF</span><h2>{roomBrief.direction}</h2><p>{roomBrief.occasion}</p></div>
+        <div className="brief-chips"><span>{roomBrief.pickLimit}</span><span>{roomBrief.explicitRule}</span><span>{roomBrief.versionRule}</span></div>
+        <button type="button" className="button button-quiet" onClick={() => openModal("brief")}><SlidersHorizontal size={16} /> Edit</button>
       </section>
 
       <section className="now-playing-card room-top-pick">
@@ -1291,22 +2234,34 @@ export default function UniJamApp() {
         <section className="content-panel queue-panel">
           <div className="section-title-row">
             <div><span className="eyebrow">UP NEXT</span><h2>Shared queue</h2></div>
-            <button type="button" className="button button-outline" onClick={() => openModal("enhance")}><Plus size={16} /> Add a song</button>
+            <button type="button" className="button button-outline" onClick={openQuickAdd}><Plus size={16} /> Add a song</button>
           </div>
           <div className="queue-list">
-            {tracks.slice(1, 8).map((track, index) => (
-              <div className="queue-row room-row" key={track.id}>
-                <button type="button" className="drag-handle" aria-label={"Reorder " + track.title}><GripVertical size={16} /></button>
-                <span className="track-number">{String(index + 1).padStart(2, "0")}</span>
-                <TrackArt art={track.art} />
-                <div className="queue-title"><strong>{track.title}</strong><span>{track.artist}</span></div>
-                <PlatformMark platform={track.platform} small />
-                <div className="added-person"><Avatar name={index % 2 === 0 ? "Alex" : "Maya"} tone={index % 2 === 0 ? "sage" : "coral"} size="sm" /><span>{index % 2 === 0 ? "Alex" : "Maya"}</span></div>
-                <button type="button" className="queue-vote" onClick={() => notify("Your vote for “" + track.title + "” was counted.")}><ThumbsUp size={13} /> {Math.max(2, 7 - index)}</button>
-                <button type="button" className="icon-button clean" aria-label={"More options for " + track.title}><MoreHorizontal size={17} /></button>
-              </div>
-            ))}
+            {fairQueueEntries.map(({ item, round }, index) => {
+              const track = tracks.find((candidate) => candidate.id === Number(item.id));
+              if (!track) return null;
+              const tone = item.contributorId === "Alex" ? "sage" : item.contributorId === "Maya" ? "coral" : item.contributorId === "Jordan" ? "blue" : "gold";
+              const voted = votedTrackIds.includes(track.id);
+              return (
+                <div className="queue-row room-row" key={track.id}>
+                  <button type="button" className={"drag-handle" + (jam.fairQueue ? " fair-locked" : "")} aria-label={jam.fairQueue ? "Fair queue controls the position of " + track.title : "Move " + track.title + " earlier"} onClick={() => jam.fairQueue ? notify("Fair queue rotates contributors automatically. Turn it off to reorder manually.") : moveHostTrackEarlier(track.id)}>{jam.fairQueue ? <Lock size={14} /> : <GripVertical size={16} />}</button>
+                  <span className="track-number">{String(index + 1).padStart(2, "0")}</span>
+                  <TrackArt art={track.art} />
+                  <div className="queue-title"><strong>{track.title}</strong><span>{track.artist}</span></div>
+                  <PlatformMark platform={track.platform} small />
+                  <div className="added-person"><Avatar name={item.contributorId} tone={tone} size="sm" /><span>{item.contributorId}{jam.fairQueue ? ` · pick ${round}` : " · host order"}</span></div>
+                  <button type="button" className={"queue-vote" + (voted ? " active" : "")} aria-pressed={voted} onClick={() => {
+                    if (voted) return;
+                    setVotedTrackIds((current) => [...current, track.id]);
+                    setQueueVotes((current) => ({ ...current, [track.id]: (current[track.id] ?? 0) + 1 }));
+                    notify("Your vote for “" + track.title + "” was counted. Fair order recalculated.");
+                  }}><ThumbsUp size={13} /> {queueVotes[track.id] ?? 0}</button>
+                  <button type="button" className="icon-button clean" aria-label={"More options for " + track.title}><MoreHorizontal size={17} /></button>
+                </div>
+              );
+            })}
           </div>
+          {jam.fairQueue ? <div className="fair-queue-explainer"><ShieldCheck size={15} /><span><strong>Why this order?</strong> One pick per contributor each round; votes rank a person’s picks inside their turn.</span><button type="button" onClick={advanceFairRotation}>Advance after: {fairQueueEntries[0]?.item.contributorId ?? "Open"}</button></div> : <div className="fair-queue-explainer host-order"><GripVertical size={15} /><span><strong>Host ordering is on.</strong> Use each row handle to move that song one position earlier; votes remain guidance.</span><button type="button" onClick={() => setHostQueueOrders((current) => ({ ...current, [selectedRoomId]: tracks.slice(1, 8).map((track) => track.id) }))}>Reset order</button></div>}
         </section>
         <aside className="jam-chat">
           <div className="chat-heading"><div><span className="eyebrow">LIVE</span><h3>Room activity</h3></div><span className="online-label"><span /> 3 online</span></div>
@@ -1320,7 +2275,8 @@ export default function UniJamApp() {
         </aside>
       </div>
     </div>
-  );
+    );
+  };
 
   const renderJams = () => {
     if (selectedJam) return renderJamDetail(selectedJam);
@@ -1362,7 +2318,7 @@ export default function UniJamApp() {
             <span className="flow-line"><span /><RefreshCw size={18} /><span /></span>
             <span className="explainer-service"><span className="service-mark apple-mark large"><Apple size={18} /></span> Apple Music friends</span>
           </div>
-          <p>Everyone adds through one neutral room using search or any song link. UniJam matches and deduplicates first; the host publishes approved updates to each service.</p>
+          <p>Everyone adds through one neutral room using search or any song link. UniJam matches and deduplicates first; the host previews approved destination updates.</p>
         </section>
       </div>
     );
@@ -1385,7 +2341,7 @@ export default function UniJamApp() {
           <div className="panel-toolbar activity-toolbar">
             <div className="filter-tabs">
               {["All activity", "People", "Publishes", "Matches"].map((filter) => (
-                <button key={filter} type="button" className={activityFilter === filter ? "active" : ""} onClick={() => setActivityFilter(filter)}>{filter}</button>
+                <button key={filter} type="button" aria-pressed={activityFilter === filter} className={activityFilter === filter ? "active" : ""} onClick={() => setActivityFilter(filter)}>{filter}</button>
               ))}
             </div>
             <button type="button" className="filter-button"><Clock3 size={16} /> Last 30 days <ChevronDown size={15} /></button>
@@ -1424,7 +2380,7 @@ export default function UniJamApp() {
           <section className="side-card rollback-card">
             <RotateCcw size={22} />
             <h3>Made a wrong turn?</h3>
-            <p>Every playlist change can be rolled back for 30 days.</p>
+            <p>Production rollback is planned for saved destination changes.</p>
             <button type="button" className="full-text-button" onClick={() => notify("No recent changes need restoring.")}>Browse restore points <ArrowRight size={15} /></button>
           </section>
         </aside>
@@ -1448,14 +2404,14 @@ export default function UniJamApp() {
             <div className="settings-heading"><div><span className="settings-icon"><Link2 size={18} /></span><div><h2>Publish destinations</h2><p>Connect host accounts only when a room is ready to publish.</p></div></div></div>
             <div className="connection-card">
               <span className="service-mark spotify-mark large">≋</span>
-              <div><strong>Spotify</strong><span>@masonwyatt · Connected Jul 3</span></div>
-              <span className="connection-health"><CheckCircle2 size={15} /> Healthy</span>
+              <div><strong>Spotify</strong><span>Demo catalog · no live connection</span></div>
+              <span className="connection-health"><Eye size={15} /> Preview</span>
               <button type="button" className="button button-small" onClick={() => openModal("account")}>Manage</button>
             </div>
             <div className="connection-card">
               <span className="service-mark apple-mark large"><Apple size={18} /></span>
-              <div><strong>Apple Music</strong><span>United States · Connected Jul 3</span></div>
-              <span className="connection-health"><CheckCircle2 size={15} /> Healthy</span>
+              <div><strong>Apple Music</strong><span>US demo catalog · no live connection</span></div>
+              <span className="connection-health"><Eye size={15} /> Preview</span>
               <button type="button" className="button button-small" onClick={() => openModal("account")}>Manage</button>
             </div>
           </section>
@@ -1469,7 +2425,7 @@ export default function UniJamApp() {
 
           <section className="settings-section">
             <div className="settings-heading"><div><span className="settings-icon"><SlidersHorizontal size={18} /></span><div><h2>Version preferences</h2><p>Teach the matching engine which release belongs in your library.</p></div></div></div>
-            <div className="setting-row"><div><strong>Prefer lossless versions</strong><span>Favor Apple Lossless where the recording and master match.</span></div><Toggle checked={settingsState.preferLossless} onChange={() => setSetting("preferLossless")} label="Prefer lossless versions" /></div>
+            <div className="setting-row"><div><strong>Prefer trusted catalog matches</strong><span>Favor the preferred destination release when recording metadata agrees.</span></div><Toggle checked={settingsState.preferLossless} onChange={() => setSetting("preferLossless")} label="Prefer trusted catalog matches" /></div>
             <div className="setting-row"><div><strong>Exclude explicit versions</strong><span>Prefer clean releases when both are available.</span></div><Toggle checked={settingsState.excludeExplicit} onChange={() => setSetting("excludeExplicit")} label="Exclude explicit versions" /></div>
             <div className="setting-row"><div><strong>Keep regional variants</strong><span>Preserve alternate catalog versions instead of merging them.</span></div><Toggle checked={settingsState.keepRegional} onChange={() => setSetting("keepRegional")} label="Keep regional variants" /></div>
           </section>
@@ -1497,7 +2453,7 @@ export default function UniJamApp() {
           <section className="side-card trust-card">
             <ShieldCheck size={23} />
             <h3>Privacy, by design</h3>
-            <p>Tokens are encrypted. Your music data is never sold or used for model training.</p>
+            <p>Production plan: encrypt OAuth tokens, minimize retained metadata, and never use room data for training without consent.</p>
             <button type="button" className="text-link" onClick={() => notify("Privacy details opened.")}>Read our privacy promise</button>
           </section>
         </aside>
@@ -1517,21 +2473,21 @@ export default function UniJamApp() {
   };
 
   const renderCreateJamModal = () => (
-    <Modal title={createStep === 3 ? "Your room is live." : "Create a room"} eyebrow={createStep < 3 ? "ONE LINK · EVERY MUSIC APP" : "READY TO SHARE"} onClose={closeModal}>
+    <Modal title={createStep === 3 ? "Your room is live." : "Create a room"} eyebrow={createStep < 3 ? "ONE LINK · EVERY MUSIC APP" : "READY TO SHARE"} onClose={() => closeModal()}>
       {createStep === 1 && (
         <div className="modal-body">
           <div className="step-indicator"><span className="active">1</span><i /><span>2</span><i /><span>3</span></div>
           <label className="field-label">Room name<input value={jamName} onChange={(event) => setJamName(event.target.value)} autoFocus /></label>
           <div className="field-label">
             What is the room for?
-            <div className="choice-grid room-template-grid">
+            <div className="choice-grid room-template-grid" role="radiogroup" aria-label="Room template">
               {[
                 ["Road trip", "Fair rotation, offline-friendly links", RadioTower],
                 ["House party", "Fast voting and explicit controls", Users],
                 ["Wedding", "Guest requests with host approval", Heart],
                 ["Blank room", "Start simple and choose rules later", Sparkles],
               ].map(([title, copy, Icon]) => (
-                <button key={title as string} type="button" className={"choice-card room-template" + (roomTemplate === title ? " selected" : "")} onClick={() => setRoomTemplate(title as string)}>
+                <button key={title as string} type="button" role="radio" aria-checked={roomTemplate === title} className={"choice-card room-template" + (roomTemplate === title ? " selected" : "")} onClick={() => setRoomTemplate(title as string)}>
                   <span className="choice-icon"><Icon size={19} /></span><strong>{title as string}</strong><small>{copy as string}</small>{roomTemplate === title && <CheckCircle2 size={17} />}
                 </button>
               ))}
@@ -1544,13 +2500,13 @@ export default function UniJamApp() {
         <div className="modal-body">
           <div className="step-indicator"><span className="done"><Check size={13} /></span><i className="done" /><span className="active">2</span><i /><span>3</span></div>
           <label className="field-label">Who can participate?</label>
-          <div className="radio-stack">
+          <div className="radio-stack" role="radiogroup" aria-label="Room participation">
             {[
               ["Anyone with the link can add songs", "Guests enter a nickname—no account or music login", Globe2],
               ["Only invited people can add songs", "Everyone else opens the room as a listener", Users],
               ["View only", "You control the queue; friends can listen and react", Lock],
             ].map(([title, copy, Icon]) => (
-              <button key={title as string} type="button" className={"radio-card" + (jamPermission === title ? " selected" : "")} onClick={() => setJamPermission(title as string)}>
+              <button key={title as string} type="button" role="radio" aria-checked={jamPermission === title} className={"radio-card" + (jamPermission === title ? " selected" : "")} onClick={() => setJamPermission(title as string)}>
                 <span className="radio-control"><span /></span><Icon size={19} /><span><strong>{title as string}</strong><small>{copy as string}</small></span>
               </button>
             ))}
@@ -1564,7 +2520,7 @@ export default function UniJamApp() {
           <span className="success-orbit"><Music2 size={27} /></span>
           <h3>{jamName}</h3>
           <p>Guests can join with a nickname and add songs from search, Spotify, Apple Music, or any copied link.</p>
-          <div className="share-field"><Link2 size={16} /><span>unijam.music/room/saturday-staunton</span><button type="button" onClick={copyShareLink}><Copy size={16} /> Copy</button></div>
+          <div className="share-field"><Link2 size={16} /><span>This site · {jamName} guest view</span><button type="button" onClick={copyShareLink}><Copy size={16} /> Copy</button></div>
           <div className="platform-ready-row"><span><UserRoundCheck size={14} /> No guest account</span><span><ClipboardPaste size={14} /> Any song link</span><span><ShieldCheck size={14} /> {fairQueue ? "Fair queue on" : "Host ordering"}</span></div>
           <div className="modal-actions"><button type="button" className="button button-outline" onClick={copyShareLink}><Share2 size={16} /> Share link</button><button type="button" className="button button-primary" onClick={() => { closeModal(); setView("jams"); }}>Open room <ArrowRight size={16} /></button></div>
         </div>
@@ -1573,7 +2529,7 @@ export default function UniJamApp() {
   );
 
   const renderImportModal = () => (
-    <Modal title="Import a playlist" eyebrow="PREVIEW BEFORE SYNC" onClose={closeModal} wide={importStep === 3}>
+    <Modal title="Import a playlist" eyebrow="PREVIEW BEFORE SYNC" onClose={() => closeModal()} wide={importStep === 3}>
       {importStep === 1 && (
         <div className="modal-body">
           <div className="step-indicator"><span className="active">1</span><i /><span>2</span><i /><span>3</span></div>
@@ -1603,15 +2559,15 @@ export default function UniJamApp() {
               <div className="preview-row" key={track.id}><TrackArt art={track.art} /><div><strong>{track.title}</strong><span>{track.artist}</span></div><PlatformMark platform={importSource} small /><ArrowRight size={14} /><PlatformMark platform={importSource === "spotify" ? "apple" : "spotify"} small /><span className={"match-pill " + (index > 2 ? "review" : "")}>{index > 2 ? "Review" : "Exact"}</span></div>
             ))}
           </div>
-          <label className="destination-choice"><span><strong>Create matching playlist on {importSource === "spotify" ? "Apple Music" : "Spotify"}</strong><small>Then keep changes synced in both directions</small></span><Toggle checked={true} onChange={() => notify("Destination is required for a cross-platform sync.")} label="Create matching playlist" /></label>
-          <div className="modal-actions split"><button type="button" className="button button-quiet" onClick={() => setImportStep(1)}><ArrowLeft size={16} /> Back</button><button type="button" className="button button-primary" onClick={applyImport}>Apply 18 tracks <ArrowRight size={16} /></button></div>
+          <label className="destination-choice"><span><strong>Prepare a playlist on {importSource === "spotify" ? "Apple Music" : "Spotify"}</strong><small>Preview catalog matches before any provider write</small></span><Toggle checked={true} onChange={() => notify("A destination is required to preview catalog coverage.")} label="Prepare matching playlist" /></label>
+          <div className="modal-actions split"><button type="button" className="button button-quiet" onClick={() => setImportStep(1)}><ArrowLeft size={16} /> Back</button><button type="button" className="button button-primary" onClick={applyImport}>Prepare 18 tracks <ArrowRight size={16} /></button></div>
         </div>
       )}
       {importStep === 4 && (
         <div className="modal-body processing-body">
           <span className="processing-rings"><RefreshCw size={24} /></span>
           <h3>Building your unified playlist…</h3>
-          <p>Writing matched tracks and preserving the original order.</p>
+          <p>Preparing matched tracks and preserving the original order.</p>
         </div>
       )}
     </Modal>
@@ -1619,23 +2575,26 @@ export default function UniJamApp() {
 
   const renderGuestPreviewModal = () => (
     <Modal
-      title={guestStep === 3 ? "You are in the room." : "Join Friday Night Room"}
-      eyebrow={guestStep === 3 ? "SONG ADDED" : "GUEST EXPERIENCE · NO ACCOUNT NEEDED"}
-      onClose={closeModal}
+      title={guestStep === 3 ? (quickAddMode ? "Seed song added." : "Suggestion received.") : guestStep === 2 ? `Add a song to ${selectedJam?.name ?? "Friday Night Room"}` : `Join ${selectedJam?.name ?? "Friday Night Room"}`}
+      eyebrow={guestStep === 3 ? (quickAddMode ? "ROOM DIRECTION SET" : "MATCHED · AWAITING ROOM APPROVAL") : guestStep === 2 ? "ANY LINK · ONE CANONICAL SONG" : "GUEST EXPERIENCE · NO ACCOUNT NEEDED"}
+      onClose={() => closeModal()}
     >
       {guestStep === 1 && (
         <div className="modal-body guest-join-body">
           <div className="guest-room-mark"><QrCode size={28} /></div>
           <h3>What should we call you?</h3>
-          <p>This name appears next to the songs you add. No email, password, Spotify login, or Apple account.</p>
-          <label className="field-label guest-name-field">Your name<input value={guestName} onChange={(event) => setGuestName(event.target.value)} autoFocus /></label>
-          <div className="guest-trust-row"><span><UserRoundCheck size={14} /> Nickname only</span><span><ShieldCheck size={14} /> No tracking profile</span><span><Timer size={14} /> About 20 seconds</span></div>
-          <div className="modal-actions"><button type="button" className="button button-quiet" onClick={closeModal}>Not now</button><button type="button" className="button button-primary" onClick={() => setGuestStep(2)}>Enter room <ArrowRight size={16} /></button></div>
+          <p>Your name and listening-app preference personalize handoffs. No email, password, Spotify login, or Apple account.</p>
+          <label className="field-label guest-name-field">Your name<input value={guestName} maxLength={32} required onChange={(event) => setGuestName(event.target.value)} autoFocus /></label>
+          <div className="guest-service-choice"><label>Which app should links open in?</label><div role="radiogroup" aria-label="Preferred music app"><button type="button" role="radio" aria-checked={guestService === "spotify"} className={guestService === "spotify" ? "selected spotify" : "spotify"} onClick={() => setGuestService("spotify")}><span className="service-mark spotify-mark">≋</span> Spotify</button><button type="button" role="radio" aria-checked={guestService === "apple"} className={guestService === "apple" ? "selected apple" : "apple"} onClick={() => setGuestService("apple")}><span className="service-mark apple-mark"><Apple size={12} /></span> Apple Music</button><button type="button" role="radio" aria-checked={guestService === "ask"} className={guestService === "ask" ? "selected" : ""} onClick={() => setGuestService("ask")}><CircleEllipsis size={14} /> Ask each time</button></div><small>This is only a preference—no account is connected.</small></div>
+          <div className="guest-trust-row"><span><UserRoundCheck size={14} /> No music login</span><span><ShieldCheck size={14} /> Nickname visible here</span><span><Timer size={14} /> About 20 seconds</span></div>
+          <div className="modal-actions"><button type="button" className="button button-quiet" onClick={closeModal}>Not now</button><button type="button" className="button button-primary" disabled={!guestName.trim()} onClick={() => enterLiveRoom("guest")}>Enter live room <ArrowRight size={16} /></button></div>
         </div>
       )}
       {guestStep === 2 && (
         <div className="modal-body guest-song-body">
-          <div className="guest-welcome"><Avatar name={guestName || "Guest"} tone="blue" size="md" /><div><strong>Hi, {guestName || "Guest"}.</strong><span>What song belongs in this room?</span></div><span className="room-status live"><span /> 9 here</span></div>
+          <div className="guest-welcome"><Avatar name={guestName || "Guest"} tone="blue" size="md" /><div><strong>Hi, {guestName || "Guest"}.</strong><span>What song belongs in this room?</span></div><span className="room-status live"><span /> {selectedJam?.tracks === 0 ? "1 here" : "9 here"}</span></div>
+          <div className="guest-room-brief"><div><span className="eyebrow">MASON&apos;S BRIEF</span><strong>{roomBrief.direction}</strong><small>{roomBrief.occasion}</small></div><div className="brief-chips"><span>{roomBrief.pickLimit}</span><span>{roomBrief.explicitRule}</span></div></div>
+          {guestCanContribute ? <>
           <div className="universal-input">
             <Search size={18} />
             <input value={guestSearch} onChange={(event) => setGuestSearch(event.target.value)} placeholder="Search a song or paste any music link" aria-label="Search a song or paste any music link" autoFocus />
@@ -1643,62 +2602,66 @@ export default function UniJamApp() {
           </div>
           <div className="input-source-hints"><span className="service-mark spotify-mark">≋</span><span className="service-mark apple-mark"><Apple size={12} /></span><span className="plain-link-mark"><Link2 size={13} /></span><small>Spotify, Apple Music, YouTube, or plain search</small></div>
           <div className="guest-results">
-            <span className="eyebrow">{guestSearch.includes("http") ? "LINK MATCHED" : "POPULAR IN THIS ROOM"}</span>
-            <button type="button" className="guest-result selected" onClick={() => setGuestStep(3)}>
+            <span className="eyebrow">{guestSearch.includes("http") ? "LINK MATCHED" : quickAddMode && quickAddStartedEmpty ? "SEARCH RESULTS" : "POPULAR IN THIS ROOM"}</span>
+            <button type="button" className="guest-result selected" onClick={() => { if (quickAddMode) { updateLaunchState({ seedSongAdded: true }); if (quickAddStartedEmpty) updateSelectedRoomTracks(1, "Seed song added just now"); } if (hostPreviewMode) updateLaunchState({ guestPreviewed: true }); setGuestStep(3); }}>
               <TrackArt art="art-a" large />
               <span><strong>Pink + White</strong><small>Frank Ocean · Blonde</small><em><CheckCircle2 size={12} /> Available on both destinations</em></span>
-              <span className="guest-add-action"><CirclePlus size={18} /> Add</span>
+              <span className="guest-add-action"><CirclePlus size={18} /> {quickAddMode && quickAddStartedEmpty ? "Use as seed" : "Suggest"}</span>
             </button>
-            <button type="button" className="guest-result" onClick={() => { setGuestSearch("Dreams — Fleetwood Mac"); }}>
+            {!(quickAddMode && quickAddStartedEmpty) && <button type="button" className="guest-result" onClick={() => { setGuestSearch("Dreams — Fleetwood Mac"); }}>
               <TrackArt art="art-b" large />
               <span><strong>Dreams</strong><small>Fleetwood Mac · Rumours</small><em><ThumbsUp size={12} /> Already has 6 votes</em></span>
-              <span className="guest-add-action"><CirclePlus size={18} /> Add</span>
-            </button>
+              <span className="guest-add-action"><ThumbsUp size={18} /> Vote instead</span>
+            </button>}
           </div>
           <div className="duplicate-guard"><ShieldCheck size={15} /><span>Duplicates and unavailable versions are caught before you add them.</span></div>
+          </> : <div className="guest-locked-state"><span><Lock size={22} /></span><h3>{selectedJam?.access === "View only" ? "This room is view only." : "This room is invite only."}</h3><p>You can see the shared brief, but this link does not grant suggestion access. Ask the host for an editor invitation.</p><button type="button" className="button button-primary" onClick={closeModal}>Done</button></div>}
         </div>
       )}
       {guestStep === 3 && (
         <div className="modal-body guest-success-body">
           <span className="success-orbit"><Check size={27} /></span>
-          <h3>Pink + White is in.</h3>
-          <p>You added it as {guestName || "Guest"}. The host will see the same canonical song whether your link came from Spotify or Apple Music.</p>
-          <div className="guest-added-card"><TrackArt art="art-a" large /><div><strong>Pink + White</strong><span>Frank Ocean · 7 votes</span></div><span className="match-pill">Both services</span></div>
-          <div className="guest-impact-note"><Timer size={15} /><span>Joined and contributed in under 30 seconds—with no account.</span></div>
-          <div className="modal-actions split"><button type="button" className="button button-outline" onClick={() => { setGuestSearch(""); setGuestStep(2); }}><Plus size={16} /> Add another</button><button type="button" className="button button-primary" onClick={() => { closeModal(); setSelectedJam(initialJams[0]); goTo("jams"); }}>See the room <ArrowRight size={16} /></button></div>
+          <h3>{quickAddMode ? "Pink + White starts the room." : "Pink + White is waiting for the room."}</h3>
+          <p>{quickAddMode ? "Your seed song gives every guest a concrete starting point. It was matched to one canonical track across both demo catalogs." : "Your suggestion was matched to one canonical song. It can collect votes now; Mason approves the final playlist before anything is published."}</p>
+          <div className="guest-added-card"><TrackArt art="art-a" large /><div><strong>Pink + White</strong><span>Frank Ocean · suggested by {guestName || "Guest"}</span></div><span className="match-pill">Both services</span></div>
+          <div className="submission-receipt"><span className="done"><Check size={13} /> {quickAddMode ? "Seed saved" : "Suggestion received"}</span><i /><span className="done"><Check size={13} /> Canonical match found</span><i /><span className={quickAddMode ? "done" : ""}>{quickAddMode ? <Check size={13} /> : <Clock3 size={13} />} {quickAddMode ? "Ready for guests" : "Awaiting approval"}</span></div>
+          <div className="guest-impact-note"><Timer size={15} /><span>{quickAddMode ? "The launchpad now has a seed song. No destination account was needed." : "You can undo this suggestion for 10 seconds. No music-service account was connected."}</span></div>
+          <div className="modal-actions split"><button type="button" className="button button-quiet" onClick={() => { if (quickAddMode) { updateLaunchState({ seedSongAdded: false }); if (quickAddStartedEmpty) updateSelectedRoomTracks(0, "Room created just now"); } setGuestSearch(""); setGuestStep(2); notify(quickAddMode ? "Seed song cleared." : "Suggestion undone."); }}><RotateCcw size={16} /> Undo</button><button type="button" className="button button-primary" onClick={() => { closeModal(); if (hostPreviewMode && view !== "jams") goTo("jams"); }}>{quickAddMode || hostPreviewMode ? (selectedJam?.tracks === 0 ? "Back to launchpad" : "Back to room") : "Done"} <ArrowRight size={16} /></button></div>
         </div>
       )}
     </Modal>
   );
 
   const renderPublishModal = () => (
-    <Modal title={syncStep === 3 ? "Published everywhere." : "Publish room updates"} eyebrow="THE ROOM IS THE SOURCE OF TRUTH" onClose={closeModal} wide>
+    <Modal title={syncStep === 3 ? "Safe finish preview complete." : "Preview the safe finish"} eyebrow="CONCEPT DEMO · THE ROOM IS THE SOURCE OF TRUTH" onClose={() => closeModal()} wide>
       {syncStep === 1 && (
         <div className="modal-body publish-body">
           <div className="canonical-flow">
-            <div className="canonical-room"><span className="canonical-icon"><Music2 size={20} /></span><span><strong>Friday Night Room</strong><small>24 approved songs · canonical order</small></span></div>
+            <div className="canonical-room"><span className="canonical-icon"><Music2 size={20} /></span><span><strong>{selectedJam?.name ?? "Friday Night Room"}</strong><small>{selectedJam?.tracks ?? 24} approved songs · canonical order</small></span></div>
             <span className="publish-arrow"><ArrowRight size={18} /></span>
             <div className="publish-destinations">
-              <button type="button" className="publish-destination selected"><span className="service-mark spotify-mark">≋</span><span><strong>Spotify</strong><small>4 additions staged</small></span><CheckCircle2 size={16} /></button>
-              <button type="button" className="publish-destination selected"><span className="service-mark apple-mark"><Apple size={12} /></span><span><strong>Apple Music</strong><small>4 additions staged</small></span><CheckCircle2 size={16} /></button>
+              <button type="button" className="publish-destination selected"><span className="service-mark spotify-mark">≋</span><span><strong>Spotify</strong><small>4 ready</small></span><CheckCircle2 size={16} /></button>
+              <button type="button" className="publish-destination selected"><span className="service-mark apple-mark"><Apple size={12} /></span><span><strong>Apple Music</strong><small>{matchResolved ? "4 ready" : "3 ready · 1 match hold"}</small></span><CheckCircle2 size={16} /></button>
             </div>
           </div>
           <div className="publish-policy-bar"><ShieldCheck size={17} /><div><strong>Add-only publish</strong><span>No removals. No reorders. No silent changes.</span></div><button type="button" onClick={() => notify("Add-only is the safest default for shared rooms.")}>Why?</button></div>
           <div className="publish-list">
-            <header><span>Four approved additions</span><small>Matched on both services</small></header>
+            <header><span>{matchResolved ? "4 ready for both destinations" : "Spotify 4 · Apple Music 3"}</span><small>{matchResolved ? "Every version is confirmed" : "One Apple Music version needs a choice"}</small></header>
             {tracks.slice(0, 4).map((track, index) => (
-              <div className="publish-row" key={track.id}><span className="publish-number">{String(index + 1).padStart(2, "0")}</span><TrackArt art={track.art} /><div><strong>{track.title}</strong><span>{track.artist} · Added by {["Maya", "Alex", "Jordan", "Mason"][index]}</span></div><PlatformMark platform="both" small /><span className="match-pill">Ready</span></div>
+              <div className={"publish-row" + (track.state === "review" && !matchResolved ? " exception" : "")} key={track.id}><span className="publish-number">{String(index + 1).padStart(2, "0")}</span><TrackArt art={track.art} /><div><strong>{track.title}</strong><span>{track.artist} · {track.state === "review" && !matchResolved ? "Apple Music version unconfirmed" : "Added by " + ["Maya", "Alex", "Jordan", "Mason"][index]}</span></div><PlatformMark platform={track.state === "review" && matchResolved ? "both" : track.platform} small />{track.state === "review" && !matchResolved ? <button type="button" className="match-pill review" onClick={() => { setMatchReturnTarget("publish"); setModal("match"); }}>Review</button> : <span className="match-pill">Ready</span>}</div>
             ))}
           </div>
-          <div className="publish-summary"><span><Plus size={14} /> 8 writes</span><span><X size={14} /> 0 removals</span><span><GripVertical size={14} /> 0 reorders</span><span><History size={14} /> Restore point created</span></div>
-          <div className="modal-actions split"><button type="button" className="button button-outline" onClick={() => notify("Detailed destination diff opened.")}>Inspect destination diff</button><button type="button" className="button button-primary" onClick={startSync}>Publish to both <Send size={16} /></button></div>
+          <div className="publish-summary"><span><Plus size={14} /> {matchResolved ? "8 safe writes" : "7 safe writes"}</span><span><AlertTriangle size={14} /> {matchResolved ? "0 held" : "1 Apple hold"}</span><span><X size={14} /> 0 removals</span><span><History size={14} /> Restore point planned</span></div>
+          <div className="simulation-note"><Eye size={15} /><span>This prototype simulates provider writes. No Spotify or Apple Music playlist will be changed.</span></div>
+          <div className="failure-scenario-row"><div><strong>Test a recovery state</strong><span>Make Apple Music require reconnection in this simulation.</span></div><Toggle checked={appleNeedsReconnect} onChange={() => updateFinishState({ appleNeedsReconnect: !appleNeedsReconnect })} label="Simulate Apple Music reconnection" /></div>
+          <div className="modal-actions split">{!matchResolved && <button type="button" className="button button-outline" onClick={() => { setMatchReturnTarget("publish"); setModal("match"); }}>Resolve Apple match</button>}<button type="button" className="button button-primary" onClick={startSync}>Simulate {matchResolved ? "8" : "7"} safe writes <Send size={16} /></button></div>
         </div>
       )}
       {syncStep === 2 && (
         <div className="modal-body processing-body">
           <span className="processing-rings"><Send size={23} /></span>
-          <h3>Publishing approved songs…</h3>
-          <p>Writing the room to each destination independently. A failed destination will never affect the other one.</p>
+          <h3>Simulating destination writes…</h3>
+          <p>Checking each destination independently. {matchResolved ? "All four confirmed songs are included." : "Spotify includes four; Apple Music safely holds the unresolved version."}</p>
           <div className="progress-track"><span style={{ width: syncProgress + "%" }} /></div>
           <span className="progress-label">{syncProgress}% complete</span>
         </div>
@@ -1706,18 +2669,19 @@ export default function UniJamApp() {
       {syncStep === 3 && (
         <div className="modal-body success-body">
           <span className="success-orbit"><Check size={27} /></span>
-          <h3>Four songs, two destinations.</h3>
-          <p>Both playlists received the approved additions. The room remains the canonical collaboration space.</p>
-          <div className="publish-success-destinations"><span><span className="service-mark spotify-mark">≋</span><strong>Spotify</strong><small>24 songs · current</small></span><span><span className="service-mark apple-mark"><Apple size={12} /></span><strong>Apple Music</strong><small>24 songs · current</small></span></div>
-          <div className="completed-breakdown"><span><Check size={14} /> 8 writes succeeded</span><span><Check size={14} /> 0 destructive changes</span><span><Check size={14} /> Restore point saved</span></div>
-          <div className="modal-actions"><button type="button" className="button button-outline" onClick={() => goTo("activity")}><History size={16} /> View history</button><button type="button" className="button button-primary" onClick={closeModal}>Done</button></div>
+          <h3>{appleNeedsReconnect ? "Spotify simulation passed. Apple Music needs you." : matchResolved ? "Four-song destination preview." : "Spotify 4 · Apple Music 3."}</h3>
+          <p>{appleNeedsReconnect ? "Nothing was removed. Reconnect Apple Music and retry only that destination; Spotify does not run twice." : matchResolved ? "Every confirmed addition passed preflight." : "Both destinations passed independently. Nights stays held only on Apple Music until its match is resolved."}</p>
+          <div className="publish-success-destinations"><button type="button" onClick={() => notify("This would open the finished Spotify playlist.")}><span className="service-mark spotify-mark">≋</span><strong>Spotify</strong><small>4 ready · Preview</small></button><button type="button" className={appleNeedsReconnect ? "needs-reconnect" : ""} onClick={() => appleNeedsReconnect ? updateFinishState({ appleNeedsReconnect: false }) : notify("This would open the finished Apple Music playlist.")}><span className="service-mark apple-mark"><Apple size={12} /></span><strong>Apple Music</strong><small>{appleNeedsReconnect ? "Reconnect · Retry only Apple" : matchResolved ? "4 ready · Preview" : "3 ready · 1 held"}</small></button></div>
+          <div className="completed-breakdown"><span><Check size={14} /> {appleNeedsReconnect ? "4 Spotify writes passed simulation" : `${matchResolved ? "8" : "7"} writes passed simulation`}</span><span><Check size={14} /> 0 destructive changes</span><span><AlertTriangle size={14} /> {appleNeedsReconnect ? "Apple retry pending" : matchResolved ? "0 songs held" : "1 Apple match held"}</span></div>
+          {!appleNeedsReconnect && <div className="finished-shareback"><Users size={17} /><div><strong>Close the loop with the group</strong><span>Preview one recap where each person can choose Spotify or Apple Music.</span></div><button type="button" onClick={() => notify("This is the group shareback preview; no message was sent.")}>Preview shareback</button></div>}
+          <div className="modal-actions"><button type="button" className="button button-outline" onClick={() => { closeModal(); goTo("activity"); }}><History size={16} /> View decisions</button><button type="button" className="button button-primary" onClick={closeModal}>Done</button></div>
         </div>
       )}
     </Modal>
   );
 
   const renderSyncModal = () => (
-    <Modal title={syncStep === 3 ? "Everything is in tune." : "Sync preview"} eyebrow="ZERO-SURPRISE SYNC" onClose={closeModal} wide>
+    <Modal title={syncStep === 3 ? "Simulation complete." : "Destination diff simulation"} eyebrow="CONCEPT DEMO · ZERO-SURPRISE PUBLISHING" onClose={() => closeModal()} wide>
       {syncStep === 1 && (
         <div className="modal-body sync-preview-body">
           <div className="sync-direction">
@@ -1735,19 +2699,19 @@ export default function UniJamApp() {
             <div className="version-choices">
               <button type="button" className="version-option"><PlatformMark platform="spotify" /><span><strong>Currents</strong><small>2015 · Explicit · 5:19</small></span></button>
               <span className="instead-label">prefer</span>
-              <button type="button" className="version-option selected"><PlatformMark platform="apple" /><span><strong>Currents</strong><small>Apple Lossless · 5:19</small></span><CheckCircle2 size={17} /></button>
+              <button type="button" className="version-option selected"><PlatformMark platform="apple" /><span><strong>Currents</strong><small>Preferred Apple catalog match · 5:19</small></span><CheckCircle2 size={17} /></button>
             </div>
-            <p><Sparkles size={14} /> UniJam chose the lossless version because the recording and duration are identical.</p>
+            <p><Sparkles size={14} /> UniJam chose this catalog version because the recording identifiers and duration align.</p>
           </div>
-          <div className="safety-note"><ShieldCheck size={17} /><span><strong>Nothing is removed.</strong> You can roll back this sync for 30 days.</span></div>
-          <div className="modal-actions split"><button type="button" className="button button-outline" onClick={() => notify("Detailed change list expanded.")}>View all changes</button><button type="button" className="button button-primary" onClick={startSync}>Apply 4 changes <ArrowRight size={16} /></button></div>
+          <div className="safety-note"><ShieldCheck size={17} /><span><strong>Nothing would be removed.</strong> A production publish would plan a restore point before writing.</span></div>
+          <div className="modal-actions split"><button type="button" className="button button-outline" onClick={() => notify("Detailed simulation expanded.")}>View full simulation</button><button type="button" className="button button-primary" onClick={startSync}>Simulate 4 changes <ArrowRight size={16} /></button></div>
         </div>
       )}
       {syncStep === 2 && (
         <div className="modal-body processing-body">
           <span className="processing-rings"><RefreshCw size={24} /></span>
-          <h3>Keeping both sides in tune…</h3>
-          <p>Writing changes safely. This screen can be closed at any time.</p>
+          <h3>Previewing both destinations…</h3>
+          <p>Simulating provider results. No playlist is being changed.</p>
           <div className="progress-track"><span style={{ width: syncProgress + "%" }} /></div>
           <span className="progress-label">{syncProgress}% complete</span>
         </div>
@@ -1755,17 +2719,17 @@ export default function UniJamApp() {
       {syncStep === 3 && (
         <div className="modal-body success-body">
           <span className="success-orbit"><Check size={27} /></span>
-          <h3>4 changes applied</h3>
-          <p>Spotify and Apple Music now have the same tracks, versions, and order.</p>
-          <div className="completed-breakdown"><span><Check size={14} /> 3 songs added</span><span><Check size={14} /> 1 track reordered</span><span><Check size={14} /> Lossless version preferred</span></div>
-          <div className="modal-actions"><button type="button" className="button button-outline" onClick={() => notify("Restore point created and available for 30 days.")}><History size={16} /> View history</button><button type="button" className="button button-primary" onClick={closeModal}>Done</button></div>
+          <h3>Four changes passed the preview.</h3>
+          <p>No external playlist was changed. In production, each destination would report success or a retryable failure independently.</p>
+          <div className="completed-breakdown"><span><Check size={14} /> 3 additions previewed</span><span><Check size={14} /> 1 reorder previewed</span><span><Check size={14} /> Preferred catalog match selected</span></div>
+          <div className="modal-actions"><button type="button" className="button button-outline" onClick={() => notify("A production restore-point plan would appear here.")}><History size={16} /> Preview history plan</button><button type="button" className="button button-primary" onClick={closeModal}>Done</button></div>
         </div>
       )}
     </Modal>
   );
 
   const renderEnhanceModal = () => (
-    <Modal title="Enhance this playlist" eyebrow="TASTEFUL, NOT RANDOM" onClose={closeModal} wide>
+    <Modal title="Enhance this playlist" eyebrow="TASTEFUL, NOT RANDOM" onClose={() => closeModal()} wide>
       <div className="modal-body enhance-body">
         <div className="enhance-intro"><span className="sparkle-orbit"><WandSparkles size={22} /></span><div><h3>Four songs that belong here.</h3><p>Chosen from the playlist arc, your group’s taste, and cross-catalog availability.</p></div></div>
         <div className="recommendation-list">
@@ -1782,13 +2746,19 @@ export default function UniJamApp() {
   );
 
   const renderShareModal = () => (
-    <Modal title="Invite people, not accounts" eyebrow="ONE LINK · ZERO APP POLITICS" onClose={closeModal}>
+    <Modal title="Invite people, not accounts" eyebrow="ONE LINK · ZERO APP POLITICS" onClose={() => closeModal()}>
       <div className="modal-body">
         <div className="share-visual"><span className="service-mark spotify-mark large">≋</span><span className="link-orbit"><QrCode size={21} /></span><span className="service-mark apple-mark large"><Apple size={18} /></span></div>
-        <p className="center-copy">Friends enter a nickname and add with search or any music link. They never have to connect Spotify or Apple Music.</p>
-        <div className="share-field"><Link2 size={16} /><span>unijam.music/room/friday-night</span><button type="button" onClick={copyShareLink}><Copy size={16} /> Copy</button></div>
-        <label className="field-label">Link permission<button type="button" className="select-field simple"><span><Globe2 size={17} /> Anyone with the link can add songs</span><ChevronDown size={16} /></button></label>
-        <div className="guest-trust-row share-trust-row"><span><UserRoundCheck size={14} /> Nickname only</span><span><ClipboardPaste size={14} /> Any song link</span><span><ShieldCheck size={14} /> Fair queue</span></div>
+        <p className="center-copy">Friends join with a nickname—no UniJam or music-service account. Their nickname, suggestions, votes, and messages are visible to people in this room.</p>
+        <div className="share-field"><Link2 size={16} /><span>This site · {selectedJam?.name ?? "Friday Night Room"} guest view</span><button type="button" onClick={copyShareLink}><Copy size={16} /> Copy</button></div>
+        <div className="permission-summary">{guestCanContribute ? <Globe2 size={17} /> : <Lock size={17} />}<div><strong>{roomLocked ? "Room temporarily locked" : selectedJam?.access ?? "Anyone with the link can suggest"}</strong><span>{guestCanContribute ? (hostApproval ? "Mason approves staged picks" : "Approved picks join the next round") : "This link does not grant contribution access"}</span></div><span>{roomBrief.pickLimit}</span></div>
+        <section className="share-safety-panel">
+          <div className="share-control-heading"><div><strong>Link controls</strong><span>Change these without interrupting the room.</span></div><ShieldCheck size={17} /></div>
+          <div className="share-expiry"><label>Guest capability expires</label><div>{(["24 hours", "7 days", "Never"] as ShareExpiry[]).map((choice) => <button key={choice} type="button" aria-pressed={shareExpiry === choice} className={shareExpiry === choice ? "selected" : ""} onClick={() => saveGuestExpiry(choice)}>{choice}</button>)}</div></div>
+          <div className="share-toggle-row"><div><strong>Host approval</strong><span>Suggestions collect votes before joining the final playlist.</span></div><Toggle checked={hostApproval} onChange={() => saveHostApproval(!hostApproval)} label="Host approval" /></div>
+          <div className="share-safety-actions"><button type="button" className={roomLocked ? "locked" : ""} aria-pressed={roomLocked} onClick={() => saveRoomLock(!roomLocked)}><Lock size={14} /> {roomLocked ? "Unlock room" : "Lock room"}</button><button type="button" onClick={resetGuestCapability}><RotateCcw size={14} /> Reset link</button></div>
+        </section>
+        <div className="guest-trust-row share-trust-row"><span><UserRoundCheck size={14} /> Nickname only</span><span><ClipboardPaste size={14} /> {guestCanContribute ? "Any song link" : "Viewing only"}</span><span><ShieldCheck size={14} /> {selectedJam?.fairQueue === false ? "Host ordering" : "Fair queue"}</span></div>
         <div className="invite-list"><div className="person-row"><Avatar name="Maya" tone="coral" size="sm" /><div><strong>Maya</strong><span>Apple Music · Editor</span></div><span className="presence-dot" /></div><div className="person-row"><Avatar name="Alex" tone="sage" size="sm" /><div><strong>Alex</strong><span>Spotify · Editor</span></div><span className="presence-dot" /></div></div>
         <div className="modal-actions"><button type="button" className="button button-outline" onClick={() => notify("Invitation message ready.")}><MessageCircle size={16} /> Send message</button><button type="button" className="button button-primary" onClick={copyShareLink}><Copy size={16} /> Copy room link</button></div>
       </div>
@@ -1796,46 +2766,158 @@ export default function UniJamApp() {
   );
 
   const renderMatchModal = () => (
-    <Modal title="Choose the right version" eyebrow="MATCH REVIEW" onClose={closeModal} wide>
+    <Modal title="Choose the right version" eyebrow="MATCH REVIEW" onClose={() => closeModal()} wide>
       <div className="modal-body match-review-body">
         <div className="source-track">
           <span className="eyebrow">ORIGINAL ON SPOTIFY</span>
           <div><TrackArt art="art-c" large /><span><strong>Nights</strong><small>Frank Ocean · Blonde · 5:07</small></span><PlatformMark platform="spotify" /></div>
         </div>
         <p className="match-explanation"><Sparkles size={15} /> UniJam found two likely Apple Music matches. Audio version, duration, and release metadata are weighted separately.</p>
-        <div className="candidate-list">
-          <button type="button" className="candidate-card selected"><span className="custom-radio"><span /></span><TrackArt art="art-c" large /><div><strong>Nights</strong><span>Frank Ocean · Blonde</span><small>Same ISRC · Duration +0s · Explicit</small></div><span className="candidate-score"><strong>96%</strong><small>Best match</small></span></button>
-          <button type="button" className="candidate-card"><span className="custom-radio"><span /></span><TrackArt art="art-a" large /><div><strong>Nights</strong><span>Frank Ocean · Live at FYF</span><small>Different ISRC · Duration +42s · Live</small></div><span className="candidate-score low"><strong>61%</strong><small>Possible</small></span></button>
+        <div className="candidate-list" role="radiogroup" aria-label="Apple Music version">
+          <button type="button" role="radio" aria-checked={selectedMatchId === "studio"} className={"candidate-card" + (selectedMatchId === "studio" ? " selected" : "")} onClick={() => setSelectedMatchId("studio")}><span className="custom-radio"><span /></span><TrackArt art="art-c" large /><div><strong>Nights</strong><span>Frank Ocean · Blonde</span><small>Same ISRC · Duration +0s · Explicit</small></div><span className="candidate-score"><strong>96%</strong><small>Best match</small></span></button>
+          <button type="button" role="radio" aria-checked={selectedMatchId === "live"} className={"candidate-card" + (selectedMatchId === "live" ? " selected" : "")} onClick={() => setSelectedMatchId("live")}><span className="custom-radio"><span /></span><TrackArt art="art-a" large /><div><strong>Nights</strong><span>Frank Ocean · Live at FYF</span><small>Different ISRC · Duration +42s · Live</small></div><span className="candidate-score low"><strong>61%</strong><small>Possible</small></span></button>
         </div>
-        <div className="modal-actions split"><button type="button" className="button button-quiet" onClick={() => notify("Track left unmatched for now.")}>Leave unmatched</button><button type="button" className="button button-primary" onClick={() => { closeModal(); notify("Match confirmed. UniJam will remember this correction."); }}>Confirm match <ArrowRight size={16} /></button></div>
+        <div className="modal-actions split"><button type="button" className="button button-quiet" onClick={() => { if (matchReturnTarget === "publish") setModal("publish"); else closeModal(); notify("Nights remains held. Spotify can finish while Apple Music waits."); }}>Keep it held</button><button type="button" className="button button-primary" onClick={() => { updateFinishState({ matchResolved: true }); if (matchReturnTarget === "publish") setModal("publish"); else closeModal(); notify(selectedMatchId === "studio" ? "Studio match confirmed. Four songs are now ready." : "Live version selected. Four songs are now ready."); }}>Confirm match <ArrowRight size={16} /></button></div>
       </div>
     </Modal>
   );
 
   const renderAccountModal = () => (
-    <Modal title="Connected accounts" eyebrow="HEALTHY CONNECTIONS" onClose={closeModal}>
+    <Modal title="Destination previews" eyebrow="CONCEPT DEMO · NO LIVE ACCOUNTS" onClose={() => closeModal()}>
       <div className="modal-body">
-        <div className="account-detail-card"><span className="service-mark spotify-mark large">≋</span><div><strong>Spotify</strong><span>@masonwyatt</span><small><CheckCircle2 size={13} /> Token healthy · 6 scopes granted</small></div><button type="button" className="button button-small" onClick={() => notify("Spotify connection refreshed.")}>Refresh</button></div>
-        <div className="account-detail-card"><span className="service-mark apple-mark large"><Apple size={18} /></span><div><strong>Apple Music</strong><span>United States storefront</span><small><CheckCircle2 size={13} /> Music User Token healthy</small></div><button type="button" className="button button-small" onClick={() => notify("Apple Music connection refreshed.")}>Refresh</button></div>
-        <div className="scope-note"><ShieldCheck size={17} /><p><strong>Your credentials stay encrypted.</strong><br />UniJam only requests access needed to read and update your music library.</p></div>
-        <div className="modal-actions"><button type="button" className="button button-quiet danger-text" onClick={() => notify("Disconnect requires a second confirmation.")}>Disconnect account</button><button type="button" className="button button-primary" onClick={closeModal}>Done</button></div>
+        <div className="account-detail-card"><span className="service-mark spotify-mark large">≋</span><div><strong>Spotify</strong><span>Example destination</span><small><Eye size={13} /> Live connection not configured</small></div><button type="button" className="button button-small" onClick={() => notify("Production setup requires approved Spotify API access.")}>Setup plan</button></div>
+        <div className="account-detail-card"><span className="service-mark apple-mark large"><Apple size={18} /></span><div><strong>Apple Music</strong><span>United States demo storefront</span><small><Eye size={13} /> Live connection not configured</small></div><button type="button" className="button button-small" onClick={() => notify("Production setup requires MusicKit credentials.")}>Setup plan</button></div>
+        <div className="scope-note"><ShieldCheck size={17} /><p><strong>Production security model.</strong><br />OAuth tokens would be encrypted and access limited to preparing host-approved destination updates.</p></div>
+        <div className="modal-actions"><button type="button" className="button button-primary" onClick={closeModal}>Done</button></div>
       </div>
     </Modal>
   );
 
+  const renderBriefModal = () => (
+    <Modal title="Set the room direction" eyebrow="ONE SHARED BRIEF · FEWER RANDOM PICKS" onClose={() => closeModal()}>
+      <div className="modal-body brief-modal-body">
+        <p className="brief-modal-intro">Guests see this before they suggest a song. Keep it specific enough to guide the room without over-managing it.</p>
+        <label className="field-label">Occasion<input value={roomBrief.occasion} onChange={(event) => updateRoomBrief({ occasion: event.target.value })} /></label>
+        <label className="field-label">What should the music feel like?<textarea value={roomBrief.direction} onChange={(event) => updateRoomBrief({ direction: event.target.value })} rows={3} /></label>
+        <div className="brief-rule-group">
+          <label className="field-label">Contribution limit</label>
+          <div className="brief-choice-row">
+            {["2 picks each", "3 picks each", "No limit"].map((choice) => <button key={choice} type="button" aria-pressed={roomBrief.pickLimit === choice} className={roomBrief.pickLimit === choice ? "selected" : ""} onClick={() => updateRoomBrief({ pickLimit: choice })}>{choice}</button>)}
+          </div>
+        </div>
+        <div className="brief-rule-group">
+          <label className="field-label">Explicit tracks</label>
+          <div className="brief-choice-row">
+            {["No explicit tracks", "Explicit after 10 PM", "Explicit allowed"].map((choice) => <button key={choice} type="button" aria-pressed={roomBrief.explicitRule === choice} className={roomBrief.explicitRule === choice ? "selected" : ""} onClick={() => updateRoomBrief({ explicitRule: choice })}>{choice}</button>)}
+          </div>
+        </div>
+        <div className="brief-rule-group">
+          <label className="field-label">Version preference</label>
+          <div className="brief-choice-row">
+            {["Studio versions", "Any version", "Host decides"].map((choice) => <button key={choice} type="button" aria-pressed={roomBrief.versionRule === choice} className={roomBrief.versionRule === choice ? "selected" : ""} onClick={() => updateRoomBrief({ versionRule: choice })}>{choice}</button>)}
+          </div>
+        </div>
+        <div className="scope-note"><ShieldCheck size={17} /><p><strong>A guide, not a gate.</strong><br />Suggestions that miss the brief remain visible; the host gets the final call.</p></div>
+        <div className="modal-actions"><button type="button" className="button button-quiet" onClick={closeModal}>Cancel</button><button type="button" className="button button-primary" onClick={() => { closeModal(); notify("Room brief updated for every guest."); }}>Save brief <Check size={16} /></button></div>
+      </div>
+    </Modal>
+  );
+
+  const renderLiveRoom = () => {
+    const lensService: "spotify" | "apple" = liveRoomRole === "host" ? speakerService : guestService === "ask" ? speakerService : guestService;
+    const lensLabel = lensService === "spotify" ? "Spotify" : "Apple Music";
+    const liveReadOnly = liveRoomRole === "guest" && !guestCanContribute;
+    const coverageFor = (track: Track) => {
+      if (track.id === 3 && lensService === "apple") return { tone: "alternate", label: "Demo: Apple alternate" };
+      if (track.id === 6 && lensService === "spotify") return { tone: "hold", label: "Demo: Spotify match held" };
+      return { tone: "exact", label: "Demo: exact on both" };
+    };
+    const elapsed = `${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, "0")}`;
+    const normalizedComposer = liveComposer.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    const isDreamsDuplicate = normalizedComposer === "dreams" || normalizedComposer === "dreams fleetwood mac" || normalizedComposer === "fleetwood mac dreams";
+
+    return (
+      <div className="live-room-shell">
+        <a className="skip-link live-skip-link" href="#live-main">Skip to live room</a>
+        <header className="live-room-topbar">
+          <button type="button" className="live-brand" onClick={leaveLiveRoom}><Music2 size={18} /><span>UniJam</span></button>
+          <div className="live-room-identity"><span className="live-pulse"><i /> LIVE ROOM DEMO</span><strong>{selectedJam?.name ?? "Friday Night Room"}</strong><small>{realtimeStatus === "connected" ? "Durable room sync on" : realtimeStatus === "connecting" ? "Connecting room event log" : "Local fallback mode"} · {approvedSuggestions.length + 4} picks ready</small></div>
+          <div className="live-service-lens" aria-label="Catalog service lens"><span>Viewing as</span><button type="button" aria-pressed={lensService === "spotify"} className={lensService === "spotify" ? "active" : ""} onClick={() => liveRoomRole === "host" ? changeSpeakerService("spotify") : changeGuestService("spotify")}><span className="service-mark spotify-mark">≋</span> Spotify</button><button type="button" aria-pressed={lensService === "apple"} className={lensService === "apple" ? "active" : ""} onClick={() => liveRoomRole === "host" ? changeSpeakerService("apple") : changeGuestService("apple")}><span className="service-mark apple-mark"><Apple size={12} /></span> Apple</button></div>
+          <button type="button" className="live-leave" onClick={leaveLiveRoom}><ArrowLeft size={15} /> {liveRoomRole === "host" ? "Back to host view" : "Leave room"}</button>
+        </header>
+
+        <div className="live-concept-note"><ShieldCheck size={14} /><span><strong>Interactive concept demo.</strong> Catalog coverage and example people are illustrative. {realtimeStatus === "connected" ? "New room actions replay across browsers through a durable event log." : "Room actions are using a local fallback until durable sync reconnects."} {speakerService === "spotify" ? "Spotify" : "Apple Music"} would supply sound on Mason&apos;s device.</span></div>
+        {toast && <div className="live-toast" role="status" aria-live="polite">{toast}</div>}
+
+        <main id="live-main" className="live-room-workspace" tabIndex={-1}>
+          <section className="live-mode-bar">
+            <div className="speaker-duty"><span className="speaker-orbit"><Volume2 size={20} /></span><div><span className="eyebrow">SHARED SPEAKER</span><strong>Mason is on speaker duty · {speakerService === "spotify" ? "Spotify" : "Apple Music"}</strong><small>One native app supplies the sound. Everyone else shapes the same room.</small></div></div>
+            {liveRoomRole === "guest" ? <div className="listening-mode-switch"><button type="button" aria-pressed={listeningMode === "speaker"} className={listeningMode === "speaker" ? "active" : ""} onClick={() => setListeningMode("speaker")}><Volume2 size={14} /> Shared speaker</button><button type="button" aria-pressed={listeningMode === "native"} className={listeningMode === "native" ? "active" : ""} onClick={() => setListeningMode("native")}><Headphones size={14} /> My own app</button></div> : <div className="host-speaker-source"><span>Speaker source</span><button type="button" onClick={() => changeSpeakerService(speakerService === "spotify" ? "apple" : "spotify")}>Switch to {speakerService === "spotify" ? "Apple Music" : "Spotify"} <RefreshCw size={13} /></button></div>}
+          </section>
+
+          <div className="live-room-grid">
+            <div className="live-room-main-column">
+              <section className="live-now-card">
+                <div className={"live-cover " + currentLiveTrack.art}><span>{liveRoomPhase === "started" ? <Volume2 size={24} /> : <Music2 size={24} />}</span></div>
+                <div className="live-now-copy"><span className="eyebrow">{liveRoomPhase === "started" ? `HOST-CONFIRMED START · ${elapsed}` : liveRoomPhase === "handoff" ? `HANDOFF REQUESTED FOR ${speakerService.toUpperCase()} · CONFIRM START` : "READY ON THE SHARED SPEAKER"}</span><h1>{currentLiveTrack.title}</h1><p>{currentLiveTrack.artist} · proposed by Maya</p><div className="live-coverage-row"><span className={coverageFor(currentLiveTrack).tone}><CheckCircle2 size={13} /> {coverageFor(currentLiveTrack).label}</span><span><Heart size={13} /> {reactionCount} reactions</span></div></div>
+                <div className="live-now-actions">
+                  {liveRoomRole === "host" ? <>
+                    {liveRoomPhase === "idle" && <a href={serviceSearchUrl(speakerService, currentLiveTrack)} target="_blank" rel="noreferrer" onClick={() => { setLiveRoomPhase("handoff"); setLiveActivity((current) => [`Mason requested a ${speakerService === "spotify" ? "Spotify" : "Apple Music"} web handoff for ${currentLiveTrack.title}`, ...current]); void publishLiveEvent("handoff_requested", { role: "host", service: speakerService, trackId: currentLiveTrack.id }, "Mason"); }}>Search {speakerService === "spotify" ? "Spotify" : "Apple Music"} web <ExternalLink size={15} /><span className="sr-only"> (opens in a new tab)</span></a>}
+                    {liveRoomPhase === "handoff" && <><button type="button" className="confirm-start" onClick={() => { const now = Date.now(); setStartedAtMs(now); setElapsedSeconds(0); setLiveRoomPhase("started"); setLiveActivity((current) => [`Mason confirmed ${currentLiveTrack.title} started`, ...current]); void publishLiveEvent("playback_confirmed", { service: speakerService, trackId: currentLiveTrack.id }, "Mason"); }}>It started <Check size={15} /></button><a className="try-web" href={serviceSearchUrl(speakerService, currentLiveTrack)} target="_blank" rel="noreferrer">Try web <ExternalLink size={14} /></a></>}
+                    {liveRoomPhase === "started" && <button type="button" className="advance-track" onClick={advanceLiveTrack}>Advance room <SkipForward size={16} /></button>}
+                  </> : listeningMode === "speaker" ? (liveReadOnly ? <div className="live-read-only-action"><Lock size={15} /><span><strong>Viewing only</strong><small>This link can follow the room but cannot react, vote, or suggest.</small></span></div> : <><button type="button" className={guestReady ? "ready active" : "ready"} aria-pressed={guestReady} onClick={() => { const nextReady = !guestReady; setGuestReady(nextReady); setLiveActivity((current) => [`${guestName || "Guest"} is ${nextReady ? "ready" : "not ready"} for the current track`, ...current]); void publishLiveEvent("ready_changed", { ready: nextReady, trackId: currentLiveTrack.id }); }}>{guestReady ? <Check size={15} /> : <Wifi size={15} />} {guestReady ? "Ready" : "I’m ready"}</button><div className="reaction-buttons"><button type="button" aria-label="Love this track" onClick={() => addLiveReaction("heart")}>♥</button><button type="button" aria-label="Celebrate this track" onClick={() => addLiveReaction("spark")}>✦</button><button type="button" aria-label="React to this track" onClick={() => addLiveReaction("smile")}><SmilePlus size={15} /></button></div><small>{readyCount} people ready · sound comes from Mason&apos;s speaker</small></>) : <><a href={serviceSearchUrl(lensService, currentLiveTrack)} target="_blank" rel="noreferrer" onClick={() => { setHandoffReceipt({ service: lensService, trackId: currentLiveTrack.id }); if (!liveReadOnly) { setLiveActivity((current) => [`${guestName || "Guest"} requested a ${lensLabel} web handoff for ${currentLiveTrack.title}`, ...current]); void publishLiveEvent("handoff_requested", { role: "guest", service: lensService, trackId: currentLiveTrack.id }); } }}>Search {lensLabel} web <ExternalLink size={15} /><span className="sr-only"> (opens in a new tab)</span></a>{handoffReceipt?.service === lensService && handoffReceipt.trackId === currentLiveTrack.id && <span className="handoff-receipt"><Check size={13} /> Handoff requested for {lensLabel} · playback not verified</span>}</>}
+                </div>
+              </section>
+
+              <section className="live-next-panel">
+                <header><div><span className="eyebrow">NOW / NEXT IS SHARED</span><h2>Up next</h2></div><span className="queue-contract"><ShieldCheck size={14} /> {selectedJam?.fairQueue === false ? "Host-curated order" : "Fair turns across contributors"}</span></header>
+                <div className="live-next-list">
+                  {nextLiveTracks.map((track, index) => {
+                    const contributor = ["Alex", "Jordan", "Nora"][index];
+                    const coverage = coverageFor(track);
+                    return <article key={`${track.id}-${index}`}><span className="next-position">{String(index + 1).padStart(2, "0")}</span><TrackArt art={track.art} /><div className="next-track-copy"><strong>{track.title}</strong><span>{track.artist} · proposed by {contributor}</span></div><span className={`coverage-pill ${coverage.tone}`}>{coverage.label}</span><button type="button" disabled={liveReadOnly} className={votedTrackIds.includes(track.id) ? "voted" : ""} aria-pressed={votedTrackIds.includes(track.id)} onClick={() => toggleLiveQueueVote(track.id)}><ThumbsUp size={13} /> {queueVotes[track.id] ?? 0}</button>{liveRoomRole === "guest" && <a href={serviceSearchUrl(lensService, track)} target="_blank" rel="noreferrer" aria-label={`Search ${track.title} in ${lensLabel}; opens in a new tab`}><ExternalLink size={14} /></a>}</article>;
+                  })}
+                  {approvedSuggestions.map((suggestion, index) => <article className="approved-suggestion" key={suggestion.id}><span className="next-position">{String(nextLiveTracks.length + index + 1).padStart(2, "0")}</span><span className="match-art"><Music2 size={16} /></span><div className="next-track-copy"><strong>{suggestion.title}</strong><span>proposed by {suggestion.submittedBy}</span></div><span className="coverage-pill alternate">Catalog check pending</span><span className="approved-label"><Check size={12} /> Accepted</span><span /></article>)}
+                </div>
+              </section>
+
+              <section className="live-composer-panel">
+                <header><div><span className="eyebrow">UNIVERSAL SONG DROP</span><h2>{liveReadOnly ? "Room contributions" : "Add from any app"}</h2></div><span>Service lens: {lensLabel} · demo US storefront</span></header>
+                {liveReadOnly ? <div className="guest-locked-state live-locked-state"><span><Lock size={22} /></span><h3>Viewing-only room</h3><p>This shared link can follow now/next and use personal web searches, but it cannot react, vote, or add songs.</p></div> : <>
+                  <div className="live-composer"><Search size={18} /><input value={liveComposer} onChange={(event) => setLiveComposer(event.target.value)} placeholder="Search or paste a Spotify, Apple Music, or YouTube link" aria-label="Stage a song for the live room" /><button type="button" onClick={() => setLiveComposer("Dreams — Fleetwood Mac")}>Try duplicate</button></div>
+                  {liveComposer.trim() && (isDreamsDuplicate ? <div className="live-match-result duplicate"><TrackArt art="art-b" /><div><span className="eyebrow">DEMO DUPLICATE</span><strong>Dreams is already in round 1.</strong><small>Co-sign it without spending another fair-queue turn.</small></div><button type="button" aria-pressed={duplicateVoted} onClick={coSignDreams}><ThumbsUp size={15} /> {duplicateVoted ? "Remove vote" : `Join ${queueVotes[2] ?? 6} votes`}</button></div> : <div className="live-match-result"><span className="match-art"><Music2 size={20} /></span><div><span className="eyebrow">UNVERIFIED DEMO QUERY</span><strong>{liveComposer}</strong><small>A production catalog lookup would verify identity, versions, and storefront availability before approval.</small></div><button type="button" onClick={addLiveSuggestion}><Plus size={15} /> {liveRoomRole === "host" || !hostApproval ? "Add to round" : "Stage pick"}</button></div>)}
+                </>}
+                {pendingSuggestions.length > 0 && <div className="pending-lane"><span className="eyebrow">HOST APPROVAL · {pendingSuggestions.length}</span>{pendingSuggestions.map((suggestion) => <div key={suggestion.id}><span className="pending-dot" /><strong>{suggestion.title}</strong><span>{suggestion.submittedBy} · from {suggestion.service === "apple" ? "Apple Music" : suggestion.service === "spotify" ? "Spotify" : "plain search"}</span><small>Catalog verification pending</small>{liveRoomRole === "host" && <span className="pending-actions"><button type="button" onClick={() => approveLiveSuggestion(suggestion.id)}><Check size={12} /> Approve</button><button type="button" onClick={() => rejectLiveSuggestion(suggestion.id)}><X size={12} /> Pass</button></span>}</div>)}</div>}
+              </section>
+            </div>
+
+            <aside className="live-room-rail">
+              <section className="live-presence-card"><header><div><span className="eyebrow">EXAMPLE PRESENCE</span><h3>4 people in this demo</h3></div><span className={`presence-live ${realtimeStatus}`}><i /> {realtimeStatus === "connected" ? "Synced" : realtimeStatus === "connecting" ? "Connecting" : "Local"}</span></header><div className="live-people"><div><Avatar name="Mason" tone="gold" size="sm" /><span><strong>Mason</strong><small>Speaker · {speakerService === "spotify" ? "Spotify" : "Apple Music"}</small></span><em>Host</em></div><div><Avatar name="Maya" tone="coral" size="sm" /><span><strong>Maya</strong><small>Apple Music · Ready</small></span><i className="here" /></div><div><Avatar name="Alex" tone="sage" size="sm" /><span><strong>Alex</strong><small>Spotify · Here now</small></span><i className="here" /></div><div><Avatar name={guestName || "Jordan"} tone="blue" size="sm" /><span><strong>{guestName || "Jordan"}</strong><small>{guestService === "apple" ? "Apple Music" : guestService === "spotify" ? "Spotify" : "Ask each time"} · You</small></span><i className="here" /></div></div><div className="playability-score demo-score"><span><strong>DEMO</strong><small>cross-catalog coverage lens</small></span><p>Example exact, alternate, and held states show the intended provider-aware experience.</p></div></section>
+              <section className="live-activity-card"><header><span className="eyebrow">LOCAL ROOM SIGNAL</span><h3>What just happened</h3></header><div role="log" aria-live="polite" aria-relevant="additions">{liveActivity.slice(0, 5).map((activity, index) => <p key={`${activity}-${index}`}><span />{activity}<small>{index === 0 ? "now" : "demo"}</small></p>)}</div></section>
+              <section className="room-brief-live"><span className="eyebrow">THE BRIEF</span><h3>{roomBrief.direction}</h3><p>{roomBrief.occasion}</p><div className="brief-chips"><span>{roomBrief.pickLimit}</span><span>{roomBrief.explicitRule}</span></div></section>
+            </aside>
+          </div>
+        </main>
+      </div>
+    );
+  };
+
+  if (liveRoomActive) return renderLiveRoom();
+
   return (
     <div className="app-shell">
-      <button type="button" className={"mobile-overlay" + (mobileNavOpen ? " visible" : "")} onClick={() => setMobileNavOpen(false)} aria-label="Close navigation" />
-      <aside className={"sidebar" + (mobileNavOpen ? " open" : "")}>
-        <div className="brand" onClick={() => goTo("home")} role="button" tabIndex={0} onKeyDown={(event) => event.key === "Enter" && goTo("home")}>
+      <a className="skip-link" href="#main-content">Skip to main content</a>
+      <button type="button" className={"mobile-overlay" + (mobileNavOpen ? " visible" : "")} onClick={closeMobileNavigation} aria-label="Close navigation" />
+      <aside id="primary-sidebar" className={"sidebar" + (mobileNavOpen ? " open" : "")} inert={modal || (isMobileLayout && !mobileNavOpen) ? true : undefined} aria-hidden={modal || (isMobileLayout && !mobileNavOpen) ? true : undefined}>
+        <button type="button" className="brand" onClick={() => goTo("home")}>
           <span className="brand-mark"><Music2 size={18} /></span>
           <span>UniJam</span>
-        </div>
+        </button>
         <nav className="main-nav" aria-label="Main navigation">
           {navItems.map((item) => {
             const Icon = item.icon;
             return (
-              <button key={item.id} type="button" className={view === item.id ? "active" : ""} onClick={() => goTo(item.id)}>
+              <button key={item.id} type="button" className={view === item.id ? "active" : ""} aria-current={view === item.id ? "page" : undefined} onClick={() => goTo(item.id)}>
                 <Icon size={19} strokeWidth={1.9} /><span>{item.label}</span>
                 {item.id === "activity" && <small className="nav-count">3</small>}
               </button>
@@ -1852,10 +2934,11 @@ export default function UniJamApp() {
         </div>
       </aside>
 
-      <main className="workspace">
+      <main id="main-content" className="workspace" tabIndex={-1} inert={modal || (isMobileLayout && mobileNavOpen) ? true : undefined} aria-hidden={modal || (isMobileLayout && mobileNavOpen) ? true : undefined}>
+        <div className="concept-banner" role="note"><Eye size={14} /><span><strong>Concept demo</strong> · Example room data. No Spotify or Apple Music account is connected; publishing actions are simulated.</span></div>
         <header className="mobile-header">
           <button type="button" className="mobile-brand" onClick={() => goTo("home")}><Music2 size={17} /><span>UniJam</span></button>
-          <button type="button" className="icon-button" onClick={() => setMobileNavOpen(true)} aria-label="Open navigation"><Menu size={21} /></button>
+          <button ref={mobileMenuRef} type="button" className="icon-button" onClick={openMobileNavigation} aria-label="Open navigation" aria-expanded={mobileNavOpen} aria-controls="primary-sidebar"><Menu size={21} /></button>
         </header>
         {renderCurrentView()}
       </main>
@@ -1870,6 +2953,7 @@ export default function UniJamApp() {
       {modal === "account" && renderAccountModal()}
       {modal === "guest-preview" && renderGuestPreviewModal()}
       {modal === "publish" && renderPublishModal()}
+      {modal === "brief" && renderBriefModal()}
     </div>
   );
 }

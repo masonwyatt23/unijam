@@ -8,9 +8,9 @@ import "@fontsource/cormorant-garamond/600-italic.css";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "UniJam — One library. Every platform.",
+  title: "UniJam — Cross-platform song rooms",
   description:
-    "Bring Spotify and Apple Music into one beautifully synced library and create cross-platform collaborative jams.",
+    "Create one shared song room where Spotify and Apple Music friends shape the same queue, with provider-aware handoffs and safe playlist preparation.",
   other: {
     "codex-preview": "development",
   },

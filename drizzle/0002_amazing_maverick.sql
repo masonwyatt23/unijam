@@ -1,0 +1,1 @@
+ALTER TABLE `rooms` ADD `guest_expires_at_ms` integer;

@@ -1,5 +1,34 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "entries": []
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1783809178962,
+      "tag": "0000_magical_magus",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1783809975964,
+      "tag": "0001_nifty_sunset_bain",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1783810150704,
+      "tag": "0002_amazing_maverick",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1783810567565,
+      "tag": "0003_gorgeous_proemial_gods",
+      "breakpoints": true
+    }
+  ]
 }
