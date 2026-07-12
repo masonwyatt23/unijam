@@ -2,6 +2,8 @@
 
 export const LIVE_ROOM_EVENT_TYPES = [
   "participant_joined",
+  "participant_service_changed",
+  "participant_left",
   "ready_changed",
   "reaction_added",
   "suggestion_staged",
@@ -99,6 +101,10 @@ export function validateLiveRoomEventPayload(
   switch (type) {
     case "participant_joined":
       return { role: role ?? (payload.role === "host" ? "host" : "guest"), service: requireService(payload.service) };
+    case "participant_service_changed":
+      return { service: requireService(payload.service) };
+    case "participant_left":
+      return {};
     case "ready_changed":
       if (typeof payload.ready !== "boolean") throw new Error("ready must be boolean");
       return { ready: payload.ready, trackId: requireInteger(payload.trackId, "trackId", 1) };

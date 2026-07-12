@@ -71,4 +71,6 @@ test("role-scoped commands and event-specific bounds are enforced", () => {
     }, "guest"),
     { role: "guest", service: "spotify", trackId: 1 },
   );
+  assert.deepEqual(validateLiveRoomEventPayload("participant_service_changed", { service: "apple" }, "guest"), { service: "apple" });
+  assert.deepEqual(validateLiveRoomEventPayload("participant_left", {}, "guest"), {});
 });

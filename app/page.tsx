@@ -62,6 +62,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNod
 import { buildFairQueue } from "@/lib/room-engine";
 import { chooseDeepLinkHandoff } from "@/lib/provider-state-engine";
 import type { LiveRoomEventPayload, LiveRoomEventType, StoredLiveRoomEvent } from "@/lib/live-room-events";
+import { mergeRoomSnapshot, reduceLiveRoomEvent, type LiveRoomSnapshot, type SnapshotParticipant } from "@/lib/live-room-snapshot";
 
 type View = "home" | "library" | "playlists" | "jams" | "activity" | "settings";
 type ModalName =
@@ -166,6 +167,16 @@ type PendingSuggestion = {
   service: MusicPreference;
 };
 
+type DurableParticipantSession = {
+  roomId: string;
+  participantId: string;
+  nickname: string;
+  capabilityRole: LiveRoomRole;
+  participantRole: "host" | "editor" | "viewer";
+  token: string;
+  expiresAtMs: number;
+};
+
 const defaultRoomBrief: RoomBrief = {
   occasion: "Friday night at the house",
   direction: "Warm start, big singalongs after 10",
@@ -190,6 +201,17 @@ const createRoomCredentials = (): RoomCredentials => ({
 });
 
 const roomCredentialStorageKey = "unijam.room-capabilities.v1";
+const participantJoinNonceKey = (roomId: string, role: LiveRoomRole) => `unijam.participant.${roomId}.${role}.join-nonce`;
+const participantIdentityKey = (roomId: string, role: LiveRoomRole) => `unijam.participant.${roomId}.${role}.identity`;
+
+const participantJoinNonce = (roomId: string, role: LiveRoomRole): string => {
+  const key = participantJoinNonceKey(roomId, role);
+  const existing = window.sessionStorage.getItem(key)?.trim();
+  if (existing && existing.length >= 22) return existing;
+  const nonce = crypto.randomUUID();
+  window.sessionStorage.setItem(key, nonce);
+  return nonce;
+};
 
 const initialRoomCredentials = (): Record<string, RoomCredentials> => {
   const defaults = Object.fromEntries(initialJams.map((room) => [roomCredentialKey(room), createRoomCredentials()]));
@@ -722,6 +744,7 @@ export default function UniJamApp() {
   const [liveRoomRole, setLiveRoomRole] = useState<LiveRoomRole>("guest");
   const [listeningMode, setListeningMode] = useState<"speaker" | "native">("speaker");
   const [speakerService, setSpeakerService] = useState<"spotify" | "apple">("spotify");
+  const [hostLensService, setHostLensService] = useState<"spotify" | "apple">("spotify");
   const [liveRoomPhase, setLiveRoomPhase] = useState<LiveRoomPhase>("idle");
   const [nowTrackIndex, setNowTrackIndex] = useState(0);
   const [startedAtMs, setStartedAtMs] = useState<number | null>(null);
@@ -734,8 +757,12 @@ export default function UniJamApp() {
   const [approvedSuggestions, setApprovedSuggestions] = useState<PendingSuggestion[]>([]);
   const [duplicateVoted, setDuplicateVoted] = useState(false);
   const [liveActivity, setLiveActivity] = useState<string[]>(["Maya joined from Apple Music", "Alex co-signed Dreams"]);
+  const [liveParticipants, setLiveParticipants] = useState<SnapshotParticipant[]>([]);
+  const [activeParticipantIdsByRoom, setActiveParticipantIdsByRoom] = useState<Record<string, string[]>>({});
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("connecting");
   const [liveClientId] = useState(() => `client-${crypto.randomUUID()}`);
+  const [participantSession, setParticipantSession] = useState<DurableParticipantSession | null>(null);
+  const [liveSnapshotsByRoom, setLiveSnapshotsByRoom] = useState<Record<string, LiveRoomSnapshot>>({});
   const [roomCredentials, setRoomCredentials] = useState<Record<string, RoomCredentials>>(initialRoomCredentials);
   const [sharedGuestCapability, setSharedGuestCapability] = useState<SharedGuestCapability | null>(null);
   const [serverGuestCanContribute, setServerGuestCanContribute] = useState<boolean | null>(null);
@@ -778,7 +805,7 @@ export default function UniJamApp() {
   const { previewed: finishPreviewed, matchResolved, appleNeedsReconnect } = roomFinishState;
   const guestCanSuggest = selectedJam?.access.startsWith("Anyone with the link") ?? true;
   const guestCanContribute = (sharedGuestCapability ? serverGuestCanContribute === true : guestCanSuggest) && !roomLocked;
-  const canLiveContribute = liveRoomRole === "host" || guestCanContribute;
+  const permissionAllowsLiveContribution = liveRoomRole === "host" || guestCanContribute;
   const liveActor = liveRoomRole === "host" ? "Mason" : guestName || "Guest";
   const liveSource: MusicPreference = liveRoomRole === "host" ? speakerService : guestService;
   const credentialKey = roomCredentialKey(selectedJam ?? initialJams[0]);
@@ -788,6 +815,14 @@ export default function UniJamApp() {
   const activeRoomToken = liveRoomRole === "host"
     ? hostRoomCredentials?.hostToken
     : sharedGuestCapability?.guestToken ?? hostRoomCredentials?.guestToken;
+  const activeParticipantSession = participantSession?.roomId === activeRoomId &&
+    participantSession.capabilityRole === liveRoomRole
+    ? participantSession
+    : null;
+  const activeEventToken = activeParticipantSession?.token;
+  const activeEventClientId = activeParticipantSession?.participantId ?? liveClientId;
+  const canLiveContribute = permissionAllowsLiveContribution && (!activeRoomToken || activeParticipantSession !== null);
+  const activeParticipantIds = activeParticipantIdsByRoom[activeRoomId] ?? [];
 
   const updateLaunchState = (patch: Partial<RoomLaunchState>) => {
     setRoomLaunchStates((current) => ({ ...current, [selectedRoomId]: { ...(current[selectedRoomId] ?? defaultLaunchState), ...patch } }));
@@ -842,7 +877,10 @@ export default function UniJamApp() {
   const liveQueueTracks = tracks.slice(0, 5);
   const currentLiveTrack = liveQueueTracks[nowTrackIndex % liveQueueTracks.length];
   const nextLiveTracks = [1, 2, 3].map((offset) => liveQueueTracks[(nowTrackIndex + offset) % liveQueueTracks.length]);
-  const readyCount = 2 + (guestReady ? 1 : 0);
+  const presentParticipants = activeParticipantIds.length > 0
+    ? liveParticipants.filter(({ clientId }) => activeParticipantIds.includes(clientId))
+    : liveParticipants;
+  const readyCount = presentParticipants.filter(({ ready }) => ready).length;
 
   const serviceSearchUrl = (service: "spotify" | "apple", track: Track) => {
     const query = encodeURIComponent(`${track.title} ${track.artist}`);
@@ -864,6 +902,12 @@ export default function UniJamApp() {
     switch (event.type) {
       case "participant_joined":
         activity(`${event.actorName} joined the durable room from ${textValue("service") || "the shared link"}`);
+        break;
+      case "participant_service_changed":
+        activity(`${event.actorName} switched their music-app lens to ${textValue("service") || "ask each time"}`);
+        break;
+      case "participant_left":
+        activity(`${event.actorName} left the room`);
         break;
       case "ready_changed":
         activity(`${event.actorName} is ${event.payload.ready === true ? "ready" : "not ready"} for the current track`);
@@ -949,6 +993,52 @@ export default function UniJamApp() {
       }
     }
   }, []);
+
+  const hydrateLiveSnapshot = useCallback((roomId: string, snapshot: LiveRoomSnapshot, force = false) => {
+    setLiveSnapshotsByRoom((current) => mergeRoomSnapshot(current, roomId, snapshot, force));
+  }, []);
+
+  const activeLiveSnapshot = liveSnapshotsByRoom[activeRoomId];
+  useEffect(() => {
+    if (!activeLiveSnapshot) return;
+    const snapshot = activeLiveSnapshot;
+    const participants = Object.values(snapshot.participants).sort((left, right) => {
+      if (left.role !== right.role) return left.role === "host" ? -1 : 1;
+      return left.lastSeenAtMs - right.lastSeenAtMs;
+    });
+    const suggestions = Object.values(snapshot.suggestions);
+    const snapshotVotes = Object.fromEntries(
+      Object.entries(snapshot.votes)
+        .map(([trackId, clientIds]) => [Number(trackId), clientIds.length] as const)
+        .filter(([trackId]) => Number.isSafeInteger(trackId)),
+    );
+    const self = snapshot.participants[activeEventClientId];
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setLiveRoomPhase(snapshot.phase);
+      setSpeakerService(snapshot.speakerService);
+      setNowTrackIndex(Math.max(0, snapshot.nowTrackIndex % 5));
+      setStartedAtMs(snapshot.startedAtMs);
+      setElapsedSeconds(snapshot.startedAtMs === null ? 0 : Math.max(0, Math.floor((Date.now() - snapshot.startedAtMs) / 1_000)));
+      setReactionCount(snapshot.reactionCount);
+      setLiveParticipants(participants);
+      setGuestReady(self?.ready ?? false);
+      setPendingSuggestions(suggestions.filter(({ status }) => status === "pending").map(({ id, title, submittedBy, service }) => ({ id, title, submittedBy, service })));
+      setApprovedSuggestions(suggestions.filter(({ status }) => status === "approved").map(({ id, title, submittedBy, service }) => ({ id, title, submittedBy, service })));
+      setQueueVotes(snapshotVotes);
+      setVotedTrackIds(Object.entries(snapshot.votes)
+        .filter(([, clientIds]) => clientIds.includes(activeEventClientId))
+        .map(([trackId]) => Number(trackId))
+        .filter(Number.isSafeInteger));
+      setDuplicateVoted(snapshot.votes["2"]?.includes(activeEventClientId) ?? false);
+      setLiveActivity(snapshot.activity.map(({ text }) => text));
+      setHandoffReceipt(null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeEventClientId, activeEventToken, activeLiveSnapshot]);
 
   const bootstrapDurableRoom = useCallback(async (settings?: {
     locked?: boolean;
@@ -1040,16 +1130,18 @@ export default function UniJamApp() {
     type: LiveRoomEventType,
     payload: LiveRoomEventPayload,
     actorName = liveActor,
-    capabilityOverride?: { roomId: string; token: string },
+    capabilityOverride?: { roomId: string; token: string; clientId?: string },
   ) => {
     const roomId = capabilityOverride?.roomId ?? activeRoomId;
-    const token = capabilityOverride?.token ?? activeRoomToken;
+    const token = capabilityOverride?.token ?? activeEventToken;
+    const clientId = capabilityOverride?.clientId ?? activeEventClientId;
     if (!token) {
       setRealtimeStatus("local");
-      return;
+      return false;
     }
     const eventId = `event-${crypto.randomUUID()}`;
-    const body = JSON.stringify({ eventId, clientId: liveClientId, actorName, type, payload });
+    const body = JSON.stringify({ eventId, clientId, actorName, type, payload });
+    let failureMessage = "That room action could not be synced.";
     for (const delayMs of [0, 350, 1_000]) {
       if (delayMs > 0) await new Promise((resolve) => window.setTimeout(resolve, delayMs));
       try {
@@ -1059,16 +1151,94 @@ export default function UniJamApp() {
           body,
         });
         if (response.ok) {
+          const result = await response.json() as { snapshot?: LiveRoomSnapshot };
+          if (result.snapshot) {
+            hydrateLiveSnapshot(roomId, result.snapshot);
+          }
           setRealtimeStatus("connected");
-          return;
+          return true;
         }
-        if (response.status === 401 || response.status === 403 || response.status === 409) break;
+        const problem = await response.json().catch(() => null) as { error?: string } | null;
+        failureMessage = problem?.error || failureMessage;
+        if (response.status === 401 || response.status === 403 || response.status === 409 || response.status === 429) break;
       } catch {
         // Retry the exact same event ID so the server can safely deduplicate it.
       }
     }
-    setRealtimeStatus("local");
-  }, [activeRoomId, activeRoomToken, liveActor, liveClientId]);
+    try {
+      const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/events?after=0`, {
+        cache: "no-store",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) throw new Error("room snapshot unavailable");
+      const result = await response.json() as { snapshot?: LiveRoomSnapshot; events?: StoredLiveRoomEvent[] };
+      if (!result.snapshot) throw new Error("room snapshot missing");
+      const restored = (result.events ?? []).reduce(
+        (snapshot, event) => reduceLiveRoomEvent(snapshot, event),
+        result.snapshot,
+      );
+      hydrateLiveSnapshot(roomId, restored, true);
+      setRealtimeStatus("connected");
+    } catch {
+      setRealtimeStatus("local");
+    }
+    setToast(failureMessage);
+    window.setTimeout(() => setToast(null), 3_200);
+    return false;
+  }, [activeEventClientId, activeEventToken, activeRoomId, hydrateLiveSnapshot, liveActor]);
+
+  const joinDurableParticipant = useCallback(async (
+    roomId: string,
+    capabilityToken: string,
+    capabilityRole: LiveRoomRole,
+    nickname: string,
+    preferredService: MusicPreference,
+  ): Promise<DurableParticipantSession> => {
+    const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/participants`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${capabilityToken}` },
+      body: JSON.stringify({
+        nickname,
+        preferredService,
+        joinNonce: participantJoinNonce(roomId, capabilityRole),
+      }),
+    });
+    const result = await response.json() as {
+      error?: string;
+      participant?: {
+        id?: string;
+        nickname?: string;
+        role?: "host" | "editor" | "viewer";
+        capabilityRole?: LiveRoomRole;
+        preferredService?: MusicPreference;
+      };
+      sessionToken?: string;
+      expiresAtMs?: number;
+      room?: { guestCanContribute?: boolean; locked?: boolean; hostApproval?: boolean };
+    };
+    if (!response.ok || !result.participant?.id || !result.participant.nickname || !result.participant.role ||
+      !result.sessionToken || !Number.isSafeInteger(result.expiresAtMs)) {
+      throw new Error(result.error || "Participant session could not be established");
+    }
+    const session: DurableParticipantSession = {
+      roomId,
+      participantId: result.participant.id,
+      nickname: result.participant.nickname,
+      capabilityRole: result.participant.capabilityRole === "host" ? "host" : "guest",
+      participantRole: result.participant.role,
+      token: result.sessionToken,
+      expiresAtMs: Number(result.expiresAtMs),
+    };
+    setParticipantSession(session);
+    window.sessionStorage.setItem(participantIdentityKey(roomId, capabilityRole), JSON.stringify({
+      nickname: session.nickname,
+      preferredService: result.participant.preferredService ?? preferredService,
+    }));
+    if (typeof result.room?.guestCanContribute === "boolean") setServerGuestCanContribute(result.room.guestCanContribute);
+    if (typeof result.room?.locked === "boolean") setRoomLocked(result.room.locked);
+    if (typeof result.room?.hostApproval === "boolean") setHostApproval(result.room.hostApproval);
+    return session;
+  }, []);
 
   const notify = (message: string) => {
     setToast(message);
@@ -1096,27 +1266,45 @@ export default function UniJamApp() {
   const enterLiveRoom = (role: LiveRoomRole) => {
     setLiveRoomRole(role);
     setLiveRoomActive(true);
+    setRealtimeStatus("connecting");
     setListeningMode("speaker");
+    if (role === "host") setHostLensService(speakerService);
     setModal(null);
     if (role === "guest") {
       setLiveActivity((current) => [`${guestName || "Guest"} joined with ${guestService === "apple" ? "Apple Music" : guestService === "spotify" ? "Spotify" : "no default service"}`, ...current]);
     }
     const actor = role === "host" ? "Mason" : guestName || "Guest";
     const service = role === "host" ? speakerService : guestService;
+    const connectParticipant = async (roomId: string, capabilityToken: string) => {
+      try {
+        const session = await joinDurableParticipant(roomId, capabilityToken, role, actor, service);
+        await publishLiveEvent("participant_joined", { role, service }, actor, {
+          roomId,
+          token: session.token,
+          clientId: session.participantId,
+        });
+      } catch {
+        setRealtimeStatus("local");
+        notify("Secure room identity could not be established. This session is staying local.");
+      }
+    };
     if (hostRoomCredentials && !sharedGuestCapability) {
       void bootstrapDurableRoom().then((saved) => {
-        if (saved) void publishLiveEvent("participant_joined", { role, service }, actor, {
-          roomId: hostRoomCredentials.roomId,
-          token: role === "host" ? hostRoomCredentials.hostToken : hostRoomCredentials.guestToken,
-        });
+        if (saved) void connectParticipant(
+          hostRoomCredentials.roomId,
+          role === "host" ? hostRoomCredentials.hostToken : hostRoomCredentials.guestToken,
+        );
         else notify("Durable room sync is unavailable. This session is staying local.");
       });
+    } else if (activeRoomToken) {
+      void connectParticipant(activeRoomId, activeRoomToken);
     } else {
-      void publishLiveEvent("participant_joined", { role, service }, actor);
+      setRealtimeStatus("local");
     }
   };
 
   const leaveLiveRoom = () => {
+    if (activeParticipantSession) void publishLiveEvent("participant_left", {});
     setLiveRoomActive(false);
     setHandoffReceipt(null);
     setGuestReady(false);
@@ -1206,8 +1394,12 @@ export default function UniJamApp() {
   };
 
   const changeGuestService = (service: "spotify" | "apple") => {
+    if (service === guestService) return;
     setGuestService(service);
     setHandoffReceipt(null);
+    if (liveRoomRole === "guest") {
+      void publishLiveEvent("participant_service_changed", { service });
+    }
   };
 
   const addLiveReaction = (reaction: string) => {
@@ -1415,9 +1607,27 @@ export default function UniJamApp() {
         const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
         const slug = parameters.get("room") ?? "friday-night-room";
         const linkedRoomId = parameters.get("rid")?.trim();
-        const linkedGuestToken = fragment.get("cap")?.trim();
+        const fragmentGuestToken = fragment.get("cap")?.trim();
+        const capabilityStorageKey = linkedRoomId ? `unijam.guest-capability.${linkedRoomId}` : "";
+        const linkedGuestToken = fragmentGuestToken || (capabilityStorageKey ? window.sessionStorage.getItem(capabilityStorageKey)?.trim() : undefined);
         if (linkedRoomId?.startsWith("room-") && linkedGuestToken?.startsWith("guest-")) {
           setSharedGuestCapability({ roomId: linkedRoomId, guestToken: linkedGuestToken });
+          window.sessionStorage.setItem(capabilityStorageKey, linkedGuestToken);
+          try {
+            const identity = JSON.parse(window.sessionStorage.getItem(participantIdentityKey(linkedRoomId, "guest")) ?? "null") as {
+              nickname?: string;
+              preferredService?: MusicPreference;
+            } | null;
+            if (identity?.nickname?.trim()) setGuestName(identity.nickname.trim());
+            if (identity?.preferredService === "spotify" || identity?.preferredService === "apple" || identity?.preferredService === "ask") {
+              setGuestService(identity.preferredService);
+            }
+          } catch {
+            // Corrupt tab-local identity metadata is replaced after the next secure join.
+          }
+          if (fragmentGuestToken) {
+            window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+          }
         }
         setServerGuestCanContribute(null);
         const linkedName = parameters.get("name")?.trim() || slug.split("-").map((part) => part ? part[0].toUpperCase() + part.slice(1) : part).join(" ");
@@ -1455,6 +1665,10 @@ export default function UniJamApp() {
   }, [liveRoomPhase, startedAtMs]);
 
   useEffect(() => {
+    roomEventCursorsRef.current[activeRoomId] = 0;
+  }, [activeEventClientId, activeEventToken, activeRoomId]);
+
+  useEffect(() => {
     if (!liveRoomActive) return;
     const frame = window.requestAnimationFrame(() => document.getElementById("live-main")?.focus());
     return () => window.cancelAnimationFrame(frame);
@@ -1465,8 +1679,8 @@ export default function UniJamApp() {
     let cancelled = false;
     let timer: number | undefined;
     const poll = async () => {
-      if (!activeRoomToken) {
-        setRealtimeStatus("local");
+      if (!activeEventToken) {
+        setRealtimeStatus(activeRoomToken ? "connecting" : "local");
         return;
       }
       const after = roomEventCursorsRef.current[activeRoomId] ?? 0;
@@ -1474,23 +1688,48 @@ export default function UniJamApp() {
       try {
         const response = await fetch(`/api/rooms/${encodeURIComponent(activeRoomId)}/events?after=${after}`, {
           cache: "no-store",
-          headers: { Authorization: `Bearer ${activeRoomToken}` },
+          headers: { Authorization: `Bearer ${activeEventToken}` },
         });
-        if (!response.ok) throw new Error("room event log unavailable");
+        if (!response.ok) {
+          if (response.status === 401 && activeRoomToken) {
+            try {
+              await joinDurableParticipant(activeRoomId, activeRoomToken, liveRoomRole, liveActor, liveSource);
+              if (!cancelled) {
+                setRealtimeStatus("connecting");
+                timer = window.setTimeout(poll, 1_500);
+              }
+              return;
+            } catch {
+              // The capability may have expired or been rotated; use the normal reconnect state below.
+            }
+          }
+          throw new Error("room event log unavailable");
+        }
         const body = await response.json() as {
           events?: StoredLiveRoomEvent[];
           cursor?: number;
           hasMore?: boolean;
+          snapshot?: LiveRoomSnapshot;
+          activeParticipantIds?: string[];
           role?: LiveRoomRole;
           room?: { guestCanContribute?: boolean; locked?: boolean; hostApproval?: boolean };
         };
         if (cancelled) return;
-        for (const event of body.events ?? []) {
-          if (event.clientId !== liveClientId) {
-            applyRemoteLiveEvent(event);
-          }
+        if (body.snapshot) {
+          const projected = (body.events ?? []).reduce(
+            (snapshot, event) => reduceLiveRoomEvent(snapshot, event),
+            body.snapshot,
+          );
+          hydrateLiveSnapshot(activeRoomId, projected);
+        } else {
+          for (const event of body.events ?? []) applyRemoteLiveEvent(event);
         }
-        if (typeof body.cursor === "number") roomEventCursorsRef.current[activeRoomId] = body.cursor;
+        if (typeof body.cursor === "number") {
+          roomEventCursorsRef.current[activeRoomId] = Math.max(body.cursor, body.snapshot?.sequence ?? 0);
+        }
+        if (Array.isArray(body.activeParticipantIds)) {
+          setActiveParticipantIdsByRoom((current) => ({ ...current, [activeRoomId]: body.activeParticipantIds ?? [] }));
+        }
         if (body.role === "guest" && body.room) {
           if (typeof body.room.guestCanContribute === "boolean") setServerGuestCanContribute(body.room.guestCanContribute);
           if (typeof body.room.locked === "boolean") setRoomLocked(body.room.locked);
@@ -1510,7 +1749,7 @@ export default function UniJamApp() {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [activeRoomId, activeRoomToken, applyRemoteLiveEvent, liveClientId, liveRoomActive]);
+  }, [activeEventToken, activeRoomId, activeRoomToken, applyRemoteLiveEvent, hydrateLiveSnapshot, joinDurableParticipant, liveActor, liveRoomActive, liveRoomRole, liveSource]);
 
   const renderHome = () => (
     <div className="home-view page-enter">
@@ -2824,9 +3063,10 @@ export default function UniJamApp() {
   );
 
   const renderLiveRoom = () => {
-    const lensService: "spotify" | "apple" = liveRoomRole === "host" ? speakerService : guestService === "ask" ? speakerService : guestService;
+    const lensService: "spotify" | "apple" = liveRoomRole === "host" ? hostLensService : guestService === "ask" ? speakerService : guestService;
     const lensLabel = lensService === "spotify" ? "Spotify" : "Apple Music";
-    const liveReadOnly = liveRoomRole === "guest" && !guestCanContribute;
+    const liveIdentityPending = Boolean(activeRoomToken && !activeParticipantSession);
+    const liveReadOnly = liveRoomRole === "guest" && !liveIdentityPending && !guestCanContribute;
     const coverageFor = (track: Track) => {
       if (track.id === 3 && lensService === "apple") return { tone: "alternate", label: "Demo: Apple alternate" };
       if (track.id === 6 && lensService === "spotify") return { tone: "hold", label: "Demo: Spotify match held" };
@@ -2842,17 +3082,17 @@ export default function UniJamApp() {
         <header className="live-room-topbar">
           <button type="button" className="live-brand" onClick={leaveLiveRoom}><Music2 size={18} /><span>UniJam</span></button>
           <div className="live-room-identity"><span className="live-pulse"><i /> LIVE ROOM DEMO</span><strong>{selectedJam?.name ?? "Friday Night Room"}</strong><small>{realtimeStatus === "connected" ? "Durable room sync on" : realtimeStatus === "connecting" ? "Connecting room event log" : "Local fallback mode"} · {approvedSuggestions.length + 4} picks ready</small></div>
-          <div className="live-service-lens" aria-label="Catalog service lens"><span>Viewing as</span><button type="button" aria-pressed={lensService === "spotify"} className={lensService === "spotify" ? "active" : ""} onClick={() => liveRoomRole === "host" ? changeSpeakerService("spotify") : changeGuestService("spotify")}><span className="service-mark spotify-mark">≋</span> Spotify</button><button type="button" aria-pressed={lensService === "apple"} className={lensService === "apple" ? "active" : ""} onClick={() => liveRoomRole === "host" ? changeSpeakerService("apple") : changeGuestService("apple")}><span className="service-mark apple-mark"><Apple size={12} /></span> Apple</button></div>
+          <div className="live-service-lens" aria-label="Catalog service lens"><span>Viewing as</span><button type="button" disabled={liveIdentityPending} aria-pressed={lensService === "spotify"} className={lensService === "spotify" ? "active" : ""} onClick={() => liveRoomRole === "host" ? setHostLensService("spotify") : changeGuestService("spotify")}><span className="service-mark spotify-mark">≋</span> Spotify</button><button type="button" disabled={liveIdentityPending} aria-pressed={lensService === "apple"} className={lensService === "apple" ? "active" : ""} onClick={() => liveRoomRole === "host" ? setHostLensService("apple") : changeGuestService("apple")}><span className="service-mark apple-mark"><Apple size={12} /></span> Apple</button></div>
           <button type="button" className="live-leave" onClick={leaveLiveRoom}><ArrowLeft size={15} /> {liveRoomRole === "host" ? "Back to host view" : "Leave room"}</button>
         </header>
 
-        <div className="live-concept-note"><ShieldCheck size={14} /><span><strong>Interactive concept demo.</strong> Catalog coverage and example people are illustrative. {realtimeStatus === "connected" ? "New room actions replay across browsers through a durable event log." : "Room actions are using a local fallback until durable sync reconnects."} {speakerService === "spotify" ? "Spotify" : "Apple Music"} would supply sound on Mason&apos;s device.</span></div>
+        <div className="live-concept-note"><ShieldCheck size={14} /><span><strong>Interactive concept demo.</strong> Catalog coverage is illustrative; joined identities and room actions are durable. {realtimeStatus === "connected" ? "New room actions replay across browsers through an authoritative event log." : "Room actions are waiting for durable sync."} {speakerService === "spotify" ? "Spotify" : "Apple Music"} would supply sound on Mason&apos;s device.</span></div>
         {toast && <div className="live-toast" role="status" aria-live="polite">{toast}</div>}
 
         <main id="live-main" className="live-room-workspace" tabIndex={-1}>
           <section className="live-mode-bar">
             <div className="speaker-duty"><span className="speaker-orbit"><Volume2 size={20} /></span><div><span className="eyebrow">SHARED SPEAKER</span><strong>Mason is on speaker duty · {speakerService === "spotify" ? "Spotify" : "Apple Music"}</strong><small>One native app supplies the sound. Everyone else shapes the same room.</small></div></div>
-            {liveRoomRole === "guest" ? <div className="listening-mode-switch"><button type="button" aria-pressed={listeningMode === "speaker"} className={listeningMode === "speaker" ? "active" : ""} onClick={() => setListeningMode("speaker")}><Volume2 size={14} /> Shared speaker</button><button type="button" aria-pressed={listeningMode === "native"} className={listeningMode === "native" ? "active" : ""} onClick={() => setListeningMode("native")}><Headphones size={14} /> My own app</button></div> : <div className="host-speaker-source"><span>Speaker source</span><button type="button" onClick={() => changeSpeakerService(speakerService === "spotify" ? "apple" : "spotify")}>Switch to {speakerService === "spotify" ? "Apple Music" : "Spotify"} <RefreshCw size={13} /></button></div>}
+            {liveRoomRole === "guest" ? <div className="listening-mode-switch"><button type="button" disabled={liveIdentityPending} aria-pressed={listeningMode === "speaker"} className={listeningMode === "speaker" ? "active" : ""} onClick={() => setListeningMode("speaker")}><Volume2 size={14} /> Shared speaker</button><button type="button" disabled={liveIdentityPending} aria-pressed={listeningMode === "native"} className={listeningMode === "native" ? "active" : ""} onClick={() => setListeningMode("native")}><Headphones size={14} /> My own app</button></div> : <div className="host-speaker-source"><span>Speaker source</span><button type="button" disabled={liveIdentityPending} onClick={() => changeSpeakerService(speakerService === "spotify" ? "apple" : "spotify")}>Switch to {speakerService === "spotify" ? "Apple Music" : "Spotify"} <RefreshCw size={13} /></button></div>}
           </section>
 
           <div className="live-room-grid">
@@ -2861,7 +3101,7 @@ export default function UniJamApp() {
                 <div className={"live-cover " + currentLiveTrack.art}><span>{liveRoomPhase === "started" ? <Volume2 size={24} /> : <Music2 size={24} />}</span></div>
                 <div className="live-now-copy"><span className="eyebrow">{liveRoomPhase === "started" ? `HOST-CONFIRMED START · ${elapsed}` : liveRoomPhase === "handoff" ? `HANDOFF REQUESTED FOR ${speakerService.toUpperCase()} · CONFIRM START` : "READY ON THE SHARED SPEAKER"}</span><h1>{currentLiveTrack.title}</h1><p>{currentLiveTrack.artist} · proposed by Maya</p><div className="live-coverage-row"><span className={coverageFor(currentLiveTrack).tone}><CheckCircle2 size={13} /> {coverageFor(currentLiveTrack).label}</span><span><Heart size={13} /> {reactionCount} reactions</span></div></div>
                 <div className="live-now-actions">
-                  {liveRoomRole === "host" ? <>
+                  {liveIdentityPending ? <div className="live-read-only-action"><Wifi size={15} /><span><strong>Securing your room identity</strong><small>Shared controls unlock as soon as this device joins.</small></span></div> : liveRoomRole === "host" ? <>
                     {liveRoomPhase === "idle" && <a href={serviceSearchUrl(speakerService, currentLiveTrack)} target="_blank" rel="noreferrer" onClick={() => { setLiveRoomPhase("handoff"); setLiveActivity((current) => [`Mason requested a ${speakerService === "spotify" ? "Spotify" : "Apple Music"} web handoff for ${currentLiveTrack.title}`, ...current]); void publishLiveEvent("handoff_requested", { role: "host", service: speakerService, trackId: currentLiveTrack.id }, "Mason"); }}>Search {speakerService === "spotify" ? "Spotify" : "Apple Music"} web <ExternalLink size={15} /><span className="sr-only"> (opens in a new tab)</span></a>}
                     {liveRoomPhase === "handoff" && <><button type="button" className="confirm-start" onClick={() => { const now = Date.now(); setStartedAtMs(now); setElapsedSeconds(0); setLiveRoomPhase("started"); setLiveActivity((current) => [`Mason confirmed ${currentLiveTrack.title} started`, ...current]); void publishLiveEvent("playback_confirmed", { service: speakerService, trackId: currentLiveTrack.id }, "Mason"); }}>It started <Check size={15} /></button><a className="try-web" href={serviceSearchUrl(speakerService, currentLiveTrack)} target="_blank" rel="noreferrer">Try web <ExternalLink size={14} /></a></>}
                     {liveRoomPhase === "started" && <button type="button" className="advance-track" onClick={advanceLiveTrack}>Advance room <SkipForward size={16} /></button>}
@@ -2875,15 +3115,15 @@ export default function UniJamApp() {
                   {nextLiveTracks.map((track, index) => {
                     const contributor = ["Alex", "Jordan", "Nora"][index];
                     const coverage = coverageFor(track);
-                    return <article key={`${track.id}-${index}`}><span className="next-position">{String(index + 1).padStart(2, "0")}</span><TrackArt art={track.art} /><div className="next-track-copy"><strong>{track.title}</strong><span>{track.artist} · proposed by {contributor}</span></div><span className={`coverage-pill ${coverage.tone}`}>{coverage.label}</span><button type="button" disabled={liveReadOnly} className={votedTrackIds.includes(track.id) ? "voted" : ""} aria-pressed={votedTrackIds.includes(track.id)} onClick={() => toggleLiveQueueVote(track.id)}><ThumbsUp size={13} /> {queueVotes[track.id] ?? 0}</button>{liveRoomRole === "guest" && <a href={serviceSearchUrl(lensService, track)} target="_blank" rel="noreferrer" aria-label={`Search ${track.title} in ${lensLabel}; opens in a new tab`}><ExternalLink size={14} /></a>}</article>;
+                    return <article key={`${track.id}-${index}`}><span className="next-position">{String(index + 1).padStart(2, "0")}</span><TrackArt art={track.art} /><div className="next-track-copy"><strong>{track.title}</strong><span>{track.artist} · proposed by {contributor}</span></div><span className={`coverage-pill ${coverage.tone}`}>{coverage.label}</span><button type="button" disabled={!canLiveContribute} className={votedTrackIds.includes(track.id) ? "voted" : ""} aria-pressed={votedTrackIds.includes(track.id)} onClick={() => toggleLiveQueueVote(track.id)}><ThumbsUp size={13} /> {queueVotes[track.id] ?? 0}</button>{liveRoomRole === "guest" && <a href={serviceSearchUrl(lensService, track)} target="_blank" rel="noreferrer" aria-label={`Search ${track.title} in ${lensLabel}; opens in a new tab`}><ExternalLink size={14} /></a>}</article>;
                   })}
                   {approvedSuggestions.map((suggestion, index) => <article className="approved-suggestion" key={suggestion.id}><span className="next-position">{String(nextLiveTracks.length + index + 1).padStart(2, "0")}</span><span className="match-art"><Music2 size={16} /></span><div className="next-track-copy"><strong>{suggestion.title}</strong><span>proposed by {suggestion.submittedBy}</span></div><span className="coverage-pill alternate">Catalog check pending</span><span className="approved-label"><Check size={12} /> Accepted</span><span /></article>)}
                 </div>
               </section>
 
               <section className="live-composer-panel">
-                <header><div><span className="eyebrow">UNIVERSAL SONG DROP</span><h2>{liveReadOnly ? "Room contributions" : "Add from any app"}</h2></div><span>Service lens: {lensLabel} · demo US storefront</span></header>
-                {liveReadOnly ? <div className="guest-locked-state live-locked-state"><span><Lock size={22} /></span><h3>Viewing-only room</h3><p>This shared link can follow now/next and use personal web searches, but it cannot react, vote, or add songs.</p></div> : <>
+                <header><div><span className="eyebrow">UNIVERSAL SONG DROP</span><h2>{liveIdentityPending ? "Joining the room" : liveReadOnly ? "Room contributions" : "Add from any app"}</h2></div><span>Service lens: {lensLabel} · demo US storefront</span></header>
+                {liveIdentityPending ? <div className="guest-locked-state live-locked-state"><span><Wifi size={22} /></span><h3>Establishing a secure participant session</h3><p>Your nickname, role, and music-app preference are being bound to this room before shared controls unlock.</p></div> : liveReadOnly ? <div className="guest-locked-state live-locked-state"><span><Lock size={22} /></span><h3>Viewing-only room</h3><p>This shared link can follow now/next and use personal web searches, but it cannot react, vote, or add songs.</p></div> : <>
                   <div className="live-composer"><Search size={18} /><input value={liveComposer} onChange={(event) => setLiveComposer(event.target.value)} placeholder="Search or paste a Spotify, Apple Music, or YouTube link" aria-label="Stage a song for the live room" /><button type="button" onClick={() => setLiveComposer("Dreams — Fleetwood Mac")}>Try duplicate</button></div>
                   {liveComposer.trim() && (isDreamsDuplicate ? <div className="live-match-result duplicate"><TrackArt art="art-b" /><div><span className="eyebrow">DEMO DUPLICATE</span><strong>Dreams is already in round 1.</strong><small>Co-sign it without spending another fair-queue turn.</small></div><button type="button" aria-pressed={duplicateVoted} onClick={coSignDreams}><ThumbsUp size={15} /> {duplicateVoted ? "Remove vote" : `Join ${queueVotes[2] ?? 6} votes`}</button></div> : <div className="live-match-result"><span className="match-art"><Music2 size={20} /></span><div><span className="eyebrow">UNVERIFIED DEMO QUERY</span><strong>{liveComposer}</strong><small>A production catalog lookup would verify identity, versions, and storefront availability before approval.</small></div><button type="button" onClick={addLiveSuggestion}><Plus size={15} /> {liveRoomRole === "host" || !hostApproval ? "Add to round" : "Stage pick"}</button></div>)}
                 </>}
@@ -2892,8 +3132,20 @@ export default function UniJamApp() {
             </div>
 
             <aside className="live-room-rail">
-              <section className="live-presence-card"><header><div><span className="eyebrow">EXAMPLE PRESENCE</span><h3>4 people in this demo</h3></div><span className={`presence-live ${realtimeStatus}`}><i /> {realtimeStatus === "connected" ? "Synced" : realtimeStatus === "connecting" ? "Connecting" : "Local"}</span></header><div className="live-people"><div><Avatar name="Mason" tone="gold" size="sm" /><span><strong>Mason</strong><small>Speaker · {speakerService === "spotify" ? "Spotify" : "Apple Music"}</small></span><em>Host</em></div><div><Avatar name="Maya" tone="coral" size="sm" /><span><strong>Maya</strong><small>Apple Music · Ready</small></span><i className="here" /></div><div><Avatar name="Alex" tone="sage" size="sm" /><span><strong>Alex</strong><small>Spotify · Here now</small></span><i className="here" /></div><div><Avatar name={guestName || "Jordan"} tone="blue" size="sm" /><span><strong>{guestName || "Jordan"}</strong><small>{guestService === "apple" ? "Apple Music" : guestService === "spotify" ? "Spotify" : "Ask each time"} · You</small></span><i className="here" /></div></div><div className="playability-score demo-score"><span><strong>DEMO</strong><small>cross-catalog coverage lens</small></span><p>Example exact, alternate, and held states show the intended provider-aware experience.</p></div></section>
-              <section className="live-activity-card"><header><span className="eyebrow">LOCAL ROOM SIGNAL</span><h3>What just happened</h3></header><div role="log" aria-live="polite" aria-relevant="additions">{liveActivity.slice(0, 5).map((activity, index) => <p key={`${activity}-${index}`}><span />{activity}<small>{index === 0 ? "now" : "demo"}</small></p>)}</div></section>
+              <section className="live-presence-card">
+                <header><div><span className="eyebrow">ROOM PARTICIPANTS</span><h3>{presentParticipants.length} {presentParticipants.length === 1 ? "person" : "people"} here now</h3></div><span className={`presence-live ${realtimeStatus}`}><i /> {realtimeStatus === "connected" ? "Synced" : realtimeStatus === "connecting" ? "Connecting" : "Local"}</span></header>
+                <div className="live-people">
+                  {presentParticipants.length === 0 ? <p className="live-people-empty">Participant identities appear here as this durable room connects.</p> : presentParticipants.map((participant, index) => (
+                    <div key={participant.clientId}>
+                      <Avatar name={participant.name} tone={["gold", "coral", "sage", "blue"][index % 4]} size="sm" />
+                      <span><strong>{participant.name}{participant.clientId === activeEventClientId ? " · You" : ""}</strong><small>{participant.service === "apple" ? "Apple Music" : participant.service === "spotify" ? "Spotify" : "Ask each time"}{participant.ready ? " · Ready" : " · Joined"}</small></span>
+                      {participant.role === "host" ? <em>Host</em> : <i className="here" />}
+                    </div>
+                  ))}
+                </div>
+                <div className="playability-score demo-score"><span><strong>DEMO</strong><small>cross-catalog coverage lens</small></span><p>Example exact, alternate, and held states show the intended provider-aware experience.</p></div>
+              </section>
+              <section className="live-activity-card"><header><span className="eyebrow">DURABLE ROOM SIGNAL</span><h3>What just happened</h3></header><div role="log" aria-live="polite" aria-relevant="additions">{liveActivity.length === 0 ? <p><span />Waiting for the first room action<small>synced</small></p> : liveActivity.slice(0, 5).map((activity, index) => <p key={`${activity}-${index}`}><span />{activity}<small>{index === 0 ? "now" : "synced"}</small></p>)}</div></section>
               <section className="room-brief-live"><span className="eyebrow">THE BRIEF</span><h3>{roomBrief.direction}</h3><p>{roomBrief.occasion}</p><div className="brief-chips"><span>{roomBrief.pickLimit}</span><span>{roomBrief.explicitRule}</span></div></section>
             </aside>
           </div>

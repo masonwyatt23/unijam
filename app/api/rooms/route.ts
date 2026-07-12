@@ -63,7 +63,7 @@ export async function POST(request: Request): Promise<Response> {
       now,
     ).run();
     const existing = await db.prepare(
-      `SELECT room_id, host_token_hash, guest_token_hash, guest_can_contribute, locked, host_approval, guest_expires_at_ms, revision, created_at_ms, updated_at_ms
+      `SELECT room_id, host_token_hash, guest_token_hash, guest_can_contribute, locked, host_approval, guest_expires_at_ms, revision, live_snapshot_json, snapshot_sequence, created_at_ms, updated_at_ms
        FROM rooms WHERE room_id = ? LIMIT 1`,
     ).bind(roomId).first<RoomRecord>();
     if (!existing || existing.host_token_hash !== hostHash) {

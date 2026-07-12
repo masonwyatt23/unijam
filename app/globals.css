@@ -5907,6 +5907,14 @@ input[type="checkbox"] {
   background: var(--sage-text);
 }
 
+.live-people .live-people-empty {
+  margin: 0;
+  padding: 14px 2px;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.5;
+}
+
 .playability-score {
   margin: 8px 12px 12px;
   padding: 12px;
