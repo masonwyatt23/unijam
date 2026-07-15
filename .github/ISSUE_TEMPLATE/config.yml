@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Product ideas and questions
+    url: https://github.com/masonwyatt23/unijam/discussions
+    about: Start a discussion before proposing a large product or architecture change.
+  - name: Security vulnerability
+    url: https://github.com/masonwyatt23/unijam/security/advisories/new
+    about: Report vulnerabilities privately. Do not open a public issue.

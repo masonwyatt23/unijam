@@ -1,108 +1,161 @@
-# vinext-starter
+# UniJam
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+<p align="center">
+  <strong>One room. Every guest. Their preferred music app. One host speaker.</strong>
+</p>
 
-## Prerequisites
+<p align="center">
+  <a href="https://github.com/masonwyatt23/unijam/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/masonwyatt23/unijam/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="Apache-2.0 license" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
+  <img alt="Project status: alpha" src="https://img.shields.io/badge/status-alpha-f59e0b.svg">
+</p>
 
-- Node.js `>=22.13.0`
-- Linux with `flock`, `curl`, and GNU `timeout`
+UniJam is an open-source, real-time music room for groups split between Spotify
+and Apple Music. A guest opens one link, picks a nickname, and helps shape the
+same queue—without creating a UniJam account or forcing the group onto one
+streaming service.
 
-## Sites Lifecycle
+The room is the source of truth. Spotify and Apple Music are native playback
+handoffs and optional publishing destinations, not the collaboration database.
 
-The Sites lifecycle CLI runs the locked dependency install before returning this checkout. Edit the source under `app/`, then checkpoint when a coherent milestone is ready to inspect or share. The remote Sites builder runs `npm run build` against the pushed commit. Do not repeat install or build as a normal pre-checkpoint step.
+> [!IMPORTANT]
+> UniJam is an alpha product and integration prototype. Durable cross-browser
+> room state works today. Spotify OAuth, Apple MusicKit, neutral catalog
+> resolution, and production playlist publishing are not connected yet.
 
-This starter does not use `wrangler.jsonc`.
+## Why UniJam exists
 
-`install:ci` is intentionally a single, non-retrying `npm ci`. It refuses a concurrent install for the same project, consumes a matching image-seeded npm cache with `--prefer-offline` while retaining registry fallback for a missing cache object, otherwise downloads and verifies the complete vinext tarball recorded in `package-lock.json`, limits npm to one socket, and terminates a stalled install. `build` applies a short timeout and then validates the Sites artifact. These helpers target Linux and use GNU `timeout`; they are not native macOS scripts.
+Mixed-platform groups still coordinate music through text messages, pasted
+links, duplicate searches, and one person's phone. Playlist transfer tools solve
+what happens *after* a playlist exists. UniJam focuses on the unsolved moment
+before that: deciding together what plays next.
 
-Scripts that need writable project-scoped home, npm, XDG, and temporary paths use `scripts/sites-env.sh`. The `dev` and `start` scripts honor the caller's runtime environment and keep Wrangler logs inside the checkout. The generated `.sites-runtime/` directory is disposable and ignored by Git.
+## What works today
 
-## Included Shape
+- Shareable rooms with opaque IDs and separate host and guest capabilities
+- Account-free guest joins with participant-scoped sessions
+- Authoritative participants, suggestions, approvals, votes, reactions,
+  readiness, handoffs, and activity state
+- Fair-turn queue mechanics and per-participant contribution limits
+- Spotify, Apple Music, or ask-each-time service preferences
+- Cross-browser convergence through an ordered, replay-safe event log
+- Optimistic interactions with canonical rollback when an action is rejected
+- Link locks, expiration, rotation, host approval, heartbeat presence, and
+  database-backed rate limits
+- Provider-aware publishing previews and explicit unresolved-match holds
 
-- edit site code under `app/`
-- `app/chatgpt-auth.ts` provides optional dispatch-owned ChatGPT sign-in helpers
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/index.ts` reads the D1 binding from the Cloudflare Worker environment
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
+## Product model
 
-## Workspace Auth Headers
-
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
+```mermaid
+flowchart TD
+    People["Hosts and guests"] --> Room["UniJam web room"]
+    Room --> API["Capability-protected room API"]
+    API --> State["D1 event log and canonical snapshot"]
+    API -. "native handoff / planned publishing" .-> Providers["Spotify and Apple Music"]
 ```
 
-## Optional Dispatch-Owned ChatGPT Sign-In
+UniJam records a native handoff as requested or opened. It never claims verified
+playback until the host explicitly confirms it. Provider playlists remain
+projections of UniJam state so an API outage or platform limitation cannot
+corrupt the collaborative queue.
 
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
+The complete system design is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Verified provider constraints and copy rules are in
+[`docs/CONNECTOR_BOUNDARIES.md`](docs/CONNECTOR_BOUNDARIES.md).
 
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
+## Core invariants
 
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
+1. **The room is authoritative.** Provider playlists never become the room
+   database.
+2. **Identity is server-bound.** A shared invite is exchanged for a short-lived
+   participant session before actions are accepted.
+3. **Retries are safe.** Events use stable IDs and conflicting reuse is rejected.
+4. **Playback claims are honest.** Opening a deep link is not verified playback.
+5. **Failures stay isolated.** Spotify and Apple operations progress independently.
+6. **Ambiguity pauses publishing.** A questionable catalog match requires review.
 
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
+## Stack
 
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
+- Next.js 16 and React 19
+- TypeScript
+- Vinext and Vite on the Cloudflare Worker runtime
+- Cloudflare D1
+- Drizzle ORM and migrations
+- Tailwind CSS 4
+- Node's built-in test runner
 
-## Diagnostic Commands
+## Quick start
 
-- `npm run install:ci`: perform the one bounded lockfile install
-- `npm run dev`: start the Vite/Vinext development server
-- `npm run build`: build and validate the deployable Sites artifact
-- `npm run start`: start the built Vinext application
-- `npm test`: build, validate, and verify the rendered development-preview metadata
-- `npm run validate:artifact`: recheck an existing artifact's manifest and ESM `default.fetch` export
-- `npm run db:generate`: generate Drizzle migrations after schema changes
+### Prerequisites
 
-Use build and validation commands for targeted diagnosis after a remote failure, not as part of the normal checkpoint path.
+- Node.js 24 or newer
+- npm
+- Linux or WSL for the bounded build helpers
 
-The timeout defaults can be overridden for a controlled canary with `SITES_INSTALL_TIMEOUT`, `SITES_INSTALL_KILL_AFTER`, `SITES_BUILD_TIMEOUT`, and `SITES_BUILD_KILL_AFTER`. A timeout fails the command; the helpers never retry an unchanged install or build.
+```bash
+git clone https://github.com/masonwyatt23/unijam.git
+cd unijam
+npm ci
+npm run dev
+```
 
-## Learn More
+The local runtime provides a D1 binding from `.openai/hosting.json`. No Spotify
+or Apple credentials are required for the current prototype experience.
 
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+## Quality gates
+
+```bash
+npm run lint
+npm run typecheck
+npm run test:domain
+npm test
+```
+
+`npm test` runs type checking, the domain and security suites, a verified
+production build, and rendered HTML validation. GitHub Actions runs the same
+release gate on pushes and pull requests.
+
+## Repository map
+
+| Path | Purpose |
+| --- | --- |
+| `app/` | Product UI and room API routes |
+| `lib/room-engine.ts` | Catalog normalization, fair queueing, and publishing plans |
+| `lib/live-room-events.ts` | Event contract and validation |
+| `lib/live-room-snapshot.ts` | Deterministic event projection |
+| `lib/server/` | Capability auth, participant sessions, persistence, and rate limits |
+| `db/` and `drizzle/` | D1 schema and migrations |
+| `docs/` | Architecture, roadmap, and provider constraints |
+| `tests/` | Rendered-product validation |
+
+## Roadmap
+
+- Canonical queue occurrences so approved suggestions become playable entries
+- Storefront-aware neutral catalog resolution
+- Direct Spotify and Apple Music track handoffs
+- Durable per-destination publishing outboxes and reconciliation
+- Real invite-only mixed-platform room pilots
+
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for sequencing and acceptance criteria.
+
+## Contributing
+
+Contributions are welcome, especially around room correctness, accessibility,
+catalog resolution using properly licensed data, provider adapters, and test
+coverage. Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request.
+
+Please do not send Spotify content, metadata, artwork, audio features, or
+playlist contents into an AI/ML system. The provider-policy rationale is
+documented in [`docs/CONNECTOR_BOUNDARIES.md`](docs/CONNECTOR_BOUNDARIES.md).
+
+## Security
+
+Do not open a public issue for a vulnerability. Use GitHub's private
+vulnerability reporting flow as described in [`SECURITY.md`](SECURITY.md).
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
+
+Spotify and Apple Music are trademarks of their respective owners. UniJam is
+not affiliated with, endorsed by, or sponsored by Spotify or Apple.

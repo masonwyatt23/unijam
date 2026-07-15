@@ -1,0 +1,57 @@
+name: Feature request
+description: Propose an improvement grounded in a real mixed-platform music problem.
+title: "[Feature]: "
+labels: [enhancement, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Strong proposals begin with user friction and respect the documented Spotify and Apple Music API boundaries.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Who experiences this problem, and in what situation?
+    validations:
+      required: true
+
+  - type: textarea
+    id: current
+    attributes:
+      label: Current workaround
+      description: How do people handle this today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed experience
+      description: Describe the desired outcome without assuming a specific implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Provider or trust implications
+      description: Note API, privacy, matching, playback-claim, or failure-mode concerns.
+
+  - type: textarea
+    id: success
+    attributes:
+      label: Success criteria
+      description: What observable result would show this solved the problem?
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and discussions.
+          required: true
+        - label: I reviewed `docs/CONNECTOR_BOUNDARIES.md` when this touches a provider.
+          required: true

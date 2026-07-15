@@ -1,7 +1,17 @@
 {
   "name": "unijam-music",
   "version": "0.1.0",
+  "description": "A neutral real-time music room for groups split between Spotify and Apple Music.",
   "private": true,
+  "license": "Apache-2.0",
+  "author": "Mason Wyatt",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/masonwyatt23/unijam.git"
+  },
+  "bugs": {
+    "url": "https://github.com/masonwyatt23/unijam/issues"
+  },
   "engines": {
     "node": ">=24.0.0"
   },
