@@ -197,7 +197,10 @@ export async function finishRegistration(
   });
   if (!verification.verified) throw new Error("Passkey registration could not be verified");
   const now = Date.now();
-  const consumptionMarker = now * 1_000 + crypto.getRandomValues(new Uint16Array(1))[0] % 1_000;
+  // This value links conditional statements inside one D1 batch; it is not a
+  // timestamp. A full uint32 avoids modulo bias and makes concurrent-marker
+  // collision negligibly likely.
+  const consumptionMarker = crypto.getRandomValues(new Uint32Array(1))[0];
   const info = verification.registrationInfo;
   const credentialValues = [
     info.credential.id,
@@ -309,7 +312,7 @@ export async function finishAuthentication(
   });
   if (!verification.verified) throw new Error("Passkey authentication could not be verified");
   const now = Date.now();
-  const consumptionMarker = now * 1_000 + crypto.getRandomValues(new Uint16Array(1))[0] % 1_000;
+  const consumptionMarker = crypto.getRandomValues(new Uint32Array(1))[0];
   const [challengeUpdate, counterUpdate] = await db.batch([
     challengeConsumption(db, challenge.challenge_hash, consumptionMarker, now),
     db.prepare(
