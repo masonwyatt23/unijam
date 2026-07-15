@@ -33,6 +33,14 @@ const snapshot = {
 };
 
 async function mockRoom(page: Page, role: "host" | "guest" = "host", roomSnapshot: unknown = snapshot) {
+  await page.routeWebSocket("**/api/v1/rooms/ROOM1234/websocket", (socket) => {
+    socket.onMessage((message) => {
+      try {
+        const input = JSON.parse(String(message)) as { type?: string };
+        if (input.type === "hello") socket.send(JSON.stringify({ type: "events", events: [], latestSeq: 4 }));
+      } catch { /* malformed client frames are irrelevant to these UI flows */ }
+    });
+  });
   await page.route("**/api/v1/rooms/ROOM1234/state**", (route) =>
     route.fulfill({
       status: 200,
