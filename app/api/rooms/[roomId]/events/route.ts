@@ -5,6 +5,7 @@ import {
   type StoredLiveRoomEvent,
 } from "@/lib/live-room-events";
 import {
+  authorizeLegacyRoomApi,
   authorizeRoomRequest,
   ensureRoomSchema,
   roomDatabase,
@@ -122,6 +123,7 @@ async function refreshRoomSnapshot(db: D1Database, roomId: string): Promise<Snap
 
 export async function GET(request: Request, context: RouteContext): Promise<Response> {
   try {
+    if (!authorizeLegacyRoomApi(request)) return json({ error: "Legacy room API is disabled" }, 404);
     const db = roomDatabase();
     if (!db) return json({ error: "Room persistence is not configured", mode: "local" }, 503);
     const roomId = (await context.params).roomId;
@@ -172,6 +174,7 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
 
 export async function POST(request: Request, context: RouteContext): Promise<Response> {
   try {
+    if (!authorizeLegacyRoomApi(request)) return json({ error: "Legacy room API is disabled" }, 404);
     const db = roomDatabase();
     if (!db) return json({ error: "Room persistence is not configured", mode: "local" }, 503);
     const roomId = (await context.params).roomId;

@@ -37,6 +37,36 @@ Sources: Spotify playlist [create](https://developer.spotify.com/documentation/w
 7. Treat Apple publishing as append-only and reconcile after its documented propagation delay.
 8. Keep failures isolated: one destination can pause or reconnect without blocking the room.
 
+### Code and credential boundary
+
+- Application and room code may construct a provider request with an opaque
+  `credentialRef`; it must not receive access tokens, refresh tokens, Music
+  User Tokens, client secrets, or Apple signing keys.
+- The connector Worker resolves the credential reference, decrypts a versioned
+  AES-256-GCM envelope, invokes the matching adapter, and returns normalized
+  catalog observations or safe operation outcomes. AES-GCM additional data is
+  bound to provider, account, connection, and key version so ciphertext cannot
+  be moved between connections.
+- Catalog adapters expose ID lookup, ISRC lookup, and neutral metadata search.
+  Publishing adapters expose private-playlist creation, playlist reads, and
+  append operations. Provider-specific wire payloads do not cross the adapter
+  boundary.
+- Disconnect deletes the encrypted envelope and cancels pending work for that
+  destination. The other destination state and the room remain unchanged.
+
+### Retry contract
+
+Publish previews are immutable and destination-specific. Confirmation must
+echo the preview ID and exact payload fingerprint and must come from the owner.
+Operation IDs and item keys are stable for the room revision.
+
+An authorization failure pauses only that destination for reconnect. A 429
+honors its retry time. A definite retryable failure may retry when due. A
+partial result or timeout-after-write is ambiguous and **must** read and diff
+the destination before retrying; only still-missing item keys may be appended.
+Permanent failures remain visible and cancelable rather than affecting the
+canonical room.
+
 Native-app edits are eventual. Spotify changes require polling its snapshot and then fetching items. Apple changes require fetching and diffing the ordered relationship because no public revision token is documented.
 
 ## Matching policy
@@ -47,8 +77,19 @@ Start with deterministic identifiers and neutral metadata:
 - Apple provides a catalog lookup for up to 25 ISRC values and may return multiple songs for one ISRC.
 - Resolve against each listener's market/storefront; a match on one provider does not prove availability on the other.
 - Preserve recording/version distinctions and route ambiguity to user confirmation.
+- The pilot resolves only the US market/storefront. Provider URLs for another
+  storefront are not silently rewritten into US evidence.
+- Matching is deterministic: provider recording ID, then normalized ISRC, then
+  weighted title/artist/album/duration/explicit/version/edition evidence. A
+  duration difference over five seconds, explicit mismatch, version or deluxe
+  edition mismatch, unknown availability, US unavailability, or close runner-up
+  produces a review hold.
 
 Do not send Spotify content, metadata, artwork, audio features, or playlist contents into an ML or AI model. Spotify's [Developer Policy](https://developer.spotify.com/policy) prohibits using Spotify Content to train or otherwise ingest into AI/ML models. Any learned matcher must use separately licensed neutral data and user corrections.
+
+The production matching contract contains no `embedding` method. Synthetic
+fixtures are used for automated tests; no real user-library data or provider
+credentials belong in the repository.
 
 ## Launch constraints
 

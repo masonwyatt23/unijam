@@ -100,6 +100,13 @@ export function roomDatabase(): D1Database | null {
   return env.DB ?? null;
 }
 
+/** Legacy D1 room writers exist only for a time-bounded authenticated migration. */
+export function authorizeLegacyRoomApi(request: Request): boolean {
+  if (env.ENABLE_LEGACY_ROOM_API !== "true" || !env.LEGACY_MIGRATION_SECRET) return false;
+  const supplied = request.headers.get("X-UniJam-Migration-Secret") ?? "";
+  return equalHash(supplied, env.LEGACY_MIGRATION_SECRET);
+}
+
 export async function ensureRoomSchema(db: D1Database): Promise<void> {
   schemaPromise ??= (async () => {
     await db.batch([

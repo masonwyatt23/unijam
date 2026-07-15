@@ -20,19 +20,36 @@
     "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vite",
     "build": "bash scripts/build-verified.sh",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
-    "test": "npm run typecheck && npm run test:domain && npm run build && npm run test:rendered",
+    "test": "npm run typecheck && npm run test:domain && npm run test:platform && npm run test:workers && npm run test:providers && npm run test:ui && npm run test:release-ops && npm run build && npm run test:rendered",
     "typecheck": "tsc --noEmit --incremental false",
     "test:domain": "node --test lib/room-engine.test.ts lib/provider-state-engine.test.ts lib/live-room-events.test.ts lib/live-room-snapshot.test.ts lib/server/participant-session.test.ts lib/server/rate-limit.test.ts",
+    "test:platform": "node --test lib/platform/protocol.test.ts lib/server/api-response.test.ts lib/server/catalog-resolution.test.ts lib/server/connector-proxy.test.ts lib/server/host-session.test.ts lib/server/legacy-migration.test.ts lib/server/passkeys.test.ts lib/server/recovery-codes.test.ts lib/server/security-headers.test.ts",
+    "test:workers": "vitest run",
+    "test:providers": "node --test lib/catalog/catalog.test.ts lib/providers/providers.test.ts lib/publishing/publishing.test.ts connectors/connectors.test.ts",
     "test:room-engine": "node --test lib/room-engine.test.ts",
     "test:provider-state-engine": "node --test lib/provider-state-engine.test.ts",
     "test:rendered": "node --import=./scripts/register-cloudflare-validation-loader.mjs --test tests/rendered-html.test.mjs",
+    "test:ui": "node --test tests/ui-contract.test.mjs",
+    "test:release-ops": "node --test tests/release-operations.test.mjs",
+    "test:e2e": "playwright test",
+    "validate:release-config": "node scripts/validate-release-config.mjs",
+    "validate:deploy:staging": "node scripts/validate-release-config.mjs --env staging --require-provisioned",
+    "validate:deploy:production": "node scripts/validate-release-config.mjs --env production --require-provisioned",
+    "build:cloudflare": "node scripts/cloudflare-web-release.mjs build",
+    "dry-run:cloudflare": "node scripts/cloudflare-web-release.mjs dry-run",
+    "deploy:cloudflare": "node scripts/cloudflare-web-release.mjs deploy",
+    "load:smoke": "node scripts/run-room-load.mjs --profile smoke",
+    "load:soak": "node scripts/run-room-load.mjs --profile soak",
     "validate:artifact": "bash scripts/validate-artifact.sh",
     "lint": "bash scripts/sites-env.sh -- eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate"
   },
   "dependencies": {
-    "@fontsource/cormorant-garamond": "^5.2.11",
-    "@fontsource/inter": "^5.2.8",
+    "@fontsource/atkinson-hyperlegible": "^5.2.8",
+    "@fontsource/barlow-condensed": "^5.2.8",
+    "@fontsource/ibm-plex-mono": "^5.2.7",
+    "@simplewebauthn/browser": "13.3.0",
+    "@simplewebauthn/server": "13.3.2",
     "drizzle-orm": "0.45.2",
     "lucide-react": "^1.24.0",
     "next": "16.2.6",
@@ -40,8 +57,11 @@
     "react-dom": "19.2.6"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "1.37.1",
-    "@cloudflare/workers-types": "^4.20260515.1",
+    "@axe-core/playwright": "^4.12.1",
+    "@cloudflare/vite-plugin": "1.44.0",
+    "@cloudflare/vitest-pool-workers": "0.18.4",
+    "@cloudflare/workers-types": "5.20260715.1",
+    "@playwright/test": "^1.61.1",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
@@ -55,8 +75,18 @@
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
     "vinext": "0.0.50",
-    "vite": "8.0.13",
-    "wrangler": "4.92.0"
+    "vite": "8.1.4",
+    "vitest": "4.1.10",
+    "wrangler": "4.110.0",
+    "ws": "8.21.0"
+  },
+  "overrides": {
+    "next": {
+      "postcss": "8.5.19"
+    },
+    "@eslint/eslintrc": {
+      "js-yaml": "5.2.1"
+    }
   },
   "type": "module",
   "displayName": "UniJam"

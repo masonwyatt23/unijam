@@ -89,7 +89,6 @@ export type MatchMethod =
   | "catalog_id"
   | "isrc"
   | "metadata"
-  | "embedding"
   | "user_override";
 
 export interface MatchEvidence {

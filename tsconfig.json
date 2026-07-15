@@ -19,7 +19,7 @@
         "name": "next"
       }
     ],
-    "types": ["node", "react", "react-dom", "@cloudflare/workers-types"],
+    "types": ["node", "react", "react-dom", "@cloudflare/workers-types", "@cloudflare/vitest-pool-workers/types"],
     "paths": {
       "@/*": ["./*"]
     }

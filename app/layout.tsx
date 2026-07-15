@@ -1,33 +1,34 @@
 import type { Metadata } from "next";
-import "@fontsource/inter/400.css";
-import "@fontsource/inter/500.css";
-import "@fontsource/inter/600.css";
-import "@fontsource/cormorant-garamond/500.css";
-import "@fontsource/cormorant-garamond/600.css";
-import "@fontsource/cormorant-garamond/600-italic.css";
+import "@fontsource/atkinson-hyperlegible/400.css";
+import "@fontsource/atkinson-hyperlegible/700.css";
+import "@fontsource/barlow-condensed/500.css";
+import "@fontsource/barlow-condensed/600.css";
+import "@fontsource/barlow-condensed/700.css";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/500.css";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "UniJam — Cross-platform song rooms",
-  description:
-    "Create one shared song room where Spotify and Apple Music friends shape the same queue, with provider-aware handoffs and safe playlist preparation.",
-  other: {
-    "codex-preview": "development",
+  metadataBase: new URL("https://unijam.ashlr.ai"),
+  title: { default: "UniJam — One room, every listener", template: "%s · UniJam" },
+  description: "Invite-only live music rooms for friends across Spotify and Apple Music.",
+  openGraph: {
+    type: "website",
+    url: "https://unijam.ashlr.ai",
+    title: "UniJam — One room, every listener",
+    description: "Invite-only live music rooms for friends across Spotify and Apple Music.",
+    images: [{ url: "/unijam-social-preview.png", width: 1731, height: 909, alt: "UniJam living setlist flowing through a live room." }],
   },
-  icons: {
-    icon: "/favicon.svg",
-    shortcut: "/favicon.svg",
+  twitter: {
+    card: "summary_large_image",
+    title: "UniJam — One room, every listener",
+    description: "Invite-only live music rooms for friends across Spotify and Apple Music.",
+    images: [{ url: "/unijam-social-preview.png", alt: "UniJam living setlist flowing through a live room." }],
   },
+  other: { "codex-preview": "development" },
+  icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
-  return (
-    <html lang="en">
-      <body>{children}</body>
-    </html>
-  );
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  return <html lang="en"><body>{children}</body></html>;
 }

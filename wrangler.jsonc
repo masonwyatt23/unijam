@@ -1,0 +1,88 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "unijam-web",
+  "main": "./worker/index.ts",
+  "compatibility_date": "2026-07-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "dist/client",
+    "not_found_handling": "none",
+    "binding": "ASSETS"
+  },
+  "images": { "binding": "IMAGES" },
+  "analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "unijam_development" }],
+  "vars": {
+    "APP_ENV": "development",
+    "APP_ORIGIN": "http://localhost:3000",
+    "WEBAUTHN_RP_ID": "localhost",
+    "ENABLE_LEGACY_ROOM_API": "false"
+  },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "unijam-development",
+    "database_id": "00000000-0000-4000-8000-000000000000",
+    "migrations_dir": "drizzle"
+  }],
+  "durable_objects": { "bindings": [{ "name": "ROOM_OBJECTS", "class_name": "RoomDurableObject" }] },
+  "migrations": [
+    { "tag": "v1-room-sqlite", "new_sqlite_classes": ["RoomDurableObject"] }
+  ],
+  "env": {
+    "production": {
+      "name": "unijam-web-production",
+      "images": { "binding": "IMAGES" },
+      "analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "unijam_production" }],
+      "routes": [{ "pattern": "unijam.ashlr.ai", "custom_domain": true }],
+      "vars": {
+        "APP_ENV": "production",
+        "APP_ORIGIN": "https://unijam.ashlr.ai",
+        "WEBAUTHN_RP_ID": "unijam.ashlr.ai",
+        "ENABLE_LEGACY_ROOM_API": "false"
+      },
+      "d1_databases": [{
+        "binding": "DB",
+        "database_name": "unijam-production",
+        // Provision before deployment and replace this non-routable sentinel.
+        "database_id": "00000000-0000-4000-8000-000000000001",
+        "migrations_dir": "drizzle"
+      }],
+      "durable_objects": {
+        "bindings": [{ "name": "ROOM_OBJECTS", "class_name": "RoomDurableObject" }]
+      },
+      "services": [{ "binding": "CONNECTORS", "service": "unijam-connectors-production" }],
+      "queues": {
+        "producers": [{ "binding": "ROOM_PROJECTION_QUEUE", "queue": "unijam-room-projection-production" }],
+        "consumers": [{ "queue": "unijam-room-projection-production", "dead_letter_queue": "unijam-room-projection-production-dlq", "max_batch_size": 25, "max_retries": 5 }]
+      },
+      "triggers": { "crons": ["17 4 * * *"] }
+    },
+    "staging": {
+      "name": "unijam-web-staging",
+      "images": { "binding": "IMAGES" },
+      "analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "unijam_staging" }],
+      "routes": [{ "pattern": "staging.unijam.ashlr.ai", "custom_domain": true }],
+      "vars": {
+        "APP_ENV": "staging",
+        "APP_ORIGIN": "https://staging.unijam.ashlr.ai",
+        "WEBAUTHN_RP_ID": "staging.unijam.ashlr.ai",
+        "ENABLE_LEGACY_ROOM_API": "false"
+      },
+      "d1_databases": [{
+        "binding": "DB",
+        "database_name": "unijam-staging",
+        // Provision before deployment and replace this non-routable sentinel.
+        "database_id": "00000000-0000-4000-8000-000000000002",
+        "migrations_dir": "drizzle"
+      }],
+      "durable_objects": {
+        "bindings": [{ "name": "ROOM_OBJECTS", "class_name": "RoomDurableObject" }]
+      },
+      "services": [{ "binding": "CONNECTORS", "service": "unijam-connectors-staging" }],
+      "queues": {
+        "producers": [{ "binding": "ROOM_PROJECTION_QUEUE", "queue": "unijam-room-projection-staging" }],
+        "consumers": [{ "queue": "unijam-room-projection-staging", "dead_letter_queue": "unijam-room-projection-staging-dlq", "max_batch_size": 25, "max_retries": 3 }]
+      },
+      "triggers": { "crons": ["47 4 * * *"] }
+    }
+  }
+}

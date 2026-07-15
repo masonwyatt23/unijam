@@ -1,7 +1,7 @@
 # UniJam architecture
 
-This document describes the current room platform and the boundary for future
-Spotify and Apple Music connectors.
+This document describes the current room platform and the implementation
+boundary for Spotify and Apple Music connectors.
 
 ## System responsibility
 
@@ -23,13 +23,17 @@ changing the canonical room.
 sequenceDiagram
     participant C as Client
     participant A as Room API
+    participant R as Room Durable Object
+    participant Q as Projection Queue
     participant D as D1
 
     C->>A: Exchange invite for participant session
-    A->>D: Bind identity, role, service, and expiry
+    A->>D: Bind opaque identity, role, and expiry
     C->>A: Submit event with stable event ID
-    A->>D: Authorize, rate-limit, and insert
-    A->>D: Project ordered events into snapshot
+    A->>R: Authorize and forward derived actor + command
+    R->>R: Atomically validate, event, snapshot, result, outbox
+    R-->>Q: Deliver projection at least once
+    Q->>D: Deduplicate and project monotonically
     A-->>C: Return canonical snapshot and cursor
 ```
 
@@ -52,8 +56,9 @@ body. Those values come from the authenticated participant session.
 
 ## Event model
 
-Room changes are immutable events keyed by `(room_id, event_id)`. The server
-rejects reuse of an event ID for different content or by a different actor.
+Room changes are immutable Durable Object events. Commands are keyed by stable
+`commandId`; exact actor-scoped intent returns the original acknowledgement,
+while different intent returns `COMMAND_ID_CONFLICT`.
 
 The ordered reducer builds a compact canonical snapshot containing participants,
 suggestions, votes, readiness, reactions, playback phase, and queue position.
@@ -99,6 +104,23 @@ Each destination progresses independently through validation, authorization,
 publishing, retry, reconnect, and reconciliation. A failure at Apple must not
 block Spotify or the room itself.
 
+The pure domain boundary is split into three modules:
+
+- `lib/catalog` parses provider references and neutral text, then scores
+  synthetic/connector-supplied candidates for the US storefront. It has no
+  network client and never uses embeddings or other ML-derived evidence.
+- `lib/providers` defines catalog/publishing adapter contracts, generates only
+  allowlisted handoff URLs, and provides the versioned AES-256-GCM token
+  envelope used by the connector Worker.
+- `lib/publishing` creates immutable destination previews and owner-confirmed,
+  item-idempotent operations. Partial or timeout-ambiguous writes enter a
+  reconciliation-required phase before another append is allowed.
+
+Provider credentials are referenced by opaque connection IDs across the
+application boundary. Only the connector Worker may resolve those references,
+decrypt token envelopes, or invoke a provider adapter. Room code receives safe
+catalog observations and operation state, never provider tokens.
+
 See [`CONNECTOR_BOUNDARIES.md`](CONNECTOR_BOUNDARIES.md) for verified API
 capabilities and policy constraints.
 
@@ -116,19 +138,24 @@ Live, remix, clean, explicit, deluxe, and regional recordings remain distinct
 unless evidence supports equivalence. One provider match never proves that a
 track exists in another listener's storefront.
 
+The pilot resolver accepts only storefront `US`. A missing storefront result,
+an unavailable US result, a material version/explicit/duration conflict, or a
+winner/runner-up margin below the deterministic threshold produces a hold.
+User confirmation is a later audited command; the resolver never silently
+promotes a held candidate.
+
 ## Deployment shape
 
 - Next.js and React application compiled by Vinext
-- Cloudflare Worker request runtime
-- D1 persistence through the `DB` binding
+- Cloudflare Worker request runtime with isolated production and staging
+- One SQLite-backed `RoomDurableObject` per room with hibernating WebSockets
+- D1 account, registry, catalog, audit, operation, and projection persistence
+- Queue-backed, at-least-once room projection with stable event receipts
 - Drizzle schema and checked-in migrations
 - Static assets bundled with the worker artifact
 
 ## Known limitations
 
-- The visible queue still uses seeded demo tracks rather than canonical queue
-  occurrences created from approved suggestions.
-- Provider authorization and writes are not active.
-- Event delivery uses polling rather than a push transport.
-- Snapshot refresh currently happens in the request path.
-- Public identity and abuse systems are intentionally minimal for the alpha.
+- Cloudflare resource IDs and child-zone DNS delegation require operator provisioning.
+- Spotify public launch remains gated by provider quota approval.
+- Provider authorization requires operator-supplied credentials and feature flags.
