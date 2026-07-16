@@ -84,6 +84,8 @@ test("a recovery session can enroll an additional passkey without bypassing gate
   assert.match(host, /passkeys\/additional\/verify/);
   assert.match(host, /single-use recovery enrollment grant expires after 15 minutes/);
   assert.match(host, /Sensitive provider and destructive actions remain unavailable/);
+  assert.match(host, /Add another passkey/);
+  assert.match(host, /Cofounders should use separate pilot invites and accounts/);
 });
 
 test("MusicKit authorization is isolated to the provider connection route", async () => {
