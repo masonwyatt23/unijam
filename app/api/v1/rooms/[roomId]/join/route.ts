@@ -4,6 +4,7 @@ import { apiError, apiResponse } from "@/lib/server/api-response";
 import { exchangeGuestCapability, GuestCapabilityError, normalizeV1RoomId, roomStub, actorHeaders, type RoomAuthorityEnv } from "@/lib/server/room-authority";
 import { consumeAuthRateLimit, requestIp } from "@/lib/server/auth-rate-limit";
 import { hashOpaqueToken } from "@/lib/server/secure-token";
+import { authenticateHost } from "@/lib/server/host-session";
 
 type RouteContext = { params: Promise<{ roomId: string }> };
 
@@ -22,15 +23,22 @@ export async function POST(request: Request, context: RouteContext): Promise<Res
     ]);
     if (!ipAllowed || !capabilityAllowed) return apiError("JOIN_RATE_LIMITED", "Too many join attempts; try again later", 429, true);
     const runtime = env as RoomAuthorityEnv;
-    const session = await exchangeGuestCapability(runtime, roomId, body.capability, body.nickname);
+    // An account enriches a successful invite exchange; it never grants room
+    // entry or changes the room-scoped participant role by itself.
+    const account = await authenticateHost(env.DB, request);
+    const session = await exchangeGuestCapability(runtime, roomId, body.capability, body.nickname, account?.account_id ?? null);
     const joined = await roomStub(runtime, roomId).fetch(new Request("https://room.internal/commands", {
       method: "POST",
       headers: { ...Object.fromEntries(actorHeaders(session.actor, roomId)), "Content-Type": "application/json" },
       body: JSON.stringify({ commandId: `join_${crypto.randomUUID()}`, action: "participant.join", payload: {} }),
     }));
     if (!joined.ok) {
-      await env.DB.prepare("UPDATE guest_sessions SET revoked_at_ms = ? WHERE session_id = ? AND revoked_at_ms IS NULL")
-        .bind(Date.now(), session.sessionId).run();
+      await env.DB.batch([
+        env.DB.prepare("UPDATE guest_sessions SET revoked_at_ms = ? WHERE session_id = ? AND revoked_at_ms IS NULL")
+          .bind(Date.now(), session.sessionId),
+        env.DB.prepare("DELETE FROM room_memberships WHERE room_id = ? AND participant_id = ?")
+          .bind(roomId, session.actor.participantId),
+      ]);
       const rejection = await joined.json().catch(() => null) as { code?: string; message?: string } | null;
       const code = rejection?.code === "ROOM_LOCKED" || rejection?.code === "ROOM_FULL" ? rejection.code : "ROOM_JOIN_FAILED";
       return apiError(code, rejection?.message ?? "Room rejected the participant session", joined.status);

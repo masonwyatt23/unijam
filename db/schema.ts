@@ -1,4 +1,5 @@
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
+import { check, index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const rooms = sqliteTable("rooms", {
   roomId: text("room_id").primaryKey(),
@@ -111,9 +112,32 @@ export const hostSessions = sqliteTable("host_sessions", {
 
 export const guestSessions = sqliteTable("guest_sessions", {
   sessionId: text("session_id").primaryKey(), tokenHash: text("token_hash").notNull(), roomId: text("room_id").notNull(), participantId: text("participant_id").notNull(),
+  accountId: text("account_id"),
   nickname: text("nickname").notNull(), role: text("role").notNull().default("guest"), inviteEpoch: integer("invite_epoch").notNull(), expiresAtMs: integer("expires_at_ms").notNull(),
   createdAtMs: integer("created_at_ms").notNull(), lastSeenAtMs: integer("last_seen_at_ms").notNull(), revokedAtMs: integer("revoked_at_ms"),
-}, (table) => [uniqueIndex("guest_sessions_token_idx").on(table.tokenHash), index("guest_sessions_room_expiry_idx").on(table.roomId, table.expiresAtMs)]);
+}, (table) => [
+  uniqueIndex("guest_sessions_token_idx").on(table.tokenHash),
+  index("guest_sessions_room_expiry_idx").on(table.roomId, table.expiresAtMs),
+  index("guest_sessions_account_idx").on(table.accountId),
+]);
+
+export const roomMemberships = sqliteTable("room_memberships", {
+  membershipId: text("membership_id").primaryKey(),
+  accountId: text("account_id").notNull(),
+  roomId: text("room_id").notNull(),
+  participantId: text("participant_id").notNull(),
+  nickname: text("nickname").notNull(),
+  joinedAtMs: integer("joined_at_ms").notNull(),
+  lastJoinedAtMs: integer("last_joined_at_ms").notNull(),
+}, (table) => [
+  uniqueIndex("room_memberships_account_room_idx").on(table.accountId, table.roomId),
+  uniqueIndex("room_memberships_room_participant_idx").on(table.roomId, table.participantId),
+  index("room_memberships_account_last_joined_idx").on(table.accountId, table.lastJoinedAtMs),
+  index("room_memberships_room_last_joined_idx").on(table.roomId, table.lastJoinedAtMs),
+  check("room_memberships_identity_check", sql`length(${table.accountId}) > 0 AND length(${table.roomId}) > 0 AND length(${table.participantId}) > 0`),
+  check("room_memberships_nickname_check", sql`length(trim(${table.nickname})) BETWEEN 1 AND 48`),
+  check("room_memberships_joined_order_check", sql`${table.lastJoinedAtMs} >= ${table.joinedAtMs}`),
+]);
 
 export const recoveryCodes = sqliteTable("recovery_codes", {
   recoveryCodeId: text("recovery_code_id").primaryKey(), accountId: text("account_id").notNull(), codeHash: text("code_hash").notNull(),

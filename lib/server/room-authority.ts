@@ -20,6 +20,7 @@ type RegistryRow = {
 type GuestRow = {
   session_id: string;
   participant_id: string;
+  account_id: string | null;
   nickname: string;
   role: RoomActor["role"];
   invite_epoch: number;
@@ -36,6 +37,8 @@ export class GuestCapabilityError extends Error {
 export type RoomSessionContext = {
   kind: "host" | "guest";
   sessionId: string;
+  /** The account bound to this exact authenticated session, when one exists. */
+  accountId: string | null;
   expiresAtMs: number;
   inviteEpoch: number;
 };
@@ -93,14 +96,14 @@ export async function authenticateRoomActor(
   if (host?.account_id === registry.owner_account_id) {
     return {
       actor: { participantId: host.account_id, role: "host", nickname: host.display_name }, registry,
-      session: { kind: "host", sessionId: host.session_id, expiresAtMs: host.expires_at_ms, inviteEpoch: registry.invite_epoch },
+      session: { kind: "host", sessionId: host.session_id, accountId: host.account_id, expiresAtMs: host.expires_at_ms, inviteEpoch: registry.invite_epoch },
     };
   }
   if (registry.lifecycle !== "active") return null;
   const token = readCookie(request, GUEST_SESSION_COOKIE);
   if (!token) return null;
   const guest = await env.DB.prepare(
-    `SELECT session_id, participant_id, nickname, role, invite_epoch, expires_at_ms FROM guest_sessions
+    `SELECT session_id, participant_id, account_id, nickname, role, invite_epoch, expires_at_ms FROM guest_sessions
      WHERE token_hash = ? AND room_id = ? AND revoked_at_ms IS NULL AND expires_at_ms > ? LIMIT 1`,
   ).bind(await hashOpaqueToken(token), roomId, Date.now()).first<GuestRow>();
   if (!guest || guest.invite_epoch !== registry.invite_epoch) return null;
@@ -108,7 +111,7 @@ export async function authenticateRoomActor(
     .bind(Date.now(), guest.session_id).run();
   return {
     actor: { participantId: guest.participant_id, role: guest.role, nickname: guest.nickname }, registry,
-    session: { kind: "guest", sessionId: guest.session_id, expiresAtMs: guest.expires_at_ms, inviteEpoch: guest.invite_epoch },
+    session: { kind: "guest", sessionId: guest.session_id, accountId: guest.account_id, expiresAtMs: guest.expires_at_ms, inviteEpoch: guest.invite_epoch },
   };
 }
 
@@ -117,6 +120,7 @@ export async function exchangeGuestCapability(
   roomId: string,
   capability: string,
   nickname: string,
+  accountId: string | null = null,
 ): Promise<{ actor: RoomActor; cookie: string; sessionId: string }> {
   const registry = await getRoomRegistry(env.DB, roomId);
   if (!registry) throw new GuestCapabilityError("INVITE_INVALID", "This invite does not identify an available room", 401);
@@ -134,12 +138,28 @@ export async function exchangeGuestCapability(
   const participantId = `p_${crypto.randomUUID()}`;
   const now = Date.now();
   const ttl = 12 * 60 * 60;
-  const inserted = await env.DB.prepare(
-    `INSERT INTO guest_sessions
-     (session_id, token_hash, room_id, participant_id, nickname, role, invite_epoch, expires_at_ms, created_at_ms, last_seen_at_ms)
-     SELECT ?, ?, ?, ?, ?, 'guest', ?, ?, ?, ?
-     WHERE (SELECT COUNT(*) FROM guest_sessions WHERE room_id = ? AND revoked_at_ms IS NULL AND expires_at_ms > ?) < 25`,
-  ).bind(sessionId, await hashOpaqueToken(token), roomId, participantId, cleanedNickname, registry.invite_epoch, now + ttl * 1_000, now, now, roomId, now).run();
+  const [inserted] = await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO guest_sessions
+       (session_id, token_hash, room_id, participant_id, account_id, nickname, role, invite_epoch, expires_at_ms, created_at_ms, last_seen_at_ms)
+       SELECT ?, ?, ?, ?, ?, ?, 'guest', ?, ?, ?, ?
+       WHERE (SELECT COUNT(*) FROM guest_sessions WHERE room_id = ? AND revoked_at_ms IS NULL AND expires_at_ms > ?) < 25`,
+    ).bind(
+      sessionId, await hashOpaqueToken(token), roomId, participantId, accountId, cleanedNickname,
+      registry.invite_epoch, now + ttl * 1_000, now, now, roomId, now,
+    ),
+    env.DB.prepare(
+      `INSERT INTO room_memberships
+       (membership_id, account_id, room_id, participant_id, nickname, joined_at_ms, last_joined_at_ms)
+       SELECT ?, account_id, room_id, participant_id, nickname, ?, ?
+       FROM guest_sessions
+       WHERE session_id = ? AND account_id IS NOT NULL
+       ON CONFLICT(account_id, room_id) DO UPDATE SET
+         participant_id = excluded.participant_id,
+         nickname = excluded.nickname,
+         last_joined_at_ms = excluded.last_joined_at_ms`,
+    ).bind(crypto.randomUUID(), now, now, sessionId),
+  ]);
   if ((inserted.meta.changes ?? 0) !== 1) throw new GuestCapabilityError("ROOM_FULL", "This room has reached its participant limit", 409);
   return {
     actor: { participantId, role: "guest", nickname: cleanedNickname },

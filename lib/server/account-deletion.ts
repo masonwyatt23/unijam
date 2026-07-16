@@ -1,4 +1,5 @@
 import { hashOpaqueToken } from "./secure-token.ts";
+import { accountParticipationDeletionStatements } from "./room-membership.ts";
 
 export const ACCOUNT_DELETION_CONFIRMATION = "DELETE MY UNIJAM ACCOUNT";
 export const ACCOUNT_DELETION_RECEIPT_MS = 24 * 60 * 60_000;
@@ -125,6 +126,7 @@ export async function finalizeAccountDeletion(
   now = Date.now(),
 ): Promise<void> {
   await db.batch([
+    ...accountParticipationDeletionStatements(db, accountId),
     db.prepare("DELETE FROM publish_items WHERE operation_id IN (SELECT operation_id FROM publish_operations WHERE account_id = ?)").bind(accountId),
     db.prepare("DELETE FROM publish_operations WHERE account_id = ?").bind(accountId),
     db.prepare("DELETE FROM provider_match_reviews WHERE account_id = ?").bind(accountId),
@@ -132,7 +134,6 @@ export async function finalizeAccountDeletion(
     db.prepare("DELETE FROM audit_records WHERE account_id = ? OR room_id IN (SELECT room_id FROM room_registry WHERE owner_account_id = ?)").bind(accountId, accountId),
     db.prepare("DELETE FROM room_projection_receipts WHERE room_id IN (SELECT room_id FROM room_registry WHERE owner_account_id = ?)").bind(accountId),
     db.prepare("DELETE FROM room_projections WHERE room_id IN (SELECT room_id FROM room_registry WHERE owner_account_id = ?)").bind(accountId),
-    db.prepare("DELETE FROM guest_sessions WHERE room_id IN (SELECT room_id FROM room_registry WHERE owner_account_id = ?)").bind(accountId),
     db.prepare("DELETE FROM legacy_room_imports WHERE owner_account_id = ?").bind(accountId),
     db.prepare("DELETE FROM passkey_challenges WHERE account_id = ?").bind(accountId),
     db.prepare("DELETE FROM recovery_codes WHERE account_id = ?").bind(accountId),
