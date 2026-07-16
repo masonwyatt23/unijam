@@ -48,8 +48,7 @@
       "d1_databases": [{
         "binding": "CONNECTOR_DB",
         "database_name": "unijam-connectors-production",
-        // Provision before deployment and replace this non-routable sentinel.
-        "database_id": "00000000-0000-4000-8000-000000000011",
+        "database_id": "292d9488-acb6-4e4e-b463-1a0d37e26c64",
         "migrations_dir": "connectors/migrations"
       }],
       "queues": {

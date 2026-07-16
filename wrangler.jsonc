@@ -46,8 +46,7 @@
       "d1_databases": [{
         "binding": "DB",
         "database_name": "unijam-production",
-        // Provision before deployment and replace this non-routable sentinel.
-        "database_id": "00000000-0000-4000-8000-000000000001",
+        "database_id": "8aca713b-9a6a-4ed5-8bca-5ffd77d562bf",
         "migrations_dir": "drizzle"
       }],
       "durable_objects": {

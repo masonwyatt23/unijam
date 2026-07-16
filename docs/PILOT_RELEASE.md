@@ -8,34 +8,41 @@ verification below all pass.
 
 ## Current release status — 2026-07-15
 
-Production is not currently deployable to Cloudflare. Staging resources have
-been provisioned but staging traffic is not yet active:
+Production infrastructure is provisioned but no production Worker has been
+deployed. The flags-closed staging Workers are deployed, while staging TLS and
+the remaining acceptance gates are still pending:
 
 - The two isolated staging D1 databases and four staging Queues/DLQs exist in
   the verified Cloudflare account. Their checked-in migrations were applied on
   2026-07-15 and both databases reported zero pending migrations afterward.
   `npm run validate:deploy:staging` passes with no warnings.
-- `unijam-web-staging` and `unijam-connectors-staging` have not been deployed,
-  and their required staging secrets have not been installed. Cloudflare
-  rejected the first connector deployment with API code `10089`; Analytics
-  Engine was then enabled, but the deployment was not retried because security
-  and DNS gates were still open. The staging origin remains unreachable.
-- `wrangler.jsonc` and `wrangler.connectors.jsonc` retain two non-routable
-  production D1 sentinel IDs. `npm run validate:release-config` reports them and
-  strict production validation exits nonzero until they are replaced.
+- `unijam-web-staging` and the route-free `unijam-connectors-staging` are
+  deployed with all provider flags closed. Their five baseline internal secret
+  names are installed, both Queue consumers and crons are registered, and the
+  web Worker has an isolated SQLite Durable Object namespace. `workers.dev`
+  and preview aliases are explicitly disabled and enforced by release tests.
+  `staging.unijam.ashlr.ai` resolves to the custom domain, but its first TLS
+  certificate is still provisioning, so remote acceptance remains blocked.
+- The two isolated production D1 databases and four production Queues/DLQs now
+  exist. All checked-in migrations were applied and both databases report zero
+  pending migrations. The real D1 IDs replace the production sentinels and
+  `npm run validate:deploy:production` passes with no warnings. No production
+  Worker, secret, Durable Object namespace, custom domain, or traffic is active.
 - Cloudflare authentication is available for the verified operator account. A
-  Free-plan `ashlr.ai` full zone has been created in pending state and the
+  Free-plan `ashlr.ai` full zone is authoritative and the
   reviewed 43-record DNS-only inventory has been imported. Both assigned
   nameservers (`elisabeth.ns.cloudflare.com` and `tanner.ns.cloudflare.com`)
   passed direct record parity checks, including mail, verification, wildcard,
   Railway, DKIM, and the delegated Vercel ACME challenge records. The flattened
   apex returned the exact live landing-page content from every observed target.
-  Public authority is still Vercel; no registrar nameserver, custom domain, or
-  public route has been activated.
+  Squarespace delegation now points to those Cloudflare nameservers. The apex
+  and all 23 preserved Vercel/Railway web/API checks retained their expected
+  results after cutover; the landing page remained byte-identical. Unrelated
+  records remain DNS-only.
 - Cloudflare Free/Pro onboarding rejected `unijam.ashlr.ai` as a standalone
   zone, because incoming child-zone delegation is Enterprise-only. The owner
-  approved the full-zone migration and its pending-zone parity gate now passes,
-  but no Vercel DNS record or `ashlr.ai` registrar nameserver has been changed.
+  approved the full-zone migration, its parity gate passed, and the controlled
+  registrar cutover completed without changing any Vercel destination.
 - Production and staging connector secrets, Spotify app registrations, Apple
   Music identifiers/keys, Music User Tokens, and pilot account IDs are absent.
 - Spotify extended-quota approval remains the public-launch gate. The pilot is
