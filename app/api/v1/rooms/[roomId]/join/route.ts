@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 
 import { apiError, apiResponse } from "@/lib/server/api-response";
-import { exchangeGuestCapability, normalizeV1RoomId, roomStub, actorHeaders, type RoomAuthorityEnv } from "@/lib/server/room-authority";
+import { exchangeGuestCapability, GuestCapabilityError, normalizeV1RoomId, roomStub, actorHeaders, type RoomAuthorityEnv } from "@/lib/server/room-authority";
 import { consumeAuthRateLimit, requestIp } from "@/lib/server/auth-rate-limit";
 import { hashOpaqueToken } from "@/lib/server/secure-token";
 
@@ -31,14 +31,16 @@ export async function POST(request: Request, context: RouteContext): Promise<Res
     if (!joined.ok) {
       await env.DB.prepare("UPDATE guest_sessions SET revoked_at_ms = ? WHERE session_id = ? AND revoked_at_ms IS NULL")
         .bind(Date.now(), session.sessionId).run();
-      const rejection = await joined.json().catch(() => null) as { message?: string } | null;
-      return apiError("ROOM_JOIN_FAILED", rejection?.message ?? "Room rejected the participant session", joined.status);
+      const rejection = await joined.json().catch(() => null) as { code?: string; message?: string } | null;
+      const code = rejection?.code === "ROOM_LOCKED" || rejection?.code === "ROOM_FULL" ? rejection.code : "ROOM_JOIN_FAILED";
+      return apiError(code, rejection?.message ?? "Room rejected the participant session", joined.status);
     }
     return apiResponse({ roomId, participantId: session.actor.participantId, role: session.actor.role }, {
       status: 201,
       headers: { "Set-Cookie": session.cookie },
     });
-  } catch {
-    return apiError("INVALID_OR_EXPIRED_INVITE", "Invite is invalid, expired, or rotated", 401);
+  } catch (cause) {
+    if (cause instanceof GuestCapabilityError) return apiError(cause.code, cause.message, cause.status);
+    return apiError("INVALID_INVITE_EXCHANGE", "The invite exchange request is invalid", 400);
   }
 }

@@ -230,7 +230,7 @@ select { height: 48px; cursor: pointer; }
 .room-actions { display: flex; align-items: center; gap: 10px; }
 .connection-state { min-height: 34px; display: inline-flex; align-items: center; gap: 7px; color: var(--ink-soft); font: .875rem var(--utility); text-transform: uppercase; }
 .connection-state > span { width: 8px; height: 8px; border-radius: 50%; background: var(--done); }
-.state-reconnecting > span { background: var(--hold); animation: blink 1s infinite; }
+.state-connecting > span, .state-reconnecting > span { background: var(--hold); animation: blink 1s infinite; }
 .state-offline > span { background: var(--danger); }
 .status-banner { display: grid; grid-template-columns: auto 1fr auto; gap: 13px; align-items: center; margin-bottom: 24px; padding: 16px 18px; border: 1px solid #acc8ef; border-radius: 4px; background: var(--cue-soft); color: var(--cue-dark); }
 .status-banner p { margin: 2px 0 0; color: var(--ink-soft); }
@@ -365,6 +365,8 @@ select { height: 48px; cursor: pointer; }
 .confidence.pending { background: var(--cue-soft); color: var(--cue-dark); }
 .connection-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 22px; }
 .connection-card { overflow: hidden; border: 1px solid var(--line); border-radius: 6px; background: white; }
+.connection-detail { max-width: 760px; }
+.provider-neutral-bg { background: var(--paper-blue); }
 .provider-isolation { min-height: 160px; display: grid; place-items: center; }
 .provider-spotify-bg { background: #191414; }
 .provider-isolation .provider-brand { padding: 18px; }

@@ -26,6 +26,13 @@ type GuestRow = {
   expires_at_ms: number;
 };
 
+export class GuestCapabilityError extends Error {
+  constructor(readonly code: "INVITE_INVALID" | "INVITE_INVALID_OR_ROTATED" | "ROOM_ENDED" | "INVALID_NICKNAME" | "ROOM_FULL", message: string, readonly status: number) {
+    super(message);
+    this.name = "GuestCapabilityError";
+  }
+}
+
 export type RoomSessionContext = {
   kind: "host" | "guest";
   sessionId: string;
@@ -112,11 +119,16 @@ export async function exchangeGuestCapability(
   nickname: string,
 ): Promise<{ actor: RoomActor; cookie: string; sessionId: string }> {
   const registry = await getRoomRegistry(env.DB, roomId);
-  if (!registry || registry.lifecycle !== "active") throw new Error("Room is unavailable");
+  if (!registry) throw new GuestCapabilityError("INVITE_INVALID", "This invite does not identify an available room", 401);
+  if (registry.lifecycle !== "active") throw new GuestCapabilityError("ROOM_ENDED", "This room has ended", 410);
   const suppliedHash = await hashOpaqueToken(capability);
-  if (!timingSafeEqual(suppliedHash, registry.guest_capability_hash)) throw new Error("Invite is invalid or rotated");
+  if (!timingSafeEqual(suppliedHash, registry.guest_capability_hash)) {
+    throw new GuestCapabilityError("INVITE_INVALID_OR_ROTATED", "This invite is invalid or was replaced by the host", 401);
+  }
   const cleanedNickname = nickname.trim();
-  if (!cleanedNickname || cleanedNickname.length > 48) throw new Error("Nickname must contain 1-48 characters");
+  if (!cleanedNickname || cleanedNickname.length > 48) {
+    throw new GuestCapabilityError("INVALID_NICKNAME", "Nickname must contain 1-48 characters", 400);
+  }
   const token = randomToken();
   const sessionId = crypto.randomUUID();
   const participantId = `p_${crypto.randomUUID()}`;
@@ -128,7 +140,7 @@ export async function exchangeGuestCapability(
      SELECT ?, ?, ?, ?, ?, 'guest', ?, ?, ?, ?
      WHERE (SELECT COUNT(*) FROM guest_sessions WHERE room_id = ? AND revoked_at_ms IS NULL AND expires_at_ms > ?) < 25`,
   ).bind(sessionId, await hashOpaqueToken(token), roomId, participantId, cleanedNickname, registry.invite_epoch, now + ttl * 1_000, now, now, roomId, now).run();
-  if ((inserted.meta.changes ?? 0) !== 1) throw new Error("Room has reached its participant limit");
+  if ((inserted.meta.changes ?? 0) !== 1) throw new GuestCapabilityError("ROOM_FULL", "This room has reached its participant limit", 409);
   return {
     actor: { participantId, role: "guest", nickname: cleanedNickname },
     cookie: sessionCookie(GUEST_SESSION_COOKIE, token, ttl),

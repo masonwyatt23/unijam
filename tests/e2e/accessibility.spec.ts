@@ -105,6 +105,31 @@ async function mockProviderStatuses(page: Page) {
   }));
 }
 
+async function mockHandoffs(page: Page) {
+  await page.route(/\/api\/v1\/rooms\/ROOM1234\/handoff\/(spotify|apple-music)$/, (route) => {
+    const provider = route.request().url().endsWith("spotify") ? "spotify" : "apple_music";
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          occurrenceId: "occ_now12345",
+          recordingId: "rec_now12345",
+          title: "Confirmed Pick",
+          provider,
+          links: {
+            universalUrl: provider === "spotify" ? "https://open.spotify.com/track/0123456789ABCDEFGHIJKL" : "https://music.apple.com/us/song/123456789",
+            nativeUri: provider === "spotify" ? "spotify:track:0123456789ABCDEFGHIJKL" : "music://music.apple.com/us/song/123456789",
+            storefront: "US",
+          },
+        },
+        error: null,
+        requestId: "req_handoff",
+      }),
+    });
+  });
+}
+
 async function expectNoSeriousAxeViolations(page: Page) {
   const result = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
@@ -146,8 +171,9 @@ test("critical host routes meet automated accessibility, text, and target gates"
   await mockRoom(page);
   await mockHost(page);
   await mockProviderStatuses(page);
+  await mockHandoffs(page);
 
-  for (const path of ["/room/ROOM1234", "/room/ROOM1234/review", "/room/ROOM1234/recap", "/connections"]) {
+  for (const path of ["/room/ROOM1234", "/room/ROOM1234/review", "/room/ROOM1234/recap", "/room/ROOM1234/publish", "/room/ROOM1234/handoff/spotify", "/room/ROOM1234/handoff/apple-music", "/connections", "/connections/spotify", "/connections/apple-music"]) {
     await gotoReady(page, path);
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
     await expectNoSeriousAxeViolations(page);
@@ -168,12 +194,13 @@ test("critical room and provider routes reflow at 200 and 400 percent equivalent
   await mockRoom(page);
   await mockHost(page);
   await mockProviderStatuses(page);
+  await mockHandoffs(page);
 
   // A 1280 CSS-pixel baseline reduced to 640 and 320 CSS pixels exercises the
   // layout space available at 200% and 400% browser zoom respectively.
   for (const width of [640, 320]) {
     await page.setViewportSize({ width, height: 900 });
-    for (const path of ["/room/ROOM1234", "/room/ROOM1234/review", "/room/ROOM1234/recap", "/connections"]) {
+    for (const path of ["/room/ROOM1234", "/room/ROOM1234/review", "/room/ROOM1234/recap", "/room/ROOM1234/publish", "/room/ROOM1234/handoff/spotify", "/room/ROOM1234/handoff/apple-music", "/connections", "/connections/spotify", "/connections/apple-music"]) {
       await gotoReady(page, path);
       await expectNoHorizontalOverflow(page);
     }
@@ -247,9 +274,9 @@ test("a provider status failure has an operable retry without blocking the other
   }));
 
   await gotoReady(page, "/connections");
-  await expect(page.getByRole("button", { name: "Connect Apple Music" })).toBeEnabled();
+  await expect(page.getByRole("link", { name: "Manage Apple Music" })).toBeVisible();
   await page.getByRole("button", { name: "Retry Spotify status" }).click();
-  await expect(page.getByRole("link", { name: "Connect Spotify" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Manage Spotify" })).toBeVisible();
   expect(spotifyAttempts).toBe(2);
 });
 
@@ -271,7 +298,7 @@ test("a failed provider disconnect is exposed as an alert with recovery copy", a
     body: JSON.stringify({ data: null, error: { code: "CONNECTOR_UNAVAILABLE", message: "Spotify disconnect is temporarily unavailable.", retryable: true }, requestId: "req_disconnect" }),
   }));
 
-  await gotoReady(page, "/connections");
+  await gotoReady(page, "/connections/spotify");
   await page.getByRole("button", { name: "Disconnect Spotify" }).click();
   await expect(page.getByRole("alert")).toHaveText("Spotify disconnect is temporarily unavailable.");
 });

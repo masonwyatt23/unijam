@@ -98,7 +98,12 @@ type SocketAttachment = {
   clientInstanceId?: string;
 };
 
-class RoomCommandRejection extends Error {}
+class RoomCommandRejection extends Error {
+  constructor(message: string, readonly code = "COMMAND_REJECTED") {
+    super(message);
+    this.name = "RoomCommandRejection";
+  }
+}
 
 const defaultRules: RoomRules = {
   contributionLimit: 3,
@@ -662,7 +667,7 @@ export class RoomDurableObject extends DurableObject<RoomEnv> {
       result = this.ctx.storage.transactionSync(() => this.applyCommand(command, canonicalActor, metadata, intent));
     } catch (error) {
       result = protocolError(
-        "COMMAND_REJECTED",
+        error instanceof RoomCommandRejection ? error.code : "COMMAND_REJECTED",
         error instanceof RoomCommandRejection ? error.message : "Command was rejected",
         metadata.sequence,
         command.commandId,
@@ -686,10 +691,10 @@ export class RoomDurableObject extends DurableObject<RoomEnv> {
     switch (command.action) {
       case "participant.join":
         if ((actor.role === "guest" || actor.role === "viewer") && snapshot.rules.locked) {
-          throw new RoomCommandRejection("This room is locked");
+          throw new RoomCommandRejection("This room is locked", "ROOM_LOCKED");
         }
         if (!snapshot.participants[actor.participantId] && Object.keys(snapshot.participants).length >= 25) {
-          throw new RoomCommandRejection("This room has reached the 25-participant pilot limit");
+          throw new RoomCommandRejection("This room has reached the 25-participant pilot limit", "ROOM_FULL");
         }
         snapshot.participants[actor.participantId] = { ...actor, ready: false };
         this.ctx.storage.sql.exec(
@@ -1097,6 +1102,8 @@ export class RoomDurableObject extends DurableObject<RoomEnv> {
     if (code === "UNAUTHORIZED") return 401;
     if (code === "FORBIDDEN") return 403;
     if (code === "RATE_LIMITED") return 429;
+    if (code === "ROOM_LOCKED") return 423;
+    if (code === "ROOM_FULL") return 409;
     if (["COMMAND_ID_CONFLICT", "STALE_SEQUENCE", "COMMAND_REJECTED", "CONTROL_ENDPOINT_REQUIRED"].includes(code)) return 409;
     return 400;
   }

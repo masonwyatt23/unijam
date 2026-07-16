@@ -480,7 +480,7 @@ describe("RoomDurableObject serialized authority", () => {
     expect(await command(lockedStub, host, "command_lock_room_01", "room.rules.update", { rules: { locked: true } }))
       .toMatchObject({ type: "ack" });
     expect(await command(lockedStub, guest, "command_join_locked_01", "participant.join", {}))
-      .toMatchObject({ type: "error", code: "COMMAND_REJECTED" });
+      .toMatchObject({ type: "error", code: "ROOM_LOCKED" });
 
     const fullStub = await newRoom("participant-cap");
     const joins = await Promise.all(Array.from({ length: 26 }, (_, index) => command(

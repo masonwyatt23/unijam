@@ -11,7 +11,8 @@ test("provider artwork is centralized and official", async () => {
   const allUi = await Promise.all([
     "app/page.tsx", "app/host/page.tsx", "app/join/page.tsx",
     "app/room/[roomId]/page.tsx", "app/room/[roomId]/review/page.tsx",
-    "app/connections/page.tsx", "app/room/[roomId]/handoff/apple-music/page.tsx", "app/room/[roomId]/publish/page.tsx",
+    "app/connections/page.tsx", "app/connections/spotify/page.tsx", "app/connections/apple-music/page.tsx",
+    "app/room/[roomId]/handoff/apple-music/page.tsx", "app/room/[roomId]/publish/page.tsx",
     "app/room/[roomId]/recap/page.tsx",
   ].map(read));
   assert.match(product, /Full_Logo_Black_RGB\.svg/);
@@ -86,15 +87,29 @@ test("a recovery session can enroll an additional passkey without bypassing gate
 });
 
 test("MusicKit authorization is isolated to the provider connection route", async () => {
-  const connections = await read("app/connections/page.tsx");
+  const connections = await read("app/connections/apple-music/page.tsx");
   const otherUi = await Promise.all([
     "app/page.tsx", "app/host/page.tsx", "app/room/[roomId]/page.tsx",
+    "app/connections/page.tsx", "app/connections/spotify/page.tsx",
     "app/room/[roomId]/publish/page.tsx", "app/room/[roomId]/recap/page.tsx",
   ].map(read));
   assert.match(connections, /js-cdn\.music\.apple\.com\/musickit\/v3\/musickit\.js/);
   assert.match(connections, /apple-music\/developer-token/);
   assert.match(connections, /musicUserToken/);
-  assert.doesNotMatch(otherUi.join("\n"), /MusicKit|musicUserToken|musickit\.js/);
+  assert.doesNotMatch(otherUi.join("\n"), /window\.MusicKit|loadMusicKit|musicUserToken|musickit\.js/);
+});
+
+test("provider connection routes isolate official marks and authorization code", async () => {
+  const [hub, spotify, apple] = await Promise.all([
+    read("app/connections/page.tsx"),
+    read("app/connections/spotify/page.tsx"),
+    read("app/connections/apple-music/page.tsx"),
+  ]);
+  assert.doesNotMatch(hub, /ProviderBrand|Full_Logo|marketing\.services\.apple/);
+  assert.match(spotify, /ProviderBrand provider="spotify"/);
+  assert.doesNotMatch(spotify, /Apple Music|MusicKit|musicUserToken/);
+  assert.match(apple, /Official Apple Music badges remain reserved for links to licensed content/);
+  assert.doesNotMatch(apple, /ProviderBrand|Full_Logo/);
 });
 
 test("Spotify connect consumes the connector PKCE authorization URL contract", async () => {
@@ -212,4 +227,21 @@ test("room state preserves event cursors and finalized snapshots do not open soc
   assert.match(product, /const isLive = snapshot\?\.lifecycle === "active"/);
   assert.match(product, /if \(!isLive \|\| typeof window === "undefined"\) return/);
   assert.match(product, /event\.code === 1008\) refresh\(\)/);
+  assert.match(product, /setTransport\("connected"\)/);
+  assert.match(product, /setTransport\("offline"\)/);
+});
+
+test("guest join exposes only stable, honest recovery distinctions", async () => {
+  const [joinPage, joinRoute, authority] = await Promise.all([
+    read("app/join/[roomId]/page.tsx"),
+    read("app/api/v1/rooms/[roomId]/join/route.ts"),
+    read("lib/server/room-authority.ts"),
+  ]);
+  assert.match(joinPage, /INVITE_INVALID_OR_ROTATED: "invalid-or-rotated"/);
+  assert.match(joinPage, /ROOM_ENDED: "ended"/);
+  assert.match(joinPage, /ROOM_LOCKED: "locked"/);
+  assert.match(joinPage, /JOIN_RATE_LIMITED: "rate-limited"/);
+  assert.match(joinRoute, /cause instanceof GuestCapabilityError/);
+  assert.match(authority, /INVITE_INVALID_OR_ROTATED/);
+  assert.doesNotMatch(authority, /INVITE_EXPIRED/);
 });

@@ -89,7 +89,8 @@ export function useCurrentHost(): Resource<HostAccount> {
   return useApiResource<HostAccount>("/api/v1/auth/me");
 }
 
-export type RoomContext = { actor: RoomIdentity; snapshot: RoomSnapshot };
+export type RoomTransport = "connecting" | "connected" | "reconnecting" | "offline" | "closed";
+export type RoomContext = { actor: RoomIdentity; snapshot: RoomSnapshot; transport: RoomTransport };
 type StateResponse =
   | RoomSnapshot
   | { actor?: RoomIdentity; type: "snapshot"; snapshot: RoomSnapshot }
@@ -106,6 +107,7 @@ export function useRoomState(roomId: string): Resource<RoomContext> {
         ? resource.data.snapshot
         : null;
   const lastSeqRef = useRef(0);
+  const [transport, setTransport] = useState<RoomTransport>("connecting");
   const refresh = resource.refresh;
   useEffect(() => {
     if (snapshot) lastSeqRef.current = snapshot.seq;
@@ -118,11 +120,14 @@ export function useRoomState(roomId: string): Resource<RoomContext> {
     let stopped = false;
     let attempt = 0;
     const connect = () => {
-      if (stopped || !navigator.onLine) return;
+      if (stopped) return;
+      if (!navigator.onLine) { setTransport("offline"); return; }
+      setTransport(attempt === 0 ? "connecting" : "reconnecting");
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       socket = new WebSocket(`${protocol}//${window.location.host}/api/v1/rooms/${encodeURIComponent(roomId)}/websocket`);
       socket.addEventListener("open", () => {
         attempt = 0;
+        setTransport("connected");
         socket?.send(JSON.stringify({ type: "hello", protocol: 1, lastSeq: lastSeqRef.current, clientInstanceId: `client_${crypto.randomUUID()}` }));
       });
       socket.addEventListener("message", (event) => {
@@ -134,6 +139,7 @@ export function useRoomState(roomId: string): Resource<RoomContext> {
       });
       socket.addEventListener("close", (event) => {
         if (stopped) return;
+        setTransport(navigator.onLine ? "reconnecting" : "offline");
         // A policy close means room authority changed (ended, invite rotated,
         // or participant access changed). Re-read HTTP authority before the
         // next attempt so an ended room or revoked session terminates this
@@ -145,21 +151,25 @@ export function useRoomState(roomId: string): Resource<RoomContext> {
       });
     };
     const reconnectOnline = () => {
+      setTransport("reconnecting");
       if (!socket || socket.readyState === WebSocket.CLOSED) connect();
     };
+    const markOffline = () => setTransport("offline");
     window.addEventListener("online", reconnectOnline);
+    window.addEventListener("offline", markOffline);
     connect();
     return () => {
       stopped = true;
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       window.removeEventListener("online", reconnectOnline);
+      window.removeEventListener("offline", markOffline);
       socket?.close(1000, "Room view closed");
     };
   }, [roomId, refresh, isLive]);
   if (resource.status === "ready" && (!snapshot || !actor)) {
     return { status: "error", data: null, error: { code: "ROOM_CONTEXT_UNAVAILABLE", message: !actor ? "The room API did not return the current server-derived actor." : "The room authority did not return a canonical snapshot.", retryable: true }, refresh: resource.refresh };
   }
-  return { ...resource, data: snapshot && actor ? { actor, snapshot } : null };
+  return { ...resource, data: snapshot && actor ? { actor, snapshot, transport: isLive ? transport : "closed" } : null };
 }
 
 export async function sendRoomCommand(roomId: string, seq: number, action: string, payload: Record<string, unknown>): Promise<void> {
@@ -252,7 +262,7 @@ export function ProductShell({ children, guest = false, roomId, displayName, roo
     <a href="#main-content" className="skip-link">Skip to main content</a>
     <header className="mobile-bar"><Brand compact /><button ref={menuButtonRef} className="icon-button" onClick={() => setOpen(!open)} aria-expanded={open} aria-controls="app-nav" aria-label={open ? "Close navigation" : "Open navigation"}>{open ? <X /> : <Menu />}</button></header>
     <aside className={`rail${open ? " is-open" : ""}`} id="app-nav"><Brand />
-      {guest ? <div className="guest-rail-copy"><span className="utility">GUEST ACCESS</span><strong>{roomName}</strong><p>Your session only opens this room.</p></div> : <nav aria-label="Host workspace">{navItems.map((item) => { const active = pathname === item.href; const Icon = item.icon; return <Link key={item.href} href={item.href} className={active ? "active" : ""} aria-current={active ? "page" : undefined}><Icon size={19} />{item.label}</Link>; })}</nav>}
+      {guest ? <div className="guest-rail-copy"><span className="utility">GUEST ACCESS</span><strong>{roomName}</strong><p>Your session only opens this room.</p></div> : <nav aria-label="Host workspace">{navItems.map((item) => { const active = pathname === item.href || item.href === "/connections" && pathname.startsWith("/connections/"); const Icon = item.icon; return <Link key={item.href} href={item.href} className={active ? "active" : ""} aria-current={active ? "page" : undefined}><Icon size={19} />{item.label}</Link>; })}</nav>}
       <div className="rail-bottom">{!guest && roomId && <Link href={`/room/${roomId}`} className="rail-live"><span className="live-dot" /> {roomName} <ArrowRight size={17} /></Link>}<div className="rail-account"><span className="avatar">{guest ? "G" : initials(accountName)}</span><span><strong>{accountName}</strong><small>{guest ? "Room-scoped session" : "Passkey secured"}</small></span><ChevronDown size={16} aria-hidden="true" /></div></div>
     </aside>
     <main className="workspace" id="main-content">{children}</main>
@@ -321,18 +331,19 @@ export function LivingSetlist({ snapshot, guest, actorId, onRefresh }: { snapsho
   </section>;
 }
 
-type GateState = "invalid" | "expired" | "rotated" | "ended" | "locked" | "offline" | "rate-limited" | "unsupported";
-const gateCopy: Record<GateState, { title: string; body: string; action: string; icon: typeof WifiOff }> = {
-  invalid: { title: "This invite isn’t valid", body: "Ask the host for the current room link. The link may have been copied incompletely.", action: "Try another invite", icon: Unplug },
-  expired: { title: "This invite expired", body: "Invites expire to protect the room. Ask the host to create a fresh one.", action: "Return home", icon: Clock3 },
-  rotated: { title: "The host replaced this invite", body: "This link can no longer open the room. Ask the host for the new link.", action: "Return home", icon: RotateCcw },
-  ended: { title: "This room has ended", body: "The host closed this room. Guests can no longer join or contribute.", action: "Return home", icon: LogOut },
-  locked: { title: "The room is locked", body: "This room isn’t accepting new guests right now. The host can unlock it.", action: "Check again", icon: ShieldCheck },
-  offline: { title: "You’re offline", body: "Reconnect to the internet, then try joining the room again.", action: "Try again", icon: WifiOff },
-  "rate-limited": { title: "Too many attempts", body: "Joining is paused briefly to protect the room. Wait one minute, then try again.", action: "Return home", icon: Clock3 },
-  unsupported: { title: "That music link isn’t supported", body: "Use a Spotify or Apple Music link, or enter a song when catalog resolution is available.", action: "Return home", icon: Music2 },
+export type GateState = "invalid" | "invalid-or-rotated" | "expired" | "rotated" | "ended" | "locked" | "offline" | "rate-limited" | "unsupported";
+const gateCopy: Record<GateState, { title: string; body: string; action: string; href: string; icon: typeof WifiOff }> = {
+  invalid: { title: "This invite isn’t valid", body: "Ask the host for the current room link. The link may have been copied incompletely.", action: "Try another invite", href: "/join", icon: Unplug },
+  "invalid-or-rotated": { title: "This invite can’t open the room", body: "The link is invalid or the host replaced it. UniJam cannot safely distinguish those cases. Ask the host for the current invite.", action: "Try another invite", href: "/join", icon: RotateCcw },
+  expired: { title: "This invite expired", body: "Ask the host to create a fresh invite.", action: "Return home", href: "/", icon: Clock3 },
+  rotated: { title: "The host replaced this invite", body: "This link can no longer open the room. Ask the host for the new link.", action: "Return home", href: "/", icon: RotateCcw },
+  ended: { title: "This room has ended", body: "The host closed this room. Guests can no longer join or contribute.", action: "Return home", href: "/", icon: LogOut },
+  locked: { title: "The room is locked", body: "This room isn’t accepting new guests right now. The host can unlock it.", action: "Check again", href: "/join", icon: ShieldCheck },
+  offline: { title: "You’re offline", body: "Reconnect to the internet, then try joining the room again.", action: "Try again", href: "/join", icon: WifiOff },
+  "rate-limited": { title: "Too many attempts", body: "Joining is paused briefly to protect the room. Wait one minute, then try again.", action: "Try again", href: "/join", icon: Clock3 },
+  unsupported: { title: "That music link isn’t supported", body: "Use a Spotify or Apple Music link, or enter a song title and artist.", action: "Return to the room", href: "/", icon: Music2 },
 };
-export function RoomGate({ state }: { state: GateState }) { const copy = gateCopy[state]; const Icon = copy.icon; return <main className="gate"><Brand /><section><span className="gate-icon"><Icon /></span><p className="eyebrow">ROOM ACCESS</p><h1>{copy.title}</h1><p>{copy.body}</p><Link href="/join" className="button button-primary">{copy.action} <ArrowRight size={18} /></Link><small>Room details are never shown until an invite is accepted.</small></section></main>; }
+export function RoomGate({ state, onRetry }: { state: GateState; onRetry?: () => void }) { const copy = gateCopy[state]; const Icon = copy.icon; return <main className="gate"><Brand /><section><span className="gate-icon"><Icon /></span><p className="eyebrow">ROOM ACCESS</p><h1>{copy.title}</h1><p>{copy.body}</p>{onRetry ? <button className="button button-primary" onClick={onRetry}>{copy.action} <ArrowRight size={18} /></button> : <Link href={copy.href} className="button button-primary">{copy.action} <ArrowRight size={18} /></Link>}<small>Room details are never shown until an invite is accepted.</small></section></main>; }
 
 export function CopyButton({ value, children = "Copy link" }: { value: string; children?: ReactNode }) {
   const [copied, setCopied] = useState(false);
