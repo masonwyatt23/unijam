@@ -10,6 +10,7 @@ import {
   parseSpotifyOEmbedSource,
   resolutionRequestForCandidate,
   stableRecordingIdentity,
+  titleOnlyReviewCandidates,
 } from "@/lib/server/catalog-resolution";
 import { connectorJsonRequest, type ConnectorProxyEnv } from "@/lib/server/connector-proxy";
 import { actorHeaders, authenticateRoomActor, normalizeV1RoomId, roomStub, type RoomAuthorityEnv } from "@/lib/server/room-authority";
@@ -32,8 +33,14 @@ function connectorFailure(status: number): Response {
   return apiError("PROVIDER_UNAVAILABLE", "This music service could not resolve the track", status >= 500 ? 503 : 422, status >= 500);
 }
 
-async function persistMatch(db: D1Database, candidate: CatalogCandidate, method: "provider_id" | "metadata", evidence: readonly string[]) {
-  const identity = await stableRecordingIdentity(candidate);
+async function persistMatch(
+  db: D1Database,
+  candidate: CatalogCandidate,
+  method: "provider_id" | "metadata",
+  evidence: readonly string[],
+  options: { identityBasis?: "canonical" | "provider"; deterministic?: boolean } = {},
+) {
+  const identity = await stableRecordingIdentity(candidate, options.identityBasis);
   const now = Date.now();
   const normalizedTitle = normalizeCatalogText(candidate.title);
   const normalizedArtist = normalizeCatalogText(candidate.artists.join(", "));
@@ -68,7 +75,7 @@ async function persistMatch(db: D1Database, candidate: CatalogCandidate, method:
          updated_at_ms = excluded.updated_at_ms`,
     ).bind(
       identity.matchId, identity.recordingId, candidate.provider, candidate.providerRecordingId, method,
-      JSON.stringify({ evidence, deterministic: true, storefront: "US" }), now, now,
+      JSON.stringify({ evidence, deterministic: options.deterministic ?? true, storefront: "US" }), now, now,
     ),
   ]);
   return identity;
@@ -92,12 +99,17 @@ async function registerCandidateGrant(input: {
   readonly candidate: CatalogCandidate;
   readonly method: "provider_id" | "metadata";
   readonly evidence: readonly string[];
+  readonly identityBasis?: "canonical" | "provider";
+  readonly deterministic?: boolean;
 }): Promise<Response | {
   readonly resolutionId: string;
   readonly recordingId: string;
   readonly providerUrl: string;
 }> {
-  const identity = await persistMatch(input.db, input.candidate, input.method, input.evidence);
+  const identity = await persistMatch(input.db, input.candidate, input.method, input.evidence, {
+    identityBasis: input.identityBasis,
+    deterministic: input.deterministic,
+  });
   const resolutionId = `res_${crypto.randomUUID()}`;
   const registrationHeaders = actorHeaders(input.access.actor, input.roomId);
   registrationHeaders.set("Content-Type", "application/json");
@@ -236,14 +248,11 @@ export async function POST(request: Request, context: Context): Promise<Response
     if (intent.kind === "provider_recording" && !crossProvider && candidates[0]) {
       resolutionRequest = resolutionRequestForCandidate(candidates[0]);
     }
-    const resolution = resolveUsCatalogRecording(resolutionRequest, candidates);
     if (mandatorySelection) {
-      if (resolution.status === "no_match") return apiResponse({ ...resolution, sourceAttribution });
-      const ranked = resolution.status === "hold"
-        ? resolution.candidates
-        : [resolution.match, ...resolution.alternatives];
+      const ranked = titleOnlyReviewCandidates(sourceAttribution?.title ?? "", provider, candidates);
+      if (ranked.length === 0) return apiResponse({ status: "no_match", storefront: "US", sourceAttribution });
       const selections = [];
-      for (const entry of ranked.slice(0, 3)) {
+      for (const entry of ranked) {
         const evidence = [...new Set([...entry.evidence, ...crossEvidence])];
         const grant = await registerCandidateGrant({
           db: env.DB,
@@ -253,6 +262,8 @@ export async function POST(request: Request, context: Context): Promise<Response
           candidate: entry.candidate,
           method: "metadata",
           evidence,
+          identityBasis: "provider",
+          deterministic: false,
         });
         if (grant instanceof Response) return grant;
         selections.push({
@@ -269,6 +280,7 @@ export async function POST(request: Request, context: Context): Promise<Response
         sourceAttribution,
       });
     }
+    const resolution = resolveUsCatalogRecording(resolutionRequest, candidates);
     if (resolution.status === "hold") {
       return apiResponse({
         ...resolution,

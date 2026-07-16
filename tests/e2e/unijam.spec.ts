@@ -174,6 +174,59 @@ test("held provider candidates keep official linked attribution", async ({ page 
   await expect(page.getByRole("link", { name: /Candidate Pick/ })).toHaveAttribute("href", "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC");
 });
 
+test("Spotify title-only metadata reaches explicit Apple Music selection and stages only the selected grant", async ({ page }) => {
+  await mockRoom(page, "guest");
+  let command: { action: string; payload: { resolutionId: string } } | null = null;
+  await page.route("**/api/v1/rooms/ROOM1234/resolve", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      data: {
+        status: "hold",
+        storefront: "US",
+        reasons: ["source_metadata_incomplete"],
+        sourceAttribution: {
+          provider: "spotify",
+          title: "Never Gonna Give You Up",
+          providerUrl: "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC",
+        },
+        candidates: [{
+          resolutionId: "res_manual_apple_01",
+          candidate: {
+            title: "Never Gonna Give You Up",
+            artists: ["Rick Astley"],
+            provider: "apple_music",
+            providerRecordingId: "1559523357",
+            providerUrl: "https://music.apple.com/us/song/1559523357",
+          },
+          score: 1,
+        }],
+      },
+      error: null,
+      requestId: "req_manual_review",
+    }),
+  }));
+  await page.route("**/api/v1/rooms/ROOM1234/commands", (route) => {
+    command = route.request().postDataJSON() as typeof command;
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { type: "ack", seq: 5 }, error: null, requestId: "req_manual_stage" }),
+    });
+  });
+
+  await gotoReady(page, "/room/ROOM1234");
+  await page.getByLabel(/resolve into/i).selectOption("apple-music");
+  await page.getByLabel(/song link, title, or artist/i).fill("https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC");
+  await page.getByRole("button", { name: /resolve and add pick/i }).click();
+  await expect(page.getByRole("link", { name: /open never gonna give you up on spotify/i })).toHaveAttribute("href", "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC");
+  await expect(page.getByRole("button", { name: /add this recording/i })).toBeVisible();
+  expect(command).toBeNull();
+  await page.getByRole("button", { name: /add this recording/i }).click();
+  await expect(page.getByRole("status").filter({ hasText: /was added to the room/i })).toBeVisible();
+  expect(command).toEqual(expect.objectContaining({ action: "suggestion.stage", payload: expect.objectContaining({ resolutionId: "res_manual_apple_01" }) }));
+});
+
 test("host advances a confirmed occurrence by occurrence ID", async ({ page }) => {
   const confirmedSnapshot = {
     ...snapshot,

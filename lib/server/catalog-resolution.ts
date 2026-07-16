@@ -1,4 +1,4 @@
-import type { CatalogCandidate, ResolutionRequest } from "../catalog/resolver.ts";
+import type { CatalogCandidate, ResolutionRequest, ScoredCatalogCandidate } from "../catalog/resolver.ts";
 import type { MusicProvider } from "../provider-state-engine.ts";
 import { hashOpaqueToken } from "./secure-token.ts";
 
@@ -88,12 +88,15 @@ export function resolutionRequestForCandidate(candidate: CatalogCandidate): Reso
   };
 }
 
-export async function stableRecordingIdentity(candidate: CatalogCandidate): Promise<{
+export async function stableRecordingIdentity(
+  candidate: CatalogCandidate,
+  basis: "canonical" | "provider" = "canonical",
+): Promise<{
   recordingId: string;
   matchId: string;
 }> {
   const normalizedIsrc = candidate.isrc?.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
-  const recordingBasis = normalizedIsrc
+  const recordingBasis = basis === "canonical" && normalizedIsrc
     ? `isrc:${normalizedIsrc}`
     : `${candidate.provider}:${candidate.providerRecordingId}`;
   const [recordingHash, matchHash] = await Promise.all([
@@ -105,4 +108,48 @@ export async function stableRecordingIdentity(candidate: CatalogCandidate): Prom
 
 export function normalizeCatalogText(value: string): string {
   return value.normalize("NFKC").replace(/\s+/g, " ").trim();
+}
+
+function reviewTokens(value: string): Set<string> {
+  return new Set(value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("en-US")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(" ")
+    .filter(Boolean));
+}
+
+function titleReviewScore(sourceTitle: string, candidateTitle: string): number {
+  const source = reviewTokens(sourceTitle);
+  const candidate = reviewTokens(candidateTitle);
+  if (source.size === 0 || candidate.size === 0) return 0;
+  let shared = 0;
+  for (const token of source) if (candidate.has(token)) shared += 1;
+  return shared / new Set([...source, ...candidate]).size;
+}
+
+/**
+ * Lists at most three US catalog choices for an incomplete, title-only source.
+ * This intentionally returns candidates rather than a CatalogResolution so no
+ * score can ever be interpreted as permission to auto-match or auto-stage.
+ */
+export function titleOnlyReviewCandidates(
+  sourceTitle: string,
+  provider: MusicProvider,
+  candidates: readonly CatalogCandidate[],
+): readonly ScoredCatalogCandidate[] {
+  const seen = new Set<string>();
+  return candidates
+    .flatMap((candidate): ScoredCatalogCandidate[] => {
+      if (candidate.provider !== provider || seen.has(candidate.providerRecordingId)) return [];
+      if (!candidate.storefronts?.some((storefront) => storefront.toUpperCase() === "US")) return [];
+      const score = titleReviewScore(sourceTitle, candidate.title);
+      if (score < 0.5) return [];
+      seen.add(candidate.providerRecordingId);
+      return [{ candidate, score: Math.round(score * 10_000) / 10_000, evidence: score === 1 ? ["title"] : [], conflicts: [] }];
+    })
+    .sort((left, right) => right.score - left.score || left.candidate.providerRecordingId.localeCompare(right.candidate.providerRecordingId))
+    .slice(0, 3);
 }
