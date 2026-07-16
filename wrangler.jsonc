@@ -6,6 +6,7 @@
   "preview_urls": false,
   "compatibility_date": "2026-07-15",
   "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
   "assets": {
     "directory": "dist/client",
     "not_found_handling": "none",
@@ -34,6 +35,7 @@
       "name": "unijam-web-production",
       "workers_dev": false,
       "preview_urls": false,
+      "observability": { "enabled": true, "head_sampling_rate": 1 },
       "images": { "binding": "IMAGES" },
       "analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "unijam_production" }],
       "routes": [{ "pattern": "unijam.ashlr.ai", "custom_domain": true }],
@@ -63,6 +65,7 @@
       "name": "unijam-web-staging",
       "workers_dev": false,
       "preview_urls": false,
+      "observability": { "enabled": true, "head_sampling_rate": 1 },
       "images": { "binding": "IMAGES" },
       "analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "unijam_staging" }],
       "routes": [{ "pattern": "staging.unijam.ashlr.ai", "custom_domain": true }],
