@@ -95,6 +95,25 @@ async function saveChallenge(
 
 type StoredChallenge = { challenge_hash: string; account_id: string | null; enrollment_code_hash: string | null };
 
+export type VerifiedRegistrationCommit = {
+  accountId: string;
+  displayName: string;
+  ceremony: "registration" | "public_registration" | "additional_registration";
+  challengeHash: string;
+  enrollmentCodeHash: string | null;
+  credential: {
+    id: string;
+    publicKeyBase64: string;
+    counter: number;
+    transportsJson: string;
+    deviceType: string;
+    backedUp: boolean;
+  };
+  recoverySessionId?: string;
+  now: number;
+  consumptionMarker: number;
+};
+
 async function loadChallenge(
   db: D1Database,
   challenge: string,
@@ -113,6 +132,162 @@ function challengeConsumption(db: D1Database, challengeHash: string, consumption
   return db.prepare(
     "UPDATE passkey_challenges SET consumed_at_ms = ? WHERE challenge_hash = ? AND consumed_at_ms IS NULL AND expires_at_ms > ?",
   ).bind(consumptionMarker, challengeHash, now);
+}
+
+function registrationCommitGuard(
+  db: D1Database,
+  challengeHash: string,
+  consumptionMarker: number,
+  credentialId: string,
+  accountId: string,
+): D1PreparedStatement {
+  // D1 batches are transactions, but a conditional compare-and-swap that
+  // affects zero rows is still a successful SQL statement. Make a lost CAS a
+  // statement error so D1 rolls back every bootstrap side effect, including
+  // recovery codes and the initial session.
+  return db.prepare(
+    `SELECT CASE WHEN EXISTS (
+       SELECT 1 FROM passkey_challenges
+       WHERE challenge_hash = ? AND consumed_at_ms = ?
+     ) AND EXISTS (
+       SELECT 1 FROM passkeys WHERE credential_id = ? AND account_id = ?
+     ) THEN 1 ELSE json_extract('registration commit conflict', '$') END AS committed`,
+  ).bind(challengeHash, consumptionMarker, credentialId, accountId);
+}
+
+/**
+ * Atomically commits a registration that has already passed WebAuthn
+ * verification. Exported so the real D1 concurrency contract can be tested
+ * without replacing the cryptographic verifier.
+ */
+export async function commitVerifiedRegistration(
+  db: D1Database,
+  input: VerifiedRegistrationCommit,
+  completionStatements: D1PreparedStatement[] = [],
+): Promise<void> {
+  const credentialValues = [
+    input.credential.id,
+    input.accountId,
+    input.credential.publicKeyBase64,
+    input.credential.counter,
+    input.credential.transportsJson,
+    input.credential.deviceType,
+    input.credential.backedUp ? 1 : 0,
+    input.now,
+    input.now,
+  ] as const;
+  const passkeyInsert = input.recoverySessionId
+    ? db.prepare(
+      `INSERT INTO passkeys
+       (credential_id, account_id, public_key_base64, counter, transports_json, device_type, backed_up, created_at_ms, last_used_at_ms)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+       WHERE EXISTS (
+         SELECT 1 FROM host_sessions
+         WHERE session_id = ? AND account_id = ? AND passkey_verified_at_ms IS NULL
+           AND recovery_enrollment_consumed_at_ms IS NULL AND recovery_enrollment_expires_at_ms > ?
+       ) AND EXISTS (
+         SELECT 1 FROM passkey_challenges WHERE challenge_hash = ? AND consumed_at_ms = ?
+       )`,
+    ).bind(
+      ...credentialValues,
+      input.recoverySessionId,
+      input.accountId,
+      input.now,
+      input.challengeHash,
+      input.consumptionMarker,
+    )
+    : db.prepare(
+      `INSERT INTO passkeys
+       (credential_id, account_id, public_key_base64, counter, transports_json, device_type, backed_up, created_at_ms, last_used_at_ms)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+       WHERE EXISTS (
+         SELECT 1 FROM passkey_challenges WHERE challenge_hash = ? AND consumed_at_ms = ?
+       ) AND EXISTS (
+         SELECT 1 FROM accounts WHERE account_id = ? AND deleted_at_ms IS NULL
+       )`,
+    ).bind(...credentialValues, input.challengeHash, input.consumptionMarker, input.accountId);
+  const statements = [
+    challengeConsumption(db, input.challengeHash, input.consumptionMarker, input.now),
+    passkeyInsert,
+  ];
+  if (input.ceremony === "registration") {
+    if (!input.enrollmentCodeHash) throw new Error("Pilot enrollment is unavailable");
+    statements.splice(1, 0, db.prepare(
+      `UPDATE host_enrollment_codes SET used_at_ms = ?, used_by_account_id = ?
+       WHERE code_hash = ? AND used_at_ms IS NULL AND expires_at_ms > ?
+         AND EXISTS (
+           SELECT 1 FROM passkey_challenges WHERE challenge_hash = ? AND consumed_at_ms = ?
+         )`,
+    ).bind(
+      input.now,
+      input.accountId,
+      input.enrollmentCodeHash,
+      input.now,
+      input.challengeHash,
+      input.consumptionMarker,
+    ));
+    statements.splice(2, 0, db.prepare(
+      `INSERT INTO accounts (account_id, display_name, created_at_ms, updated_at_ms)
+       SELECT ?, ?, ?, ? WHERE EXISTS (
+         SELECT 1 FROM host_enrollment_codes WHERE code_hash = ? AND used_by_account_id = ? AND used_at_ms = ?
+       )`,
+    ).bind(
+      input.accountId,
+      input.displayName,
+      input.now,
+      input.now,
+      input.enrollmentCodeHash,
+      input.accountId,
+      input.now,
+    ));
+  } else if (input.ceremony === "public_registration") {
+    statements.splice(1, 0, db.prepare(
+      `INSERT INTO accounts (account_id, display_name, created_at_ms, updated_at_ms)
+       SELECT ?, ?, ?, ? WHERE EXISTS (
+         SELECT 1 FROM passkey_challenges WHERE challenge_hash = ? AND consumed_at_ms = ?
+       )`,
+    ).bind(
+      input.accountId,
+      input.displayName,
+      input.now,
+      input.now,
+      input.challengeHash,
+      input.consumptionMarker,
+    ));
+  }
+  if (input.ceremony === "additional_registration" && input.recoverySessionId) {
+    statements.push(db.prepare(
+      `UPDATE host_sessions SET recovery_enrollment_consumed_at_ms = ?
+       WHERE session_id = ? AND account_id = ? AND passkey_verified_at_ms IS NULL
+         AND recovery_enrollment_consumed_at_ms IS NULL AND recovery_enrollment_expires_at_ms > ?
+         AND EXISTS (
+           SELECT 1 FROM passkeys WHERE credential_id = ? AND account_id = ?
+         )`,
+    ).bind(
+      input.now,
+      input.recoverySessionId,
+      input.accountId,
+      input.now,
+      input.credential.id,
+      input.accountId,
+    ));
+  }
+  statements.push(...completionStatements);
+  statements.push(registrationCommitGuard(
+    db,
+    input.challengeHash,
+    input.consumptionMarker,
+    input.credential.id,
+    input.accountId,
+  ));
+  const results = await db.batch(statements);
+  // Ignore the final read-only guard. If it failed, D1 rejected and rolled
+  // back the batch before returning results.
+  if (results.slice(0, -1).some((result) => (result.meta.changes ?? 0) !== 1)) {
+    throw new Error(input.recoverySessionId
+      ? "Recovery enrollment grant is invalid or already used"
+      : "Passkey registration changed concurrently");
+  }
 }
 
 export async function registrationOptions(
@@ -228,77 +403,29 @@ export async function finishRegistration(
   // collision negligibly likely.
   const consumptionMarker = crypto.getRandomValues(new Uint32Array(1))[0];
   const info = verification.registrationInfo;
-  const credentialValues = [
-    info.credential.id,
-    input.accountId,
-    bytesToBase64(info.credential.publicKey),
-    info.credential.counter,
-    JSON.stringify(info.credential.transports ?? []),
-    info.credentialDeviceType,
-    info.credentialBackedUp ? 1 : 0,
-    now,
-    now,
-  ] as const;
-  const passkeyInsert = recoverySessionId
-    ? db.prepare(
-      `INSERT INTO passkeys
-       (credential_id, account_id, public_key_base64, counter, transports_json, device_type, backed_up, created_at_ms, last_used_at_ms)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
-       WHERE EXISTS (
-         SELECT 1 FROM host_sessions
-         WHERE session_id = ? AND account_id = ? AND passkey_verified_at_ms IS NULL
-           AND recovery_enrollment_consumed_at_ms IS NULL AND recovery_enrollment_expires_at_ms > ?
-       ) AND EXISTS (
-         SELECT 1 FROM passkey_challenges WHERE challenge_hash = ? AND consumed_at_ms = ?
-       )`,
-    ).bind(...credentialValues, recoverySessionId, input.accountId, now, stored.challenge_hash, consumptionMarker)
-    : db.prepare(
-      `INSERT INTO passkeys
-       (credential_id, account_id, public_key_base64, counter, transports_json, device_type, backed_up, created_at_ms, last_used_at_ms)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
-       WHERE EXISTS (
-         SELECT 1 FROM passkey_challenges WHERE challenge_hash = ? AND consumed_at_ms = ?
-       ) AND EXISTS (
-         SELECT 1 FROM accounts WHERE account_id = ? AND deleted_at_ms IS NULL
-       )`,
-    ).bind(...credentialValues, stored.challenge_hash, consumptionMarker, input.accountId);
-  const statements = [
-    challengeConsumption(db, stored.challenge_hash, consumptionMarker, now),
-    passkeyInsert,
-  ];
-  if (ceremony === "registration") {
-    if (!stored.enrollment_code_hash) throw new Error("Pilot enrollment is unavailable");
-    statements.splice(1, 0, db.prepare(
-      `UPDATE host_enrollment_codes SET used_at_ms = ?, used_by_account_id = ?
-       WHERE code_hash = ? AND used_at_ms IS NULL AND expires_at_ms > ?`,
-    ).bind(now, input.accountId, stored.enrollment_code_hash, now));
-    statements.splice(2, 0, db.prepare(
-      `INSERT INTO accounts (account_id, display_name, created_at_ms, updated_at_ms)
-       SELECT ?, ?, ?, ? WHERE EXISTS (
-         SELECT 1 FROM host_enrollment_codes WHERE code_hash = ? AND used_by_account_id = ? AND used_at_ms = ?
-       )`,
-    ).bind(input.accountId, input.displayName, now, now, stored.enrollment_code_hash, input.accountId, now));
-  } else if (ceremony === "public_registration") {
-    statements.splice(1, 0, db.prepare(
-      "INSERT INTO accounts (account_id, display_name, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?)",
-    ).bind(input.accountId, input.displayName, now, now));
-  } else {
+  if (ceremony === "additional_registration") {
     const account = await db.prepare("SELECT account_id FROM accounts WHERE account_id = ? AND deleted_at_ms IS NULL LIMIT 1")
       .bind(input.accountId).first<{ account_id: string }>();
     if (!account) throw new Error("Authenticated account no longer exists");
-    if (recoverySessionId) {
-      statements.push(db.prepare(
-        `UPDATE host_sessions SET recovery_enrollment_consumed_at_ms = ?
-         WHERE session_id = ? AND account_id = ? AND passkey_verified_at_ms IS NULL
-           AND recovery_enrollment_consumed_at_ms IS NULL AND recovery_enrollment_expires_at_ms > ?`,
-      ).bind(now, recoverySessionId, input.accountId, now));
-    }
   }
-  statements.push(...completionStatements);
-  const results = await db.batch(statements);
-  if (results.some((result) => (result.meta.changes ?? 0) !== 1)) {
-    throw new Error(recoverySessionId ? "Recovery enrollment grant is invalid or already used" : "Passkey registration changed concurrently");
-  }
+  await commitVerifiedRegistration(db, {
+    accountId: input.accountId,
+    displayName: input.displayName,
+    ceremony,
+    challengeHash: stored.challenge_hash,
+    enrollmentCodeHash: stored.enrollment_code_hash,
+    credential: {
+      id: info.credential.id,
+      publicKeyBase64: bytesToBase64(info.credential.publicKey),
+      counter: info.credential.counter,
+      transportsJson: JSON.stringify(info.credential.transports ?? []),
+      deviceType: info.credentialDeviceType,
+      backedUp: info.credentialBackedUp,
+    },
+    recoverySessionId,
+    now,
+    consumptionMarker,
+  }, completionStatements);
   return { accountId: input.accountId, credentialId: info.credential.id };
 }
 

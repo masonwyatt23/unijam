@@ -142,13 +142,20 @@ test("provider connection routes isolate official marks and authorization code",
 });
 
 test("Spotify connect consumes the connector PKCE authorization URL contract", async () => {
-  const [connectRoute, connectorOAuth] = await Promise.all([
+  const [connectRoute, callbackRoute, connectorOAuth, providerReturn] = await Promise.all([
     read("app/api/v1/providers/[provider]/connect/route.ts"),
+    read("app/api/v1/providers/[provider]/callback/route.ts"),
     read("connectors/oauth.ts"),
+    read("lib/provider-return-to.ts"),
   ]);
   assert.match(connectorOAuth, /return \{ authorizeUrl:/);
   assert.match(connectRoute, /data\?: \{ authorizeUrl\?: string \}/);
-  assert.match(connectRoute, /Response\.redirect\(result\.data\.authorizeUrl, 303\)/);
+  assert.match(connectRoute, /spotifyReturnCookie/);
+  assert.match(connectRoute, /new Response\(null, \{ status: 303, headers \}\)/);
+  assert.match(callbackRoute, /providerError === "access_denied" \? "cancelled" : "failed"/);
+  assert.match(callbackRoute, /clearSpotifyReturnCookie/);
+  assert.match(providerReturn, /ROOM_DESTINATION/);
+  assert.match(providerReturn, /HttpOnly|sessionCookie/);
   assert.doesNotMatch(connectRoute, /authorizationUrl/);
 });
 

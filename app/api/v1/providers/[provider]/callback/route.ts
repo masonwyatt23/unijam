@@ -1,26 +1,52 @@
 import { env } from "cloudflare:workers";
 import { apiError } from "@/lib/server/api-response";
+import { clearSpotifyReturnCookie, providerResultPath, readSpotifyReturnTo, type ProviderConnectionResult } from "@/lib/provider-return-to";
 import { connectorJsonRequest, normalizeProvider, publicAppOrigin, requireConnectorHost, type ConnectorProxyEnv } from "@/lib/server/connector-proxy";
 
 type Context = { params: Promise<{ provider: string }> };
+
+function spotifyResultRedirect(
+  origin: string,
+  request: Request,
+  state: string | null,
+  result: ProviderConnectionResult,
+): Response {
+  const destination = providerResultPath(readSpotifyReturnTo(request, state), "spotify", result);
+  const headers = new Headers({ Location: `${origin}${destination}`, "Cache-Control": "no-store" });
+  const clearCookie = clearSpotifyReturnCookie(state);
+  if (clearCookie) headers.append("Set-Cookie", clearCookie);
+  return new Response(null, { status: 303, headers });
+}
+
 async function callback(request: Request, context: Context): Promise<Response> {
-  if (!env.DB || !env.CONNECTORS) return apiError("CONNECTOR_UNAVAILABLE", "Provider service is unavailable", 503, true);
+  let provider: "spotify" | "apple-music";
   try {
-    const provider = normalizeProvider((await context.params).provider);
-    if (provider !== "spotify") return apiError("UNSUPPORTED_CALLBACK", "Provider callback is unsupported", 404);
+    provider = normalizeProvider((await context.params).provider);
+  } catch {
+    return apiError("UNSUPPORTED_PROVIDER", "Provider is unsupported", 404);
+  }
+  if (provider !== "spotify") return apiError("UNSUPPORTED_CALLBACK", "Provider callback is unsupported", 404);
+  const origin = publicAppOrigin(env);
+  const url = new URL(request.url);
+  const state = url.searchParams.get("state");
+  if (!env.DB || !env.CONNECTORS) return spotifyResultRedirect(origin, request, state, "failed");
+  try {
     const runtime = env as ConnectorProxyEnv;
-    const host = await requireConnectorHost(runtime, request, true);
-    if (host instanceof Response) return host;
-    const url = new URL(request.url);
+    const providerError = url.searchParams.get("error");
+    if (providerError) {
+      return spotifyResultRedirect(origin, request, state, providerError === "access_denied" ? "cancelled" : "failed");
+    }
+    const host = await requireConnectorHost(runtime, request);
+    if (host instanceof Response) return spotifyResultRedirect(origin, request, state, "failed");
     const code = url.searchParams.get("code");
-    const state = url.searchParams.get("state");
-    if (!code || !state) return apiError("OAUTH_CALLBACK_INVALID", "Provider callback is incomplete", 400);
-    const origin = publicAppOrigin(env);
+    if (!code || !state) return spotifyResultRedirect(origin, request, state, "failed");
     const response = await connectorJsonRequest(runtime, "/v1/oauth/spotify/callback", {
       accountId: host.account_id, code, state, callbackUrl: `${origin}/api/v1/providers/spotify/callback`,
     });
-    if (!response.ok) return response;
-    return Response.redirect(`${origin}/connections?connected=spotify`, 303);
-  } catch { return apiError("UNSUPPORTED_PROVIDER", "Provider is unsupported", 404); }
+    if (!response.ok) return spotifyResultRedirect(origin, request, state, "failed");
+    return spotifyResultRedirect(origin, request, state, "connected");
+  } catch {
+    return spotifyResultRedirect(origin, request, state, "failed");
+  }
 }
 export const GET = callback;

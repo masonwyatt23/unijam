@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { apiError } from "@/lib/server/api-response";
+import { safeProviderReturnTo, spotifyReturnCookie } from "@/lib/provider-return-to";
 import { connectorJsonRequest, normalizeProvider, publicAppOrigin, requireConnectorHost, type ConnectorProxyEnv } from "@/lib/server/connector-proxy";
 
 type Context = { params: Promise<{ provider: string }> };
@@ -13,12 +14,22 @@ async function connect(request: Request, context: Context): Promise<Response> {
     const connectionId = `${provider}:${host.account_id}`;
     const origin = publicAppOrigin(env);
     if (provider === "spotify") {
+      const returnTo = safeProviderReturnTo(new URL(request.url).searchParams.get("returnTo"));
       const response = await connectorJsonRequest(runtime, "/v1/oauth/spotify/authorize", {
         accountId: host.account_id, connectionId, origin,
       });
       if (request.method === "GET" && response.ok) {
         const result = await response.clone().json() as { data?: { authorizeUrl?: string } };
-        if (result.data?.authorizeUrl?.startsWith("https://accounts.spotify.com/")) return Response.redirect(result.data.authorizeUrl, 303);
+        if (result.data?.authorizeUrl) {
+          const authorizeUrl = new URL(result.data.authorizeUrl);
+          if (authorizeUrl.protocol !== "https:" || authorizeUrl.hostname !== "accounts.spotify.com" || authorizeUrl.pathname !== "/authorize") {
+            return apiError("CONNECTOR_UNAVAILABLE", "Spotify authorization could not be started", 502, true);
+          }
+          const returnCookie = returnTo ? spotifyReturnCookie(authorizeUrl.searchParams.get("state") ?? "", returnTo) : null;
+          const headers = new Headers({ Location: authorizeUrl.toString(), "Cache-Control": "no-store" });
+          if (returnCookie) headers.append("Set-Cookie", returnCookie);
+          return new Response(null, { status: 303, headers });
+        }
       }
       return response;
     }

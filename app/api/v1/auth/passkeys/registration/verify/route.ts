@@ -3,13 +3,16 @@ import type { RegistrationResponseJSON } from "@simplewebauthn/server";
 
 import { apiError, apiResponse } from "@/lib/server/api-response";
 import { consumeAuthRateLimit, requestIp } from "@/lib/server/auth-rate-limit";
+import { BoundedBodyError, readBoundedJson } from "@/lib/server/bounded-body";
 import { finishBootstrapRegistration } from "@/lib/server/passkeys";
+
+const VERIFY_BODY_LIMIT = 32_768;
 
 export async function POST(request: Request): Promise<Response> {
   try {
     if (!env.DB) return apiError("PERSISTENCE_UNAVAILABLE", "Account persistence is unavailable", 503, true);
-    const body = await request.json() as { accountId?: unknown; displayName?: unknown; response?: RegistrationResponseJSON };
-    if (typeof body.accountId !== "string" || typeof body.displayName !== "string" || !body.response) {
+    const body = await readBoundedJson(request, VERIFY_BODY_LIMIT) as { accountId?: unknown; displayName?: unknown; response?: RegistrationResponseJSON };
+    if (typeof body?.accountId !== "string" || typeof body.displayName !== "string" || !body.response) {
       return apiError("INVALID_REGISTRATION", "Registration response is incomplete", 400);
     }
     const displayName = body.displayName.trim();
@@ -27,7 +30,7 @@ export async function POST(request: Request): Promise<Response> {
     const { sessionCookie, ...data } = result;
     return apiResponse(data, { status: 201, headers: { "Set-Cookie": sessionCookie } });
   } catch (error) {
-    void error;
+    if (error instanceof BoundedBodyError) return apiError(error.code, error.message, error.status);
     return apiError("REGISTRATION_VERIFICATION_FAILED", "Passkey registration could not be completed", 400);
   }
 }

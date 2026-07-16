@@ -26,17 +26,36 @@ export async function prepareHostSession(
   accountId: string,
   method: "passkey" | "recovery" = "passkey",
   now = Date.now(),
-): Promise<{ token: string; cookie: string; statement: D1PreparedStatement }> {
+  unusedRecoveryCodeId?: string,
+): Promise<{ sessionId: string; token: string; cookie: string; statement: D1PreparedStatement }> {
   const token = randomToken();
-  const statement = db.prepare(
-    `INSERT INTO host_sessions
-     (session_id, token_hash, account_id, authenticated_at_ms, passkey_verified_at_ms, expires_at_ms, created_at_ms, last_seen_at_ms, recovery_enrollment_expires_at_ms)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).bind(
-    crypto.randomUUID(), await hashOpaqueToken(token), accountId, now, passkeyVerifiedAt(method, now),
-    now + SESSION_TTL_SECONDS * 1_000, now, now, method === "recovery" ? now + RECOVERY_ENROLLMENT_MS : null,
-  );
-  return { token, cookie: sessionCookie(HOST_SESSION_COOKIE, token, SESSION_TTL_SECONDS), statement };
+  const sessionId = crypto.randomUUID();
+  const values = [
+    sessionId,
+    await hashOpaqueToken(token),
+    accountId,
+    now,
+    passkeyVerifiedAt(method, now),
+    now + SESSION_TTL_SECONDS * 1_000,
+    now,
+    now,
+    method === "recovery" ? now + RECOVERY_ENROLLMENT_MS : null,
+  ] as const;
+  const statement = unusedRecoveryCodeId
+    ? db.prepare(
+      `INSERT INTO host_sessions
+       (session_id, token_hash, account_id, authenticated_at_ms, passkey_verified_at_ms, expires_at_ms, created_at_ms, last_seen_at_ms, recovery_enrollment_expires_at_ms)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (
+         SELECT 1 FROM recovery_codes
+         WHERE recovery_code_id = ? AND account_id = ? AND used_at_ms IS NULL
+       )`,
+    ).bind(...values, unusedRecoveryCodeId, accountId)
+    : db.prepare(
+      `INSERT INTO host_sessions
+       (session_id, token_hash, account_id, authenticated_at_ms, passkey_verified_at_ms, expires_at_ms, created_at_ms, last_seen_at_ms, recovery_enrollment_expires_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(...values);
+  return { sessionId, token, cookie: sessionCookie(HOST_SESSION_COOKIE, token, SESSION_TTL_SECONDS), statement };
 }
 
 export async function createHostSession(
