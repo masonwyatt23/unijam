@@ -7,17 +7,18 @@ Production is `https://unijam.ashlr.ai` with WebAuthn RP ID
 RP ID and therefore distinct passkeys. Each environment has its own Worker,
 D1 database, Durable Object namespace, projection queue, and dead-letter queue.
 
-`wrangler.jsonc` contains non-routable D1 sentinel IDs. Provision both databases
-and replace those IDs before the first deployment. Provider secrets belong only
-on the connector Worker; the web Worker must never receive them.
+The development bindings retain non-routable D1 sentinel IDs. Staging and
+production contain distinct provisioned D1 IDs and must never be replaced with
+development sentinels or each other's IDs. Provider secrets belong only on the
+connector Worker; the web Worker must never receive them.
 The connector has `workers_dev=false` and `preview_urls=false` in every
 environment and receives HTTP only through service bindings. Dashboard changes
 must never re-enable either public route.
 
 ## Provisioning order
 
-1. Create the staging and production D1 databases, queues, and DLQs named in
-   `wrangler.jsonc`; replace the sentinel D1 IDs.
+1. Verify the provisioned staging and production D1 databases, queues, and DLQs
+   named in the Wrangler configs; preserve their environment-specific D1 IDs.
    Set the same high-entropy service credential as `CONNECTOR_SERVICE_TOKEN` on
    the web Worker and `CONNECTOR_SHARED_SECRET` on the connector Worker. This
    credential is only for service authentication; all provider credentials stay
@@ -34,12 +35,11 @@ must never re-enable either public route.
    environment and add `--env` only at deploy time. Exercise passkey creation,
    guest fragment exchange, HTTP commands, WebSocket reconnect, and projection
    lag in staging before production.
-4. Select the DNS architecture in `docs/PILOT_RELEASE.md`. A delegated
-   `unijam.ashlr.ai` child zone requires Cloudflare Enterprise. Without that
-   entitlement, use the owner-approved full-zone migration: reproduce every
-   existing record in Cloudflare, keep all Vercel destinations hosted on
-   Vercel, verify parity and DNSSEC, and only then change registrar
-   nameservers. Never delegate `staging` separately or improvise a
+4. Preserve the completed owner-approved full-zone `ashlr.ai` cutover described
+   in `docs/PILOT_RELEASE.md`. Every Vercel destination remains hosted on
+   Vercel; Cloudflare is authoritative DNS. Verify apex, mail, verification,
+   Railway, wildcard, DKIM, and delegated Vercel ACME records before any DNS
+   change. Never delegate `staging` separately or improvise a
    `workers.dev`/external-rewrite substitute.
 5. Keep `ENABLE_LEGACY_ROOM_API=false`. A migration operator may temporarily set
    it to `true` only with a Wrangler secret named `LEGACY_MIGRATION_SECRET`; every

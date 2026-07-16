@@ -6,10 +6,10 @@ external activation. Do not describe the pilot as deployed until the strict
 configuration checks, staging acceptance, load gates, provider checks, and DNS
 verification below all pass.
 
-## Current release status — 2026-07-15
+## Current release status — 2026-07-16
 
 Production infrastructure is provisioned but no production Worker has been
-deployed. The flags-closed staging Workers are deployed, while staging TLS and
+deployed. The flags-closed staging Workers and custom-domain TLS are live, while
 the remaining acceptance gates are still pending:
 
 - The two isolated staging D1 databases and four staging Queues/DLQs exist in
@@ -21,8 +21,8 @@ the remaining acceptance gates are still pending:
   names are installed, both Queue consumers and crons are registered, and the
   web Worker has an isolated SQLite Durable Object namespace. `workers.dev`
   and preview aliases are explicitly disabled and enforced by release tests.
-  `staging.unijam.ashlr.ai` resolves to the custom domain, but its first TLS
-  certificate is still provisioning, so remote acceptance remains blocked.
+  `staging.unijam.ashlr.ai` resolves to the custom domain with an active TLS
+  certificate. Remote room acceptance is in progress.
 - The two isolated production D1 databases and four production Queues/DLQs now
   exist. All checked-in migrations were applied and both databases report zero
   pending migrations. The real D1 IDs replace the production sentinels and
@@ -51,8 +51,9 @@ the remaining acceptance gates are still pending:
 - The temporary authenticated Sites export endpoint and a real Sites export
   fixture are external migration prerequisites. The existing Sites deployment
   must remain private and read-only.
-- The 10-room load smoke and 60-minute soak have not run because Cloudflare
-  resources and authenticated load sessions do not exist yet.
+- The 10-room load smoke and 60-minute soak have not run. Cloudflare resources
+  exist, but the required private manifests of distinct, normally joined,
+  authenticated staging sessions have not been provisioned.
 
 None of these blockers should be replaced with test credentials, placeholder
 secrets, a simulated provider connection, or an unverified deployment claim.
@@ -105,6 +106,15 @@ private release record. Run `npm run preflight:production` before DNS delegation
 and again after production deployment. Use `-- --json` for machine-readable
 evidence; `--offline` is only for testing the local report contract and never
 satisfies a release gate.
+
+The remote preflight also checks both D1 databases for pending migrations and
+inspects every active deployment percentage through Wrangler's version JSON for
+the expected handlers, Durable Object class, D1/Queue/service bindings,
+environment values, analytics dataset, and secret binding names. Wrangler does
+not expose deployed custom-domain association, cron schedules, observability
+settings, Queue depth, or alert policies in that version JSON. The report keeps
+configured custom-domain, cron, and observability state separate from remote
+origin health; retain dashboard/API evidence for the unsupported remote checks.
 
 Repository validation may report only the four known D1 sentinel warnings
 before provisioning. Any other warning or any error blocks provisioning.
@@ -635,9 +645,12 @@ exposed accounts so encrypted tokens are deleted and queued jobs lose access.
 For a room-authority incident, stop inviting/creating rooms and deploy only a
 known compatible Worker version that retains the same Durable Object class,
 namespace, room ID routing, and command/event schema. Do not restore the legacy
-writer. For a DNS incident, remove only the two child-zone NS records added at
-the `unijam` label; verify the `ashlr.ai` apex and unrelated records remain
-unchanged.
+writer. For a DNS incident, preserve the reviewed Cloudflare record inventory
+and use a controlled registrar nameserver reversal only if the recorded
+pre-cutover Vercel authority remains a verified safe target. Do not remove an
+`unijam` child-zone delegation: the deployed architecture is the approved
+full-zone `ashlr.ai` cutover. Verify the apex, mail, and every unrelated record
+before and after any authority change.
 
 ## Release sign-off
 

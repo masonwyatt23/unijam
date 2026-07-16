@@ -4,6 +4,8 @@ import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
+import { activeVersionIds, deployedVersionMismatches, pendingMigrationNames } from "./pilot-preflight-helpers.mjs";
+
 const root = resolve(import.meta.dirname, "..");
 const argv = process.argv.slice(2);
 const environment = valueAfter("--env");
@@ -110,6 +112,44 @@ const expected = {
     connector.queues.consumers[0].dead_letter_queue,
   ],
 };
+const configured = {
+  customDomain: web.routes?.some((route) => route.pattern === new URL(web.vars.APP_ORIGIN).hostname && route.custom_domain === true) === true,
+  cronTriggers: (web.triggers?.crons?.length ?? webConfig.triggers?.crons?.length ?? 0)
+    + (connector.triggers?.crons?.length ?? connectorConfig.triggers?.crons?.length ?? 0),
+  observabilityEnabled: [web, connector].filter((config) => config.observability?.enabled === true).length,
+};
+if (!configured.customDomain) issue("blocker", "CUSTOM_DOMAIN_CONFIG", `${environment} web custom domain is not configured exactly.`);
+if (configured.cronTriggers !== 2) issue("blocker", "CRON_CONFIG", `${environment} must configure exactly one web cron and one connector cron.`);
+if (configured.observabilityEnabled !== 2) issue("blocker", "OBSERVABILITY_CONFIG", `${environment} must enable observability for both Workers.`);
+
+function expectedVersionResources(kind) {
+  const config = kind === "web" ? web : connector;
+  const bindings = [
+    { name: "ANALYTICS", type: "analytics_engine", dataset: config.analytics_engine_datasets[0].dataset },
+  ];
+  for (const [name, text] of Object.entries(config.vars)) bindings.push({ name, type: "plain_text", text });
+  if (kind === "web") {
+    bindings.push(
+      { name: "DB", type: "d1", database_id: web.d1_databases[0].database_id },
+      { name: "ROOM_OBJECTS", type: "durable_object_namespace", class_name: web.durable_objects.bindings[0].class_name },
+      { name: "ROOM_PROJECTION_QUEUE", type: "queue", queue_name: web.queues.producers[0].queue },
+      { name: "CONNECTORS", type: "service", service: web.services[0].service },
+      { name: "CONNECTOR_SERVICE_TOKEN", type: "secret_text" },
+      { name: "ASSETS", type: "assets" },
+      { name: "IMAGES", type: "images" },
+    );
+    return { handlers: ["fetch", "queue", "scheduled"], namedHandlers: [{ name: "RoomDurableObject", handlers: ["class"] }], bindings };
+  }
+  bindings.push(
+    { name: "CONNECTOR_DB", type: "d1", database_id: connector.d1_databases[0].database_id },
+    { name: "PUBLISH_QUEUE", type: "queue", queue_name: connector.queues.producers[0].queue },
+    { name: "CONNECTOR_SHARED_SECRET", type: "secret_text" },
+    { name: "CONNECTOR_OPERATOR_SECRET", type: "secret_text" },
+    { name: "TOKEN_ENCRYPTION_KEY_B64URL", type: "secret_text" },
+    { name: "TOKEN_KEY_VERSION", type: "secret_text" },
+  );
+  return { handlers: ["fetch", "queue", "scheduled"], namedHandlers: [], bindings };
+}
 
 const gitShaResult = command("git", ["rev-parse", "HEAD"]);
 const gitStatusResult = command("git", ["status", "--porcelain"]);
@@ -138,8 +178,12 @@ const remote = {
   databasesPresent: 0,
   queuesPresent: 0,
   workersWithDeployments: 0,
+  deployedVersionsChecked: 0,
+  deployedVersionsMatching: 0,
+  databasesWithNoPendingMigrations: 0,
   requiredSecretsPresent: 0,
   originStatus: null,
+  customDomainOriginHealthy: false,
 };
 
 if (!offline) {
@@ -154,6 +198,17 @@ if (!offline) {
     remote.databasesPresent = expected.databases.filter((name) => databaseNames.has(name)).length;
     assertNames(databaseNames, expected.databases, "D1_MISSING", `${environment} D1 inventory`);
 
+    for (const [configPath, databaseName] of [
+      ["wrangler.jsonc", web.d1_databases[0].database_name],
+      ["wrangler.connectors.jsonc", connector.d1_databases[0].database_name],
+    ]) {
+      const migrationResult = wrangler(["d1", "migrations", "list", databaseName, "--config", configPath, "--env", environment, "--remote"]);
+      const pending = pendingMigrationNames(migrationResult);
+      if (!pending) issue("blocker", "D1_MIGRATIONS_UNREADABLE", `${databaseName} pending migrations could not be determined.`);
+      else if (pending.length > 0) issue("blocker", "D1_MIGRATIONS_PENDING", `${databaseName} has ${pending.length} pending migration(s).`);
+      else remote.databasesWithNoPendingMigrations += 1;
+    }
+
     const queueResult = wrangler(["queues", "list"]);
     if (queueResult.status !== 0) {
       issue("blocker", "QUEUE_INVENTORY_UNREADABLE", `${environment} Queue inventory could not be read.`);
@@ -164,13 +219,26 @@ if (!offline) {
       }
     }
 
-    for (const [config, expectedWorkerName] of [["wrangler.jsonc", web.name], ["wrangler.connectors.jsonc", connector.name]]) {
-      const deployments = wrangler(["deployments", "list", "--config", config, "--env", environment, "--json"]);
-      const parsed = safeJson(deployments.stdout);
-      if (deployments.status !== 0 || !Array.isArray(parsed) || parsed.length === 0) {
+    for (const [kind, config, expectedWorkerName] of [["web", "wrangler.jsonc", web.name], ["connector", "wrangler.connectors.jsonc", connector.name]]) {
+      const deployment = wrangler(["deployments", "status", "--config", config, "--env", environment, "--json"]);
+      const versionIds = activeVersionIds(deployment);
+      if (!versionIds) {
         issue("blocker", "WORKER_NOT_DEPLOYED", `${expectedWorkerName} has no readable deployment.`);
       } else {
         remote.workersWithDeployments += 1;
+        for (const versionId of versionIds) {
+          const details = wrangler(["versions", "view", versionId, "--config", config, "--env", environment, "--json"]);
+          const parsed = details.status === 0 ? safeJson(details.stdout) : undefined;
+          remote.deployedVersionsChecked += 1;
+          if (!parsed) {
+            issue("blocker", "WORKER_VERSION_UNREADABLE", `${expectedWorkerName} has an unreadable active version.`);
+            continue;
+          }
+          const mismatches = deployedVersionMismatches(parsed, expectedVersionResources(kind));
+          if (mismatches.length > 0) {
+            for (const mismatch of mismatches) issue("blocker", "WORKER_VERSION_MISMATCH", `${expectedWorkerName}: ${mismatch}.`);
+          } else remote.deployedVersionsMatching += 1;
+        }
       }
     }
 
@@ -191,6 +259,7 @@ if (!offline) {
   try {
     const response = await fetch(expected.origin, { redirect: "manual", signal: AbortSignal.timeout(8_000) });
     remote.originStatus = response.status;
+    remote.customDomainOriginHealthy = configured.customDomain && response.status >= 200 && response.status < 400;
     if (response.status < 200 || response.status >= 400) issue("blocker", "ORIGIN_UNHEALTHY", `${expected.origin} returned HTTP ${response.status}.`);
   } catch {
     issue("blocker", "ORIGIN_UNREACHABLE", `${expected.origin} could not be reached over HTTPS.`);
@@ -211,6 +280,7 @@ const report = {
   clean,
   node: process.versions.node,
   expected,
+  configured,
   remote,
   ready: blockers.length === 0,
   blockers: blockers.length,

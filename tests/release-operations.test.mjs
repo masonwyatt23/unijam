@@ -5,6 +5,7 @@ import { test } from "node:test";
 
 import { sameOriginBrowserHeaders } from "../scripts/release-request-headers.mjs";
 import { validateManifest as validateLoadManifest } from "../scripts/run-room-load.mjs";
+import { activeVersionIds, deployedVersionMismatches, pendingMigrationNames } from "../scripts/pilot-preflight-helpers.mjs";
 
 const repositoryRoot = new URL("../", import.meta.url);
 
@@ -102,6 +103,7 @@ test("pilot preflight emits a redacted, machine-readable offline report", () => 
   });
   const report = JSON.parse(result.stdout);
   assert.equal(report.environment, "staging");
+  assert.deepEqual(report.configured, { customDomain: true, cronTriggers: 2, observabilityEnabled: 2 });
   assert.equal(report.remote.checked, false);
   assert.equal(report.issues.some((entry) => entry.code === "REMOTE_SKIPPED"), true);
   assert.doesNotMatch(result.stdout, /CONNECTOR_SERVICE_CREDENTIAL|PRIVATE_KEY_JWK.*[=:]/);
@@ -110,9 +112,44 @@ test("pilot preflight emits a redacted, machine-readable offline report", () => 
 test("pilot preflight lets Wrangler derive environment-qualified Worker names", () => {
   const source = readFileSync(new URL("../scripts/pilot-preflight.mjs", import.meta.url), "utf8");
   assert.doesNotMatch(source, /"secret", "list"[^\n]+"--name"/);
-  assert.doesNotMatch(source, /"deployments", "list"[^\n]+"--name"/);
+  assert.doesNotMatch(source, /"deployments", "status"[^\n]+"--name"/);
   assert.doesNotMatch(source, /\$\{workerName\}/);
   assert.match(source, /\$\{expectedWorkerName\} has no readable deployment/);
+});
+
+test("pilot preflight parses only deterministic migration and active-version evidence", () => {
+  assert.deepEqual(pendingMigrationNames({ status: 0, stdout: "✅ No migrations to apply!\n" }), []);
+  assert.deepEqual(pendingMigrationNames({ status: 0, stdout: "Migration Name\n0007_add_index.sql\n0008_more.sql\n" }), ["0007_add_index.sql", "0008_more.sql"]);
+  assert.equal(pendingMigrationNames({ status: 0, stdout: "unexpected output" }), undefined);
+  assert.deepEqual(activeVersionIds({ status: 0, stdout: JSON.stringify({ versions: [
+    { version_id: "version-a", percentage: 90 }, { version_id: "version-b", percentage: 10 }, { version_id: "old", percentage: 0 },
+  ] }) }), ["version-a", "version-b"]);
+  assert.equal(activeVersionIds({ status: 0, stdout: "not json" }), undefined);
+});
+
+test("pilot preflight checks deployed handlers and exact binding resources", () => {
+  const expected = {
+    handlers: ["fetch", "queue", "scheduled"],
+    namedHandlers: [{ name: "RoomDurableObject", handlers: ["class"] }],
+    bindings: [
+      { name: "DB", type: "d1", database_id: "db-staging" },
+      { name: "CONNECTORS", type: "service", service: "connectors-staging" },
+    ],
+  };
+  const deployed = { resources: { script: {
+    handlers: ["fetch", "queue", "scheduled"],
+    named_handlers: [{ name: "RoomDurableObject", handlers: ["class"] }],
+  }, bindings: [
+    { name: "DB", type: "d1", database_id: "db-staging", id: "db-staging" },
+    { name: "CONNECTORS", type: "service", service: "connectors-staging", environment: "production" },
+  ] } };
+  assert.deepEqual(deployedVersionMismatches(deployed, expected), []);
+  assert.deepEqual(deployedVersionMismatches({ ...deployed, resources: { ...deployed.resources, bindings: [] } }, expected), [
+    "binding DB is missing or mismatched", "binding CONNECTORS is missing or mismatched",
+  ]);
+  assert.deepEqual(deployedVersionMismatches({
+    resources: { script: { handlers: ["fetch", "queue", "scheduled"] }, bindings: deployed.resources.bindings },
+  }, { ...expected, namedHandlers: [] }), []);
 });
 
 test("operator recovery validates staging without reading credentials or echoing identifiers", () => {
