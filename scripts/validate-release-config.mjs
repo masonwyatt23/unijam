@@ -134,14 +134,21 @@ for (const environment of environments) {
       issue("warning", "FEATURE_FLAG_OPEN", `${environment} ${flag} is committed open; initial deployments must be closed`);
     }
   }
-  const pilotAccounts = String(connectorEnv.vars?.PILOT_ACCOUNT_ALLOWLIST ?? "")
-    .split(",").map((value) => value.trim()).filter(Boolean);
-  const providerActivated = connectorEnv.vars?.SPOTIFY_ENABLED === "true" || connectorEnv.vars?.APPLE_MUSIC_ENABLED === "true";
-  if (providerActivated && pilotAccounts.length === 0) {
-    issue("error", "PILOT_ALLOWLIST_EMPTY", `${environment} cannot activate a provider without an explicit pilot account allowlist`);
-  }
-  if (new Set(pilotAccounts).size !== pilotAccounts.length) {
-    issue("error", "PILOT_ALLOWLIST_DUPLICATE", `${environment} pilot account allowlist contains duplicate entries`);
+  for (const [provider, flag, allowlistName] of [
+    ["Spotify", "SPOTIFY_ENABLED", "SPOTIFY_PILOT_ACCOUNT_ALLOWLIST"],
+    ["Apple Music", "APPLE_MUSIC_ENABLED", "APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST"],
+  ]) {
+    const pilotAccounts = String(connectorEnv.vars?.[allowlistName] ?? "")
+      .split(",").map((value) => value.trim()).filter(Boolean);
+    if (connectorEnv.vars?.[flag] === "true" && pilotAccounts.length === 0) {
+      issue("error", "PILOT_ALLOWLIST_EMPTY", `${environment} cannot activate ${provider} without an explicit ${allowlistName}`);
+    }
+    if (new Set(pilotAccounts).size !== pilotAccounts.length) {
+      issue("error", "PILOT_ALLOWLIST_DUPLICATE", `${environment} ${provider} pilot allowlist contains duplicate entries`);
+    }
+    if (pilotAccounts.length > 5) {
+      issue("error", "PILOT_ALLOWLIST_LIMIT", `${environment} ${provider} pilot allowlist exceeds the five-host release limit`);
+    }
   }
   if (connectorEnv.vars?.SPOTIFY_PUBLISHING_ENABLED === "true" && connectorEnv.vars?.SPOTIFY_ENABLED !== "true") {
     issue("error", "FEATURE_FLAG_DEPENDENCY", `${environment} Spotify publishing requires Spotify resolution to be enabled`);

@@ -20,13 +20,18 @@ environment. Do not add a public route to the connector Worker.
   JWK). Spotify uses Authorization Code with PKCE and therefore sends the
   client ID, code verifier, and exact redirect URI without a client secret.
 - Variables: `PUBLIC_APP_ORIGIN` (`https://unijam.ashlr.ai` in production),
-  `PILOT_ACCOUNT_ALLOWLIST` (comma-separated internal account IDs), and the
+  `SPOTIFY_PILOT_ACCOUNT_ALLOWLIST` and
+  `APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST` (independent comma-separated internal
+  UniJam account IDs, at most five each), and the
   four explicit flags `SPOTIFY_ENABLED`, `APPLE_MUSIC_ENABLED`,
   `SPOTIFY_PUBLISHING_ENABLED`, `APPLE_MUSIC_PUBLISHING_ENABLED`.
 
-Every feature flag defaults closed. Production and staging need separate D1,
-Queue, secrets, OAuth registrations, and Apple keys. The exact Spotify callback
-is `https://unijam.ashlr.ai/api/v1/providers/spotify/callback`; the application
+Every feature flag defaults closed. A host's presence in one provider allowlist
+does not authorize the other provider. Production and staging need separate D1,
+Queue, secrets, and Apple keys. Spotify Development Mode permits one Client ID,
+so the cofounder pilot uses staging only and production Spotify remains closed
+until production/extended-quota approval. The production Spotify callback is
+`https://unijam.ashlr.ai/api/v1/providers/spotify/callback`; the application
 route requires the same recent passkey-backed host session that started the
 ceremony, then forwards its server-derived account ID with the callback code,
 state, and exact callback URL to the private connector route.

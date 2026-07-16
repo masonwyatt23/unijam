@@ -106,9 +106,18 @@ function providerValue(value: unknown): MusicProvider {
   throw new HttpError(400, "INVALID_PROVIDER", "Provider must be Spotify or Apple Music");
 }
 
-function allowlisted(env: ConnectorEnv, accountId: string): void {
-  const accounts = new Set(env.PILOT_ACCOUNT_ALLOWLIST.split(",").map((value) => value.trim()).filter(Boolean));
-  if (!accounts.has(accountId)) throw new HttpError(403, "PILOT_NOT_ALLOWED", "This host is not in the connector pilot");
+function isAllowlisted(env: ConnectorEnv, accountId: string, provider: MusicProvider): boolean {
+  const configured = provider === "spotify"
+    ? env.SPOTIFY_PILOT_ACCOUNT_ALLOWLIST
+    : env.APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST;
+  const accounts = new Set(configured.split(",").map((value) => value.trim()).filter(Boolean));
+  return accounts.has(accountId);
+}
+
+function allowlisted(env: ConnectorEnv, accountId: string, provider: MusicProvider): void {
+  if (!isAllowlisted(env, accountId, provider)) {
+    throw new HttpError(403, "PILOT_NOT_ALLOWED", `This host is not in the ${provider === "spotify" ? "Spotify" : "Apple Music"} pilot`);
+  }
 }
 
 export function providerEnabled(env: ConnectorEnv, provider: MusicProvider, publishing = false): boolean {
@@ -209,7 +218,7 @@ export async function handleConnectorRequest(
       const body = await readObject(request);
       const accountId = requiredString(body, "accountId");
       const connectionId = requiredString(body, "connectionId");
-      allowlisted(env, accountId);
+      allowlisted(env, accountId, "spotify");
       if (requiredString(body, "origin") !== origin) throw new HttpError(400, "ORIGIN_MISMATCH", "Origin does not match UniJam");
       const started = await startSpotifyAuthorization({
         store,
@@ -232,7 +241,7 @@ export async function handleConnectorRequest(
       const attempt = await store.consumeOAuthAttempt(await sha256Base64Url(state), now());
       if (!attempt) throw new HttpError(400, "OAUTH_STATE_INVALID", "Spotify authorization expired or was already used");
       if (attempt.accountId !== accountId) throw new HttpError(403, "OAUTH_ACCOUNT_MISMATCH", "Spotify authorization does not belong to this host session");
-      allowlisted(env, attempt.accountId);
+      allowlisted(env, attempt.accountId, "spotify");
       const tokens = await exchangeSpotifyAuthorizationCode({
         clientId: env.SPOTIFY_CLIENT_ID,
         appOrigin: origin,
@@ -261,7 +270,7 @@ export async function handleConnectorRequest(
       const accountId = requiredString(body, "accountId");
       const connectionId = requiredString(body, "connectionId");
       const musicUserToken = requiredString(body, "musicUserToken");
-      allowlisted(env, accountId);
+      allowlisted(env, accountId, "apple_music");
       if (requiredString(body, "origin") !== origin) throw new HttpError(400, "ORIGIN_MISMATCH", "Origin does not match UniJam");
       const developerToken = await createAppleDeveloperToken({
         teamId: env.APPLE_TEAM_ID,
@@ -290,7 +299,7 @@ export async function handleConnectorRequest(
       requireProviderEnabled(env, "apple_music");
       const body = await readObject(request);
       const accountId = requiredString(body, "accountId");
-      allowlisted(env, accountId);
+      allowlisted(env, accountId, "apple_music");
       if (requiredString(body, "origin") !== origin) throw new HttpError(400, "ORIGIN_MISMATCH", "Origin does not match UniJam");
       const issuedAtMs = now();
       const developerToken = await createAppleDeveloperToken({
@@ -310,7 +319,8 @@ export async function handleConnectorRequest(
       const body = await readObject(request);
       const accountId = requiredString(body, "accountId");
       const connectionId = requiredString(body, "connectionId");
-      allowlisted(env, accountId);
+      // Privacy cleanup must remain available after a provider kill switch or
+      // pilot removal. Authority still comes from the service-bound web Worker.
       await store.purgeProviderData(accountId, connectionId, provider, now());
       return response(requestId, { provider, disconnected: true });
     }
@@ -330,27 +340,16 @@ export async function handleConnectorRequest(
       const provider = providerValue(body.provider);
       const accountId = requiredString(body, "accountId");
       const connectionId = requiredString(body, "connectionId");
-      // A closed pilot is an expected product state, not an authorization or
-      // connector failure. Do not consult private connection data or require an
-      // allowlist entry until the provider has actually been activated.
-      if (!providerEnabled(env, provider)) {
-        return response(requestId, {
-          provider,
-          connectionId,
-          connected: false,
-          enabled: false,
-          publishingEnabled: false,
-          storefront: null,
-        });
-      }
-      allowlisted(env, accountId);
+      // Status and privacy cleanup remain available after pilot removal or a
+      // kill switch so a host can still see and delete their own connection.
+      const pilotAllowed = isAllowlisted(env, accountId, provider);
       const connection = await store.getConnection(accountId, connectionId, provider);
       return response(requestId, {
         provider,
         connectionId,
         connected: Boolean(connection),
-        enabled: providerEnabled(env, provider),
-        publishingEnabled: providerEnabled(env, provider, true),
+        enabled: pilotAllowed && providerEnabled(env, provider),
+        publishingEnabled: pilotAllowed && providerEnabled(env, provider, true),
         storefront: connection?.storefront ?? null,
       });
     }
@@ -361,7 +360,7 @@ export async function handleConnectorRequest(
       requireProviderEnabled(env, provider);
       const accountId = requiredString(body, "accountId");
       const connectionId = requiredString(body, "connectionId");
-      allowlisted(env, accountId);
+      allowlisted(env, accountId, provider);
       const adapter = await adapterFor({ env, store, provider, accountId, connectionId, fetcher: dependencies.fetcher, now });
       const context = { requestId, provider, credentialRef: connectionId, storefront: "US" as const };
       const mode = requiredString(body, "mode");
@@ -391,7 +390,7 @@ export async function handleConnectorRequest(
       requireProviderEnabled(env, provider, true);
       const accountId = requiredString(body, "accountId");
       const connectionId = requiredString(body, "connectionId");
-      allowlisted(env, accountId);
+      allowlisted(env, accountId, provider);
       const connection = await store.getConnection(accountId, connectionId, provider);
       if (!connection) {
         throw new HttpError(409, "PROVIDER_NOT_CONNECTED", "Connect this provider first");
@@ -428,9 +427,9 @@ export async function handleConnectorRequest(
       const body = await readObject(request);
       const accountId = requiredString(body, "accountId");
       const previewId = requiredString(body, "previewId");
-      allowlisted(env, accountId);
       const stored = await store.getPublishPreview(accountId, previewId, now());
       if (!stored) throw new HttpError(404, "PREVIEW_NOT_FOUND", "Publish preview expired or was already confirmed");
+      allowlisted(env, accountId, stored.preview.provider);
       requireProviderEnabled(env, stored.preview.provider, true);
       const operation = confirmPublishPreview(stored.preview, {
         previewId,
@@ -474,9 +473,9 @@ export async function handleConnectorRequest(
     if (request.method === "POST" && url.pathname === "/v1/publish/operation") {
       const body = await readObject(request);
       const accountId = requiredString(body, "accountId");
-      allowlisted(env, accountId);
       const job = await store.getPublishJob(requiredString(body, "operationId"));
       if (!job || job.accountId !== accountId) throw new HttpError(404, "OPERATION_NOT_FOUND", "Publish operation was not found");
+      allowlisted(env, accountId, job.provider);
       return response(requestId, {
         operationId: job.operationId,
         provider: job.provider,
@@ -561,9 +560,9 @@ export async function handleConnectorRequest(
     if (request.method === "POST" && url.pathname === "/v1/publish/retry") {
       const body = await readObject(request);
       const accountId = requiredString(body, "accountId");
-      allowlisted(env, accountId);
       const job = await store.getPublishJob(requiredString(body, "operationId"));
       if (!job || job.accountId !== accountId) throw new HttpError(404, "OPERATION_NOT_FOUND", "Publish operation was not found");
+      allowlisted(env, accountId, job.provider);
       requireProviderEnabled(env, job.provider, true);
       if (job.recoveryRequired) {
         throw new HttpError(409, "OPERATOR_RECOVERY_REQUIRED", "Playlist creation outcome requires operator recovery");
@@ -580,9 +579,9 @@ export async function handleConnectorRequest(
     if (request.method === "POST" && url.pathname === "/v1/publish/cancel") {
       const body = await readObject(request);
       const accountId = requiredString(body, "accountId");
-      allowlisted(env, accountId);
       const job = await store.getPublishJob(requiredString(body, "operationId"));
       if (!job || job.accountId !== accountId) throw new HttpError(404, "OPERATION_NOT_FOUND", "Publish operation was not found");
+      allowlisted(env, accountId, job.provider);
       const state = cancelPublishOperation(job.state);
       if (!(await store.savePublishJob({ ...job, state, updatedAtMs: now() }))) {
         throw new HttpError(409, "OPERATION_IN_FLIGHT", "This destination changed or has an active provider mutation; refresh before cancelling");

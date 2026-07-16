@@ -11,9 +11,14 @@ const argv = process.argv.slice(2);
 const environment = valueAfter("--env");
 const jsonOutput = argv.includes("--json");
 const offline = argv.includes("--offline");
+const requiredProvider = valueAfter("--require-provider");
 
 if (!environment || !["staging", "production"].includes(environment)) {
-  console.error("Usage: node scripts/pilot-preflight.mjs --env staging|production [--json] [--offline]");
+  console.error("Usage: node scripts/pilot-preflight.mjs --env staging|production [--require-provider spotify|apple-music|both] [--json] [--offline]");
+  process.exit(2);
+}
+if (requiredProvider && !["spotify", "apple-music", "both"].includes(requiredProvider)) {
+  console.error("--require-provider must be spotify, apple-music, or both");
   process.exit(2);
 }
 
@@ -118,6 +123,9 @@ const configured = {
     + (connector.triggers?.crons?.length ?? connectorConfig.triggers?.crons?.length ?? 0),
   observabilityEnabled: [web, connector].filter((config) => config.observability?.enabled === true).length,
 };
+function requiresProvider(provider) {
+  return requiredProvider === "both" || requiredProvider === provider;
+}
 if (!configured.customDomain) issue("blocker", "CUSTOM_DOMAIN_CONFIG", `${environment} web custom domain is not configured exactly.`);
 if (configured.cronTriggers !== 2) issue("blocker", "CRON_CONFIG", `${environment} must configure exactly one web cron and one connector cron.`);
 if (configured.observabilityEnabled !== 2) issue("blocker", "OBSERVABILITY_CONFIG", `${environment} must enable observability for both Workers.`);
@@ -246,8 +254,8 @@ if (!offline) {
     const connectorSecrets = namesFromSecretList(wrangler(["secret", "list", "--config", "wrangler.connectors.jsonc", "--env", environment]));
     const requiredWebSecrets = ["CONNECTOR_SERVICE_TOKEN"];
     const requiredConnectorSecrets = ["CONNECTOR_SHARED_SECRET", "CONNECTOR_OPERATOR_SECRET", "TOKEN_ENCRYPTION_KEY_B64URL", "TOKEN_KEY_VERSION"];
-    if (connector.vars.SPOTIFY_ENABLED === "true" || connector.vars.SPOTIFY_PUBLISHING_ENABLED === "true") requiredConnectorSecrets.push("SPOTIFY_CLIENT_ID");
-    if (connector.vars.APPLE_MUSIC_ENABLED === "true" || connector.vars.APPLE_MUSIC_PUBLISHING_ENABLED === "true") {
+    if (requiresProvider("spotify") || connector.vars.SPOTIFY_ENABLED === "true" || connector.vars.SPOTIFY_PUBLISHING_ENABLED === "true") requiredConnectorSecrets.push("SPOTIFY_CLIENT_ID");
+    if (requiresProvider("apple-music") || connector.vars.APPLE_MUSIC_ENABLED === "true" || connector.vars.APPLE_MUSIC_PUBLISHING_ENABLED === "true") {
       requiredConnectorSecrets.push("APPLE_TEAM_ID", "APPLE_KEY_ID", "APPLE_PRIVATE_KEY_JWK");
     }
     assertNames(webSecrets, requiredWebSecrets, "WEB_SECRET_MISSING", `${web.name} secret inventory`);
@@ -267,8 +275,17 @@ if (!offline) {
 }
 
 if (offline) issue("warning", "REMOTE_SKIPPED", "Cloudflare inventory, deployments, secrets, and origin health were not checked.");
-if ((connector.vars.PILOT_ACCOUNT_ALLOWLIST ?? "").trim() === "") {
-  issue("warning", "PILOT_ALLOWLIST_EMPTY", `${environment} has no pilot account IDs configured; this is correct only for the closed baseline.`);
+for (const [provider, providerSlug, allowlistName] of [
+  ["Spotify", "spotify", "SPOTIFY_PILOT_ACCOUNT_ALLOWLIST"],
+  ["Apple Music", "apple-music", "APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST"],
+]) {
+  if ((connector.vars[allowlistName] ?? "").trim() === "") {
+    issue(
+      requiresProvider(providerSlug) ? "blocker" : "warning",
+      "PILOT_ALLOWLIST_EMPTY",
+      `${environment} has no ${provider} pilot account IDs configured; this is correct only while that provider is closed.`,
+    );
+  }
 }
 
 const blockers = issues.filter((entry) => entry.severity === "blocker");
@@ -276,6 +293,7 @@ const report = {
   version: 1,
   generatedAt: new Date().toISOString(),
   environment,
+  requiredProvider: requiredProvider ?? null,
   commit: gitSha,
   clean,
   node: process.versions.node,

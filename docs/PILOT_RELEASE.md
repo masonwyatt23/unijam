@@ -227,8 +227,8 @@ matching connector service credential only on that ingress, and forward the
 request through a service binding. This ingress and its Access policy are an
 external release gate; never make the connector public to bypass the gate.
 
-Install the following on `unijam-connectors-staging`, then install independent
-production values on `unijam-connectors-production`:
+Install the following on `unijam-connectors-staging`. Install production
+provider values only after the corresponding production approval gate is met:
 
 - `TOKEN_ENCRYPTION_KEY_B64URL`: exactly 32 random bytes encoded as unpadded
   base64url. A suitable source value is
@@ -246,10 +246,23 @@ Use `npx wrangler secret put NAME --config wrangler.connectors.jsonc --env ENV`
 for each connector secret. Verify names with `wrangler secret list`; do not print
 values.
 
-`PILOT_ACCOUNT_ALLOWLIST` contains comma-separated internal UniJam account IDs,
-not email addresses or provider IDs. Start empty. Add at most five explicitly
-approved pilot hosts per environment after they enroll passkeys. Keep all four
-provider flags `false` for the baseline deployment.
+Install Apple's one-time `.p8` key without writing or printing a converted JWK:
+
+```bash
+cat /secure/path/AuthKey_KEYID.p8 | npm run install:apple-key -- --env staging --dry-run
+cat /secure/path/AuthKey_KEYID.p8 | npm run install:apple-key -- --env staging
+```
+
+The dry run reports only key type and curve. The live command converts the key
+in memory and sends the private JWK to Wrangler over stdin. Repeat with the
+independent production key only during an approved production activation.
+
+`SPOTIFY_PILOT_ACCOUNT_ALLOWLIST` and
+`APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST` contain comma-separated internal UniJam
+account IDs, not email addresses or provider IDs. Start both empty. Add at most
+five explicitly approved hosts to each provider's list after they enroll
+passkeys. A Spotify pilot host is not implicitly an Apple Music pilot host, or
+vice versa. Keep all four provider flags `false` for the baseline deployment.
 
 Set `LEGACY_MIGRATION_SECRET` on the web Worker only when an authenticated Sites
 migration is scheduled. `ENABLE_LEGACY_ROOM_API` must stay `false` except for
@@ -321,12 +334,20 @@ state rather than simulated success.
 
 ## 6. Configure provider registrations
 
-Use separate staging and production Spotify app registrations where the
-provider permits it. Register exact redirect URIs—no wildcard, alternate host,
-path variation, trailing slash, or HTTP production callback:
+For the cofounder pilot, use the single Spotify Development Mode Client ID on
+staging and keep production Spotify flags closed. Spotify's February 2026 rules
+limit a developer to one Development Mode Client ID, require the app owner to
+have Premium, and cap the provider-side authorized-user list at five. Do not
+consume that one Client ID on a duplicate production registration or put the
+production callback on the staging pilot app. Register the exact staging
+redirect URI—no wildcard, alternate host, path variation, trailing slash, or
+HTTP callback:
 
 - `https://staging.unijam.ashlr.ai/api/v1/providers/spotify/callback`
-- `https://unijam.ashlr.ai/api/v1/providers/spotify/callback`
+
+Register `https://unijam.ashlr.ai/api/v1/providers/spotify/callback` only on an
+approved production/extended-quota app. Until then production has no Spotify
+client ID requirement because both Spotify flags remain closed.
 
 Spotify uses Authorization Code with PKCE. Verify the returned state is
 single-use, expires after five minutes, and the connector sends the exact origin
@@ -338,6 +359,44 @@ production origins. The connector creates 15-minute ES256 developer tokens;
 the browser obtains a Music User Token through MusicKit, and only the connector
 stores it encrypted. Verify the US storefront, private playlist creation, and
 that the private JWK never crosses into the web Worker or client bundle.
+
+In Certificates, Identifiers & Profiles, an Account Holder or Admin must create
+a Media ID with MusicKit enabled, create and associate a Media Services private
+key, and record its Key ID and the account Team ID. The Media ID description is
+shown to users during Apple Music consent, so use the reviewed product name.
+Apple's `.p8` download is one-time key material: move it directly into the
+secret-install command described below, then remove the local copy after the
+secret inventory and live developer-token probe pass.
+
+For Spotify Development Mode, add every Spotify pilot account in the Developer
+Dashboard. That provider-side five-user list is separate from UniJam's internal
+`SPOTIFY_PILOT_ACCOUNT_ALLOWLIST`; both must authorize the same people. Use the
+current `/me/playlists` and `/playlists/{id}/items` endpoints, which the adapter
+contract tests enforce for the February 2026 Development Mode API.
+
+After every cofounder has enrolled a passkey, retrieve active internal IDs
+directly from staging D1. Treat the result as private release material; do not
+paste it into tickets or chat:
+
+```bash
+npx wrangler d1 execute unijam-staging --config wrangler.jsonc --env staging --remote \
+  --command "SELECT account_id, display_name FROM accounts WHERE deleted_at_ms IS NULL ORDER BY created_at_ms"
+```
+
+Place Spotify users only in `SPOTIFY_PILOT_ACCOUNT_ALLOWLIST` and Apple Music
+users only in `APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST`. A cofounder who will test
+both may appear in both lists; each list independently remains capped at five.
+Run the provider-specific readiness gates before opening either resolution flag;
+they require only that provider's credential inventory and host cohort:
+
+```bash
+npm run preflight:staging -- --require-provider spotify --json
+npm run preflight:staging -- --require-provider apple-music --json
+```
+
+These gates do not require publishing to be enabled. Publishing remains a later,
+independent activation after live resolution, handoff, disconnect, and provider
+error tests pass.
 
 Provider disconnect testing is mandatory: it must delete encrypted tokens,
 cancel outstanding work, and prevent a queued job from regaining credentials.

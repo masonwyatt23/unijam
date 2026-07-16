@@ -45,6 +45,7 @@
     "load:soak": "node scripts/run-room-load.mjs --profile soak",
     "assure:websocket:staging": "node scripts/verify-room-hibernation.mjs",
     "recover:publish": "node scripts/recover-publish-operation.mjs",
+    "install:apple-key": "node scripts/install-apple-private-key.mjs",
     "validate:artifact": "bash scripts/validate-artifact.sh",
     "lint": "bash scripts/sites-env.sh -- eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate"

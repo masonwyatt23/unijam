@@ -183,7 +183,8 @@ function env(changes: Partial<ConnectorEnv> = {}): ConnectorEnv {
     CONNECTOR_OPERATOR_SECRET: ["operator", "fixture", "secret"].join("-"),
     TOKEN_ENCRYPTION_KEY_B64URL: encodeBase64Url(new Uint8Array(32).fill(7)),
     TOKEN_KEY_VERSION: ["fixture", "key", "v1"].join("-"),
-    PILOT_ACCOUNT_ALLOWLIST: "allowed-account",
+    SPOTIFY_PILOT_ACCOUNT_ALLOWLIST: "allowed-account",
+    APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST: "allowed-account",
     PUBLIC_APP_ORIGIN: "https://unijam.ashlr.ai",
     SPOTIFY_CLIENT_ID: "spotify-client-fixture",
     APPLE_TEAM_ID: "TEAMFIXTURE",
@@ -548,11 +549,42 @@ test("router enforces internal auth, pilot allowlist, exact origin, encrypted st
   assert.equal(store.jobs.size, 0);
   assert.equal(store.previews.size, 0);
 
+  const removedConnection = { ...connection!, accountId: "removed-from-provider-pilot", connectionId: "removed-provider", generation: 0 };
+  await store.saveConnection(removedConnection);
+  const removedStatus = await handleConnectorRequest(
+    new Request("https://connector/v1/connections/status", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ accountId: removedConnection.accountId, connectionId: removedConnection.connectionId, provider: "spotify" }),
+    }),
+    env({ SPOTIFY_PILOT_ACCOUNT_ALLOWLIST: "", SPOTIFY_ENABLED: "false" }),
+    { store },
+  );
+  assert.deepEqual((await removedStatus.json() as { data: unknown }).data, {
+    provider: "spotify",
+    connectionId: removedConnection.connectionId,
+    connected: true,
+    enabled: false,
+    publishingEnabled: false,
+    storefront: "US",
+  });
+  const removedDisconnect = await handleConnectorRequest(
+    new Request("https://connector/v1/connections/spotify", {
+      method: "DELETE",
+      headers,
+      body: JSON.stringify({ accountId: removedConnection.accountId, connectionId: removedConnection.connectionId }),
+    }),
+    env({ SPOTIFY_PILOT_ACCOUNT_ALLOWLIST: "", SPOTIFY_ENABLED: "false" }),
+    { store },
+  );
+  assert.equal(removedDisconnect.status, 200);
+  assert.equal(await store.getConnection(removedConnection.accountId, removedConnection.connectionId, "spotify"), null);
+
   const removedFromPilot = "removed-from-pilot";
   await store.saveConnection({ ...connection!, accountId: removedFromPilot, connectionId: "account-purge", generation: 0 });
   const purged = await handleConnectorRequest(
     new Request("https://connector/v1/accounts/purge", { method: "POST", headers, body: JSON.stringify({ accountId: removedFromPilot }) }),
-    env({ PILOT_ACCOUNT_ALLOWLIST: "" }),
+    env({ SPOTIFY_PILOT_ACCOUNT_ALLOWLIST: "", APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST: "" }),
     { store, now: () => 6_000 },
   );
   assert.equal(purged.status, 200);
@@ -579,7 +611,7 @@ test("disabled providers expose a clean closed-pilot status without an allowlist
       headers: { Authorization: "Bearer internal-fixture-secret", "Content-Type": "application/json" },
       body: JSON.stringify({ accountId: "not-allowlisted", connectionId: "spotify:not-allowlisted", provider: "spotify" }),
     }),
-    env({ PILOT_ACCOUNT_ALLOWLIST: "", SPOTIFY_ENABLED: "false", SPOTIFY_PUBLISHING_ENABLED: "false" }),
+    env({ SPOTIFY_PILOT_ACCOUNT_ALLOWLIST: "", SPOTIFY_ENABLED: "false", SPOTIFY_PUBLISHING_ENABLED: "false" }),
     { store: new MemoryStore() },
   );
   assert.equal(response.status, 200);
@@ -591,6 +623,49 @@ test("disabled providers expose a clean closed-pilot status without an allowlist
     publishingEnabled: false,
     storefront: null,
   });
+});
+
+test("provider pilot allowlists are independent while status remains available for cleanup", async () => {
+  const store = new MemoryStore();
+  const headers = { Authorization: "Bearer internal-fixture-secret", "Content-Type": "application/json" };
+  const spotifyOnly = env({
+    SPOTIFY_PILOT_ACCOUNT_ALLOWLIST: "spotify-host",
+    APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST: "apple-host",
+  });
+  const allowed = await handleConnectorRequest(
+    new Request("https://connector/v1/connections/status", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ accountId: "spotify-host", connectionId: "spotify:spotify-host", provider: "spotify" }),
+    }),
+    spotifyOnly,
+    { store },
+  );
+  assert.equal(allowed.status, 200);
+
+  const closed = await handleConnectorRequest(
+    new Request("https://connector/v1/connections/status", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ accountId: "spotify-host", connectionId: "apple-music:spotify-host", provider: "apple_music" }),
+    }),
+    spotifyOnly,
+    { store },
+  );
+  assert.equal(closed.status, 200);
+  assert.equal((await closed.json() as { data: { enabled: boolean } }).data.enabled, false);
+
+  const denied = await handleConnectorRequest(
+    new Request("https://connector/v1/oauth/spotify/authorize", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ accountId: "apple-host", connectionId: "spotify:apple-host", origin: spotifyOnly.PUBLIC_APP_ORIGIN }),
+    }),
+    spotifyOnly,
+    { store },
+  );
+  assert.equal(denied.status, 403);
+  assert.equal((await denied.json() as { error: { code: string } }).error.code, "PILOT_NOT_ALLOWED");
 });
 
 test("disconnect fences an OAuth callback that already consumed its one-time state", async () => {
