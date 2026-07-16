@@ -44,7 +44,11 @@ export function securityHeaders(environment: SecurityEnvironment, scriptNonce?: 
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
-    ...(environment === "production" ? { "Strict-Transport-Security": "max-age=31536000; includeSubDomains" } : {}),
+    ...(environment === "production"
+      ? { "Strict-Transport-Security": "max-age=31536000; includeSubDomains" }
+      : environment === "staging"
+        ? { "Strict-Transport-Security": "max-age=31536000" }
+        : {}),
   };
 }
 

@@ -47,6 +47,10 @@ const worker = {
     const url = new URL(request.url);
     const environment = (env.APP_ENV ?? "development") as SecurityEnvironment;
     const expectedOrigin = environment === "development" ? url.origin : env.APP_ORIGIN;
+    if (environment !== "development" && url.protocol !== "https:") {
+      const secureUrl = new URL(`${url.pathname}${url.search}`, expectedOrigin);
+      return withSecurityHeaders(Response.redirect(secureUrl, 308), environment);
+    }
     const isDocument = isDocumentRequest(request);
     const scriptNonce = isDocument ? createScriptNonce() : undefined;
 

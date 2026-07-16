@@ -66,6 +66,29 @@ test("staging metadata stays on staging and prevents indexing", async () => {
   assert.doesNotMatch(html, /codex-preview/);
 });
 
+test("non-development environments redirect plain HTTP to their configured HTTPS origin", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("staging-https", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+  const response = await worker.fetch(new Request("http://staging.unijam.ashlr.ai/host/sign-in?from=invite"), {
+    APP_ENV: "staging",
+    APP_ORIGIN: "https://staging.unijam.ashlr.ai",
+    ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
+  }, { waitUntil() {}, passThroughOnException() {} });
+  assert.equal(response.status, 308);
+  assert.equal(response.headers.get("location"), "https://staging.unijam.ashlr.ai/host/sign-in?from=invite");
+  assert.equal(response.headers.get("strict-transport-security"), "max-age=31536000");
+
+  const production = await worker.fetch(new Request("http://unijam.ashlr.ai/room/ROOM1234?from=invite"), {
+    APP_ENV: "production",
+    APP_ORIGIN: "https://unijam.ashlr.ai",
+    ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
+  }, { waitUntil() {}, passThroughOnException() {} });
+  assert.equal(production.status, 308);
+  assert.equal(production.headers.get("location"), "https://unijam.ashlr.ai/room/ROOM1234?from=invite");
+  assert.equal(production.headers.get("strict-transport-security"), "max-age=31536000; includeSubDomains");
+});
+
 test("production HTML hydrates with a fresh server-selected CSP nonce", async () => {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("nonce", `${process.pid}-${Date.now()}`);

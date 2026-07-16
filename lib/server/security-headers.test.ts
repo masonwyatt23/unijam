@@ -91,5 +91,5 @@ test("security headers preserve an API response body", async () => {
   const response = withSecurityHeaders(Response.json({ ok: true }), "staging");
   assert.deepEqual(await response.json(), { ok: true });
   assert.equal(response.headers.get("X-Frame-Options"), "DENY");
-  assert.equal(response.headers.has("Strict-Transport-Security"), false);
+  assert.equal(response.headers.get("Strict-Transport-Security"), "max-age=31536000");
 });
