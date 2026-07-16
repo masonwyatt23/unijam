@@ -3,7 +3,14 @@ import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } fr
 import handler from "vinext/server/app-router-entry";
 import { forwardRoomAuthority, normalizeV1RoomId, type RoomAuthorityEnv } from "../lib/server/room-authority.ts";
 import { RoomDurableObject } from "./room-durable-object.ts";
-import { isExactSameOriginRequest, isExactSameOriginWebSocket, withSecurityHeaders, type SecurityEnvironment } from "../lib/server/security-headers.ts";
+import {
+  createScriptNonce,
+  isExactSameOriginRequest,
+  isExactSameOriginWebSocket,
+  withSecurityHeaders,
+  withSecurityRequestHeaders,
+  type SecurityEnvironment,
+} from "../lib/server/security-headers.ts";
 import { apiError } from "../lib/server/api-response.ts";
 import { expiredRoomProjectionDeletion, ROOM_DETAIL_RETENTION_MS } from "../lib/platform/retention.ts";
 import { BoundedBodyError, requestWithBoundedBody } from "../lib/server/bounded-body.ts";
@@ -39,11 +46,14 @@ const worker = {
     const url = new URL(request.url);
     const environment = (env.APP_ENV ?? "development") as SecurityEnvironment;
     const expectedOrigin = environment === "development" ? url.origin : env.APP_ORIGIN;
+    const isDocument = ["GET", "HEAD"].includes(request.method.toUpperCase()) &&
+      (request.headers.get("Sec-Fetch-Dest") === "document" || request.headers.get("Accept")?.includes("text/html") === true);
+    const scriptNonce = isDocument ? createScriptNonce() : undefined;
 
     const websocketMatch = url.pathname.match(/^\/api\/v1\/rooms\/([^/]+)\/websocket$/);
     if (websocketMatch && request.headers.get("Upgrade")?.toLowerCase() === "websocket") {
       if (!isExactSameOriginWebSocket(request, expectedOrigin)) {
-        return withSecurityHeaders(apiError("ORIGIN_FORBIDDEN", "WebSocket origin is not allowed", 403), environment);
+        return withSecurityHeaders(apiError("ORIGIN_FORBIDDEN", "WebSocket origin is not allowed", 403), environment, scriptNonce);
       }
       try {
         return forwardRoomAuthority(env as RoomAuthorityEnv, request, normalizeV1RoomId(websocketMatch[1]), "/websocket");
@@ -53,9 +63,11 @@ const worker = {
     }
 
     if (!isExactSameOriginRequest(request, expectedOrigin)) {
-      return withSecurityHeaders(apiError("ORIGIN_FORBIDDEN", "Request origin is not allowed", 403), environment);
+      return withSecurityHeaders(apiError("ORIGIN_FORBIDDEN", "Request origin is not allowed", 403), environment, scriptNonce);
     }
-    let routedRequest = request;
+    let routedRequest = scriptNonce
+      ? withSecurityRequestHeaders(request, environment, scriptNonce, expectedOrigin)
+      : request;
     if (url.pathname.startsWith("/api/") && !["GET", "HEAD", "OPTIONS"].includes(request.method.toUpperCase())) {
       const maximum = url.pathname === "/api/v1/migration/import" ? 5_250_000
         : url.pathname.endsWith("/commands") ? 65_536
@@ -64,9 +76,9 @@ const worker = {
         routedRequest = await requestWithBoundedBody(request, maximum);
       } catch (error) {
         if (error instanceof BoundedBodyError) {
-          return withSecurityHeaders(apiError(error.code, error.message, error.status), environment);
+          return withSecurityHeaders(apiError(error.code, error.message, error.status), environment, scriptNonce);
         }
-        return withSecurityHeaders(apiError("INVALID_BODY", "Request body could not be read", 400), environment);
+        return withSecurityHeaders(apiError("INVALID_BODY", "Request body could not be read", 400), environment, scriptNonce);
       }
     }
 
@@ -79,13 +91,13 @@ const worker = {
           return result.response();
         },
       }, allowedWidths);
-      return withSecurityHeaders(response, environment);
+      return withSecurityHeaders(response, environment, scriptNonce);
     }
 
     try {
-      return withSecurityHeaders(await handler.fetch(routedRequest, env, ctx), environment);
+      return withSecurityHeaders(await handler.fetch(routedRequest, env, ctx), environment, scriptNonce);
     } catch {
-      return withSecurityHeaders(apiError("INTERNAL_ERROR", "The request could not be completed", 500, true), environment);
+      return withSecurityHeaders(apiError("INTERNAL_ERROR", "The request could not be completed", 500, true), environment, scriptNonce);
     }
   },
 

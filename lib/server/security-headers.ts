@@ -1,12 +1,16 @@
 export type SecurityEnvironment = "development" | "staging" | "production";
 
-export function securityHeaders(environment: SecurityEnvironment): Record<string, string> {
+export function createScriptNonce(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+export function securityHeaders(environment: SecurityEnvironment, scriptNonce?: string): Record<string, string> {
   const connectHosts = environment === "staging"
-    ? "'self' wss://staging.unijam.ashlr.ai https://api.music.apple.com"
-    : "'self' wss://unijam.ashlr.ai https://api.music.apple.com";
-  const scriptSources = environment === "development"
-    ? "'self' 'unsafe-inline' https://js-cdn.music.apple.com"
-    : "'self' https://js-cdn.music.apple.com";
+    ? "'self' wss://staging.unijam.ashlr.ai https://api.music.apple.com https://cloudflareinsights.com"
+    : "'self' wss://unijam.ashlr.ai https://api.music.apple.com https://cloudflareinsights.com";
+  const nonceSource = scriptNonce ? ` 'nonce-${scriptNonce}'` : "";
+  const scriptSources = `'self'${nonceSource} https://js-cdn.music.apple.com https://static.cloudflareinsights.com`;
   return {
     "Content-Security-Policy": [
       "default-src 'self'",
@@ -19,6 +23,7 @@ export function securityHeaders(environment: SecurityEnvironment): Record<string
       "img-src 'self' data: https://*.mzstatic.com https://marketing.services.apple",
       "object-src 'none'",
       `script-src ${scriptSources}`,
+      "script-src-attr 'none'",
       "style-src 'self' 'unsafe-inline'",
       ...(environment === "development" ? [] : ["upgrade-insecure-requests"]),
     ].join("; "),
@@ -28,6 +33,26 @@ export function securityHeaders(environment: SecurityEnvironment): Record<string
     "X-Frame-Options": "DENY",
     ...(environment === "production" ? { "Strict-Transport-Security": "max-age=31536000; includeSubDomains" } : {}),
   };
+}
+
+export function withSecurityRequestHeaders(
+  request: Request,
+  environment: SecurityEnvironment,
+  scriptNonce: string,
+  appOrigin: string,
+): Request {
+  const headers = new Headers(request.headers);
+  // Vinext reads the request CSP and applies its nonce to every bootstrap and
+  // streamed RSC script. Always overwrite inbound CSP so a client cannot
+  // choose a nonce that the response will trust.
+  headers.set("Content-Security-Policy", securityHeaders(environment, scriptNonce)["Content-Security-Policy"]);
+  headers.delete("Content-Security-Policy-Report-Only");
+  // Metadata is rendered inside Vinext, where Cloudflare bindings are not
+  // available in every runtime. These values come from the Worker binding and
+  // are always overwritten here so request headers cannot spoof canonical URLs.
+  headers.set("X-UniJam-App-Environment", environment);
+  headers.set("X-UniJam-App-Origin", appOrigin);
+  return new Request(request, { headers });
 }
 
 const safeMethods = new Set(["GET", "HEAD", "OPTIONS"]);
@@ -47,9 +72,12 @@ export function isExactSameOriginWebSocket(request: Request, expectedOrigin: str
     request.headers.get("Sec-Fetch-Site") === "same-origin";
 }
 
-export function withSecurityHeaders(response: Response, environment: SecurityEnvironment): Response {
+export function withSecurityHeaders(response: Response, environment: SecurityEnvironment, scriptNonce?: string): Response {
   if (response.status === 101) return response;
   const secured = new Response(response.body, response);
-  for (const [name, value] of Object.entries(securityHeaders(environment))) secured.headers.set(name, value);
+  for (const [name, value] of Object.entries(securityHeaders(environment, scriptNonce))) secured.headers.set(name, value);
+  if (scriptNonce && /^text\/html\b/i.test(secured.headers.get("Content-Type") ?? "")) {
+    secured.headers.set("Cache-Control", "private, no-store");
+  }
   return secured;
 }
