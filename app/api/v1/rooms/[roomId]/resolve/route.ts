@@ -13,6 +13,10 @@ import {
   titleOnlyReviewCandidates,
 } from "@/lib/server/catalog-resolution";
 import { catalogPrincipalForRoom } from "@/lib/server/catalog-principal";
+import {
+  catalogResolutionRateLimitResponse,
+  withCatalogResolutionBudget,
+} from "@/lib/server/catalog-resolution-rate-limit";
 import { connectorJsonRequest, type ConnectorProxyEnv } from "@/lib/server/connector-proxy";
 import { actorHeaders, authenticateRoomActor, normalizeV1RoomId, roomStub, type RoomAuthorityEnv } from "@/lib/server/room-authority";
 import { createProviderHandoffLinks } from "@/lib/providers/handoff";
@@ -140,9 +144,11 @@ async function registerCandidateGrant(input: {
 
 export async function POST(request: Request, context: Context): Promise<Response> {
   if (!env.DB || !env.ROOM_OBJECTS || !env.CONNECTORS) return apiError("RESOLUTION_UNAVAILABLE", "Catalog resolution is unavailable", 503, true);
+  const db = env.DB;
+  const roomEnv = env as RoomAuthorityEnv;
   try {
     const roomId = normalizeV1RoomId((await context.params).roomId);
-    const access = await authenticateRoomActor(env as RoomAuthorityEnv, request, roomId);
+    const access = await authenticateRoomActor(roomEnv, request, roomId);
     if (!access) return apiError("UNAUTHENTICATED", "Join this room before resolving a contribution", 401);
     const body = await request.json() as { input?: unknown; provider?: unknown };
     if (typeof body.input !== "string") return apiError("INVALID_CATALOG_INPUT", "Enter a track link or search", 400);
@@ -162,6 +168,12 @@ export async function POST(request: Request, context: Context): Promise<Response
         409,
       );
     }
+    const budgeted = await withCatalogResolutionBudget(db, {
+      roomId,
+      participantId: access.actor.participantId,
+      sessionId: access.session.sessionId,
+      now: Date.now(),
+    }, async () => {
     const accountId = catalogPrincipal.kind === "account" ? catalogPrincipal.accountId : null;
     const catalogPath = catalogPrincipal.kind === "public" ? "/v1/catalog/public-query" : "/v1/catalog/query";
     const catalogIdentity = accountId === null ? {} : {
@@ -264,8 +276,8 @@ export async function POST(request: Request, context: Context): Promise<Response
       for (const entry of ranked) {
         const evidence = [...new Set([...entry.evidence, ...crossEvidence])];
         const grant = await registerCandidateGrant({
-          db: env.DB,
-          roomEnv: env as RoomAuthorityEnv,
+          db,
+          roomEnv,
           roomId,
           access,
           candidate: entry.candidate,
@@ -305,7 +317,7 @@ export async function POST(request: Request, context: Context): Promise<Response
     if (resolution.status === "no_match") return apiResponse(resolution);
     const candidate = resolution.match.candidate;
     const evidence = [...new Set([...resolution.match.evidence, ...crossEvidence])];
-    const grant = await registerCandidateGrant({ db: env.DB, roomEnv: env as RoomAuthorityEnv, roomId, access, candidate, method, evidence });
+    const grant = await registerCandidateGrant({ db, roomEnv, roomId, access, candidate, method, evidence });
     if (grant instanceof Response) return grant;
     return apiResponse({
       status: "matched",
@@ -322,6 +334,8 @@ export async function POST(request: Request, context: Context): Promise<Response
       providerUrl: grant.providerUrl,
       evidence,
     });
+    });
+    return budgeted.allowed ? budgeted.value : catalogResolutionRateLimitResponse(budgeted);
   } catch {
     return apiError("RESOLUTION_FAILED", "The contribution could not be resolved", 400);
   }
