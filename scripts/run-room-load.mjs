@@ -4,11 +4,16 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import WebSocket from "ws";
 
+import { sameOriginBrowserHeaders } from "./release-request-headers.mjs";
+
 const execFileAsync = promisify(execFile);
 const PRODUCTION_CONFIRMATION = "I_UNDERSTAND_THIS_MUTATES_LIVE_ROOMS";
+const JOIN_RATE_LIMIT = 20;
+const JOIN_RATE_WINDOW_MS = 15 * 60_000;
 const defaults = {
   target: "http://127.0.0.1:8787",
   profile: "smoke",
@@ -82,7 +87,23 @@ function validateSession(session, roomId, index) {
     throw new Error(`${roomId} session ${index + 1} must contain a UniJam host or guest cookie`);
   }
   if (/\r|\n/.test(session.cookie)) throw new Error(`${roomId} session ${index + 1} cookie contains an invalid newline`);
-  return { label: typeof session.label === "string" ? session.label.slice(0, 80) : `session-${index + 1}`, cookie: session.cookie };
+  const joinedAtMs = Date.parse(session.joinedAt);
+  if (!Number.isFinite(joinedAtMs)) throw new Error(`${roomId} session ${index + 1} joinedAt must be an ISO timestamp`);
+  if (joinedAtMs > Date.now() + 5 * 60_000) throw new Error(`${roomId} session ${index + 1} joinedAt cannot be in the future`);
+  const networkCohort = typeof session.networkCohort === "string" ? session.networkCohort.trim() : "";
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(networkCohort)) {
+    throw new Error(`${roomId} session ${index + 1} networkCohort must be an opaque label, not a raw IP address`);
+  }
+  if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(networkCohort) || networkCohort.includes(":")) {
+    throw new Error(`${roomId} session ${index + 1} networkCohort must not contain an IP address`);
+  }
+  return {
+    label: typeof session.label === "string" ? session.label.slice(0, 80) : `session-${index + 1}`,
+    cookie: session.cookie,
+    joinedAt: new Date(joinedAtMs).toISOString(),
+    joinedAtMs,
+    networkCohort,
+  };
 }
 
 function validateRoom(room, sessionCount, label) {
@@ -95,9 +116,15 @@ function validateRoom(room, sessionCount, label) {
   return { roomId, sessions: room.sessions.map((session, index) => validateSession(session, roomId, index)) };
 }
 
-function validateManifest(value, profile) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || value.version !== 1) {
-    throw new Error("Load manifest must be a version 1 object");
+export function validateManifest(value, profile, targetOrigin) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || value.version !== 2) {
+    throw new Error("Load manifest must be a version 2 object");
+  }
+  if (typeof value.origin !== "string" || new URL(value.origin).origin !== targetOrigin || value.origin !== targetOrigin) {
+    throw new Error("Load manifest origin must exactly match the target origin");
+  }
+  if (value.provisioning !== "normal-join-flow") {
+    throw new Error("Load manifest must attest provisioning through the normal join flow");
   }
   let rooms;
   if (profile === "smoke") {
@@ -112,6 +139,15 @@ function validateManifest(value, profile) {
   }
   const cookies = rooms.flatMap((room) => room.sessions.map((session) => session.cookie));
   if (new Set(cookies).size !== cookies.length) throw new Error("Every load participant must have a distinct authenticated cookie");
+  const joinBuckets = new Map();
+  for (const session of rooms.flatMap((room) => room.sessions)) {
+    const bucketStartMs = Math.floor(session.joinedAtMs / JOIN_RATE_WINDOW_MS) * JOIN_RATE_WINDOW_MS;
+    const key = `${session.networkCohort}:${bucketStartMs}`;
+    joinBuckets.set(key, (joinBuckets.get(key) ?? 0) + 1);
+    if (joinBuckets.get(key) > JOIN_RATE_LIMIT) {
+      throw new Error(`Network cohort ${session.networkCohort} exceeds ${JOIN_RATE_LIMIT} normal joins in one 15-minute rate-limit bucket`);
+    }
+  }
   return rooms;
 }
 
@@ -201,7 +237,7 @@ class RoomSocket {
     const startedAt = performance.now();
     this.history = [];
     const socket = new WebSocket(websocketUrl(this.origin, this.roomId), {
-      headers: { Cookie: this.session.cookie, Origin: this.origin },
+      headers: sameOriginBrowserHeaders(this.origin, { Cookie: this.session.cookie }),
       handshakeTimeout: 5_000,
       maxPayload: 128 * 1024,
       perMessageDeflate: false,
@@ -247,7 +283,7 @@ class RoomSocket {
 
 async function canonicalState(origin, room) {
   const response = await fetch(new URL(`/api/v1/rooms/${room.roomId}/state`, origin), {
-    headers: { Cookie: room.sessions[0].cookie, Origin: origin },
+    headers: sameOriginBrowserHeaders(origin, { Cookie: room.sessions[0].cookie }),
   });
   const body = await response.json().catch(() => null);
   if (!response.ok || !body?.data?.snapshot) throw new Error(`${room.roomId} state request failed with ${response.status}`);
@@ -362,7 +398,7 @@ async function main() {
   if (production && options.wranglerEnv !== "production") throw new Error("Production load requires --wrangler-env production for projection isolation");
 
   const manifest = JSON.parse(await readFile(resolve(options.manifest), "utf8"));
-  const rooms = validateManifest(manifest, options.profile);
+  const rooms = validateManifest(manifest, options.profile, target.origin);
   const metrics = {
     ackMs: [], reconnectMs: [], projectionMs: [], commandErrors: [], divergence: [],
     malformedMessages: 0, deliveryDuplicateEvents: 0, canonicalEventConflicts: 0,
@@ -464,7 +500,10 @@ async function main() {
   if (!report.passed) process.exitCode = 1;
 }
 
-main().catch((error) => {
-  console.error(`Load harness failed: ${error instanceof Error ? error.message : "Unknown error"}`);
-  process.exitCode = 1;
-});
+const isDirectExecution = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+if (isDirectExecution) {
+  main().catch((error) => {
+    console.error(`Load harness failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+    process.exitCode = 1;
+  });
+}

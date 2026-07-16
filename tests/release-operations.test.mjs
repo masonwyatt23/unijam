@@ -3,7 +3,64 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
+import { sameOriginBrowserHeaders } from "../scripts/release-request-headers.mjs";
+import { validateManifest as validateLoadManifest } from "../scripts/run-room-load.mjs";
+
 const repositoryRoot = new URL("../", import.meta.url);
+
+function loadSessions(count, { bucketOffset = 0, cohort = "pilot-home-a" } = {}) {
+  const bucketStart = Date.UTC(2026, 6, 16, 1, bucketOffset * 15);
+  return Array.from({ length: count }, (_, index) => ({
+    label: `guest-${index + 1}`,
+    cookie: `__Host-unijam_guest=${String(index + 1).padStart(32, "0")}`,
+    joinedAt: new Date(bucketStart + index * 1_000).toISOString(),
+    networkCohort: cohort,
+  }));
+}
+
+test("release probes send browser-equivalent same-origin provenance and ignore caller overrides", () => {
+  assert.deepEqual(sameOriginBrowserHeaders("https://staging.unijam.ashlr.ai", {
+    Cookie: "session=value",
+    Origin: "https://evil.example",
+    "Sec-Fetch-Site": "cross-site",
+  }), {
+    Cookie: "session=value",
+    Origin: "https://staging.unijam.ashlr.ai",
+    "Sec-Fetch-Site": "same-origin",
+  });
+  const loadSource = readFileSync(new URL("../scripts/run-room-load.mjs", import.meta.url), "utf8");
+  assert.equal((loadSource.match(/sameOriginBrowserHeaders\(/g) ?? []).length, 2);
+  assert.doesNotMatch(loadSource, /headers:\s*\{[^}]*Origin:\s*(?:origin|this\.origin)/);
+});
+
+test("load fixtures preserve the live per-IP join policy without weakening runtime limits", () => {
+  const firstBucket = loadSessions(20);
+  const nextBucket = loadSessions(5, { bucketOffset: 1 }).map((session, index) => ({
+    ...session,
+    cookie: `__Host-unijam_guest=${String(index + 21).padStart(32, "0")}`,
+  }));
+  const fixture = {
+    version: 2,
+    origin: "https://staging.unijam.ashlr.ai",
+    provisioning: "normal-join-flow",
+    soakRoom: { roomId: "SOAK1234", sessions: [...firstBucket, ...nextBucket] },
+  };
+  const rooms = validateLoadManifest(fixture, "soak", fixture.origin);
+  assert.equal(rooms[0].sessions.length, 25);
+
+  const overLimit = {
+    ...fixture,
+    soakRoom: { roomId: "SOAK1234", sessions: loadSessions(25) },
+  };
+  assert.throws(
+    () => validateLoadManifest(overLimit, "soak", fixture.origin),
+    /exceeds 20 normal joins in one 15-minute rate-limit bucket/,
+  );
+  assert.throws(
+    () => validateLoadManifest(fixture, "soak", "https://unijam.ashlr.ai"),
+    /origin must exactly match/,
+  );
+});
 
 test("release configuration accepts DO name bindings and reports only real blockers", () => {
   const result = spawnSync(process.execPath, ["scripts/validate-release-config.mjs", "--json"], {

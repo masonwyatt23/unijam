@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
+import { readFileSync } from "node:fs";
 
 import {
   STAGING_ORIGIN,
@@ -69,4 +70,10 @@ test("hibernation assurance refuses production before reading a manifest", () =>
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /staging-only/);
   assert.doesNotMatch(result.stderr, /ENOENT/);
+});
+
+test("hibernation WebSocket and POST probes use the shared same-origin provenance headers", () => {
+  const source = readFileSync(new URL("../scripts/verify-room-hibernation.mjs", import.meta.url), "utf8");
+  assert.equal((source.match(/sameOriginBrowserHeaders\(/g) ?? []).length, 3);
+  assert.doesNotMatch(source, /headers:\s*\{[^}]*Origin:\s*origin/);
 });

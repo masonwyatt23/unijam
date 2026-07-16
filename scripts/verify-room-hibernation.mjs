@@ -6,6 +6,8 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import WebSocket from "ws";
 
+import { sameOriginBrowserHeaders } from "./release-request-headers.mjs";
+
 export const STAGING_ORIGIN = "https://staging.unijam.ashlr.ai";
 const MINIMUM_HIBERNATION_IDLE_SECONDS = 12;
 const DEFAULT_IDLE_SECONDS = 15;
@@ -124,7 +126,7 @@ class ProbeSocket {
 
   async connect() {
     const socket = new WebSocket(socketUrl(this.origin, this.roomId), {
-      headers: { Cookie: this.cookie, Origin: this.origin },
+      headers: sameOriginBrowserHeaders(this.origin, { Cookie: this.cookie }),
       handshakeTimeout: this.timeoutMs,
       maxPayload: 128 * 1024,
       perMessageDeflate: false,
@@ -194,7 +196,7 @@ class ProbeSocket {
 async function jsonPost(origin, path, cookie, timeoutMs) {
   const response = await fetch(new URL(path, origin), {
     method: "POST",
-    headers: { Cookie: cookie, Origin: origin, "Content-Type": "application/json" },
+    headers: sameOriginBrowserHeaders(origin, { Cookie: cookie, "Content-Type": "application/json" }),
     body: "{}",
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -204,7 +206,7 @@ async function jsonPost(origin, path, cookie, timeoutMs) {
 
 async function expectUpgradeRejected(origin, roomId, cookie, timeoutMs) {
   const socket = new WebSocket(socketUrl(origin, roomId), {
-    headers: { Cookie: cookie, Origin: origin },
+    headers: sameOriginBrowserHeaders(origin, { Cookie: cookie }),
     handshakeTimeout: timeoutMs,
     maxPayload: 128 * 1024,
     perMessageDeflate: false,
