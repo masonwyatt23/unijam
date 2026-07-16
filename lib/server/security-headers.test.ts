@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createScriptNonce,
+  isDocumentRequest,
   isExactSameOriginRequest,
   isExactSameOriginWebSocket,
   securityHeaders,
@@ -14,6 +15,18 @@ test("script nonces contain 128 bits of server randomness", () => {
   const second = createScriptNonce();
   assert.match(first, /^[a-f0-9]{32}$/);
   assert.notEqual(first, second);
+});
+
+test("document detection covers headerless navigation without noncing APIs or assets", () => {
+  const origin = "https://staging.unijam.ashlr.ai";
+  assert.equal(isDocumentRequest(new Request(`${origin}/host/sign-in`)), true);
+  assert.equal(isDocumentRequest(new Request(`${origin}/join`, { headers: { Accept: "*/*" } })), true);
+  assert.equal(isDocumentRequest(new Request(`${origin}/room/ROOM1234`, { headers: { "Sec-Fetch-Dest": "document" } })), true);
+  assert.equal(isDocumentRequest(new Request(`${origin}/api/v1/auth/me`)), false);
+  assert.equal(isDocumentRequest(new Request(`${origin}/assets/app.js`)), false);
+  assert.equal(isDocumentRequest(new Request(`${origin}/favicon.svg`)), false);
+  assert.equal(isDocumentRequest(new Request(`${origin}/host`, { headers: { RSC: "1", Accept: "text/x-component" } })), false);
+  assert.equal(isDocumentRequest(new Request(`${origin}/host`, { method: "POST", headers: { Accept: "text/html" } })), false);
 });
 
 test("production responses deny embedding and constrain executable scripts with a nonce", () => {

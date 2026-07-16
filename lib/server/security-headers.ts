@@ -5,6 +5,19 @@ export function createScriptNonce(): string {
   return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
 }
 
+export function isDocumentRequest(request: Request): boolean {
+  if (!new Set(["GET", "HEAD"]).has(request.method.toUpperCase())) return false;
+  const destination = request.headers.get("Sec-Fetch-Dest");
+  if (destination) return destination === "document";
+  const accept = request.headers.get("Accept") ?? "*/*";
+  if (request.headers.get("RSC") === "1" || accept.includes("text/x-component")) return false;
+  if (accept.includes("text/html")) return true;
+  if (!accept.includes("*/*")) return false;
+  const pathname = new URL(request.url).pathname;
+  if (pathname.startsWith("/api/") || pathname.startsWith("/_vinext/") || pathname.startsWith("/assets/")) return false;
+  return !/\/[A-Za-z0-9_-]+\.[A-Za-z0-9]+$/.test(pathname);
+}
+
 export function securityHeaders(environment: SecurityEnvironment, scriptNonce?: string): Record<string, string> {
   const connectHosts = environment === "staging"
     ? "'self' wss://staging.unijam.ashlr.ai https://api.music.apple.com https://cloudflareinsights.com"

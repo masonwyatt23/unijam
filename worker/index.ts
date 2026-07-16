@@ -5,6 +5,7 @@ import { forwardRoomAuthority, normalizeV1RoomId, type RoomAuthorityEnv } from "
 import { RoomDurableObject } from "./room-durable-object.ts";
 import {
   createScriptNonce,
+  isDocumentRequest,
   isExactSameOriginRequest,
   isExactSameOriginWebSocket,
   withSecurityHeaders,
@@ -46,8 +47,7 @@ const worker = {
     const url = new URL(request.url);
     const environment = (env.APP_ENV ?? "development") as SecurityEnvironment;
     const expectedOrigin = environment === "development" ? url.origin : env.APP_ORIGIN;
-    const isDocument = ["GET", "HEAD"].includes(request.method.toUpperCase()) &&
-      (request.headers.get("Sec-Fetch-Dest") === "document" || request.headers.get("Accept")?.includes("text/html") === true);
+    const isDocument = isDocumentRequest(request);
     const scriptNonce = isDocument ? createScriptNonce() : undefined;
 
     const websocketMatch = url.pathname.match(/^\/api\/v1\/rooms\/([^/]+)\/websocket$/);

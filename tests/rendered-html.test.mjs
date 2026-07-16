@@ -106,3 +106,22 @@ test("production HTML hydrates with a fresh server-selected CSP nonce", async ()
   assert.notEqual(firstNonce, secondNonce);
   await second.body?.cancel();
 });
+
+test("headerless page navigation still receives a hydration nonce", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("headerless-nonce", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+  const response = await worker.fetch(new Request("https://staging.unijam.ashlr.ai/host/sign-in"), {
+    APP_ENV: "staging",
+    APP_ORIGIN: "https://staging.unijam.ashlr.ai",
+    ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
+  }, { waitUntil() {}, passThroughOnException() {} });
+  const csp = response.headers.get("content-security-policy") ?? "";
+  const nonce = csp.match(/'nonce-([a-f0-9]{32})'/)?.[1];
+  const html = await response.text();
+  const scripts = [...html.matchAll(/<script\b[^>]*>/gi)].map((match) => match[0]);
+  assert.ok(nonce);
+  assert.ok(scripts.length > 0);
+  assert.ok(scripts.every((tag) => tag.includes(`nonce="${nonce}"`)));
+  assert.equal(response.headers.get("cache-control"), "private, no-store");
+});
