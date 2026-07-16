@@ -462,19 +462,31 @@ actor header or capability bypass. Its private manifest has this shape:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
+  "origin": "https://staging.unijam.ashlr.ai",
+  "provisioning": "normal-join-flow",
   "smokeRooms": [
     {
       "roomId": "ROOM1234",
       "sessions": [
-        { "label": "guest-01", "cookie": "__Host-unijam_guest=opaque-value" }
+        {
+          "label": "guest-01",
+          "cookie": "__Host-unijam_guest=opaque-value",
+          "joinedAt": "2026-07-16T04:00:00.000Z",
+          "networkCohort": "pilot-home-a"
+        }
       ]
     }
   ],
   "soakRoom": {
     "roomId": "SOAK1234",
     "sessions": [
-      { "label": "guest-01", "cookie": "__Host-unijam_guest=opaque-value" }
+      {
+        "label": "guest-01",
+        "cookie": "__Host-unijam_guest=opaque-value",
+        "joinedAt": "2026-07-16T04:00:00.000Z",
+        "networkCohort": "pilot-home-a"
+      }
     ]
   }
 }
@@ -482,10 +494,14 @@ actor header or capability bypass. Its private manifest has this shape:
 
 The actual smoke manifest must have exactly 10 rooms × 20 distinct active
 sessions; the soak room must have exactly 25 distinct active sessions. Obtain
-them through normal controlled joins from the staging cohort. The harness does
-not mint sessions or bypass the per-IP join limit. Store the file outside Git or
-as ignored `load-manifest*.json`, permission it to the operator only, and delete
-it immediately after the test. Reports contain no cookie values and are written
+them through normal controlled joins from the staging cohort. Record each
+session's ISO join time and an opaque network-cohort label; never record an IP
+address. The harness enforces the live 20-joins-per-network, 15-minute policy,
+so the 25-person soak must use distributed pilot networks or 20 joins in one
+bucket plus five after the next bucket begins. It never mints sessions or
+bypasses runtime rate limits. Store the file outside Git or as ignored
+`load-manifest*.json`, permission it to the operator only, and delete it
+immediately after the test. Reports contain no cookie values and are written
 with owner-only permissions under `test-results/load/`.
 
 Run the staging smoke with D1 projection measurement:
