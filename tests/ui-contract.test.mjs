@@ -173,3 +173,14 @@ test("room controls are retryable across the DO-to-D1 projection boundary", asyn
   assert.doesNotMatch(await read("app/api/v1/rooms/[roomId]/handoff/[provider]/route.ts"), /allowEndedOwner/);
   assert.doesNotMatch(await read("app/api/v1/rooms/[roomId]/resolve/route.ts"), /allowEndedOwner/);
 });
+
+test("room state preserves event cursors and finalized snapshots do not open sockets", async () => {
+  const [state, product] = await Promise.all([
+    read("app/api/v1/rooms/[roomId]/state/route.ts"),
+    read("app/components/product.tsx"),
+  ]);
+  assert.match(state, /authorityUrl\.search = new URL\(request\.url\)\.search/);
+  assert.match(product, /const isLive = snapshot\?\.lifecycle === "active"/);
+  assert.match(product, /if \(!isLive \|\| typeof window === "undefined"\) return/);
+  assert.match(product, /event\.code === 1008\) refresh\(\)/);
+});

@@ -291,6 +291,39 @@ test("co-host recap does not lead to owner-only publishing", async ({ page }) =>
   await expect(page.getByRole("link", { name: /review publishing/i })).toHaveCount(0);
 });
 
+test("an authority close refreshes an ended room once and stops reconnecting", async ({ page }) => {
+  let stateReads = 0;
+  let socketAttempts = 0;
+  await page.route("**/api/v1/rooms/ROOM1234/state**", (route) => {
+    stateReads += 1;
+    const roomSnapshot = stateReads === 1 ? snapshot : { ...snapshot, lifecycle: "ended" as const, seq: 5 };
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          type: "snapshot",
+          reset: true,
+          snapshot: roomSnapshot,
+          latestSeq: roomSnapshot.seq,
+          actor: { participantId: "host_12345678", role: "host", nickname: "Room Host" },
+        },
+        error: null,
+        requestId: `req_state_${stateReads}`,
+      }),
+    });
+  });
+  await page.routeWebSocket("**/api/v1/rooms/ROOM1234/websocket", async (socket) => {
+    socketAttempts += 1;
+    await socket.close({ code: 1008, reason: "Room authority changed" });
+  });
+
+  await gotoReady(page, "/room/ROOM1234");
+  await expect(page.getByText("The setlist is read-only. Open the recap to review played occurrences.")).toBeVisible();
+  expect(stateReads).toBe(2);
+  await expect.poll(() => socketAttempts, { timeout: 1_500 }).toBe(1);
+});
+
 test("room creation works by keyboard and reflows at 320px", async ({ page }) => {
   await gotoReady(page, "/rooms/new");
   const hostApproval = page.getByRole("radio", { name: /host approves/i });

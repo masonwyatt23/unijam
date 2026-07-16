@@ -110,9 +110,9 @@ export function useRoomState(roomId: string): Resource<RoomContext> {
   useEffect(() => {
     if (snapshot) lastSeqRef.current = snapshot.seq;
   }, [snapshot]);
-  const hasSnapshot = Boolean(snapshot);
+  const isLive = snapshot?.lifecycle === "active";
   useEffect(() => {
-    if (!hasSnapshot || typeof window === "undefined") return;
+    if (!isLive || typeof window === "undefined") return;
     let socket: WebSocket | null = null;
     let reconnectTimer: number | null = null;
     let stopped = false;
@@ -132,8 +132,13 @@ export function useRoomState(roomId: string): Resource<RoomContext> {
           if (typeof remoteSeq === "number" && remoteSeq > lastSeqRef.current) refresh();
         } catch { /* invalid server frames are ignored; HTTP remains authoritative */ }
       });
-      socket.addEventListener("close", () => {
+      socket.addEventListener("close", (event) => {
         if (stopped) return;
+        // A policy close means room authority changed (ended, invite rotated,
+        // or participant access changed). Re-read HTTP authority before the
+        // next attempt so an ended room or revoked session terminates this
+        // socket lifecycle instead of backing off forever on a stale snapshot.
+        if (event.code === 1008) refresh();
         const delay = Math.min(8_000, 500 * 2 ** attempt);
         attempt += 1;
         reconnectTimer = window.setTimeout(connect, delay);
@@ -150,7 +155,7 @@ export function useRoomState(roomId: string): Resource<RoomContext> {
       window.removeEventListener("online", reconnectOnline);
       socket?.close(1000, "Room view closed");
     };
-  }, [roomId, refresh, hasSnapshot]);
+  }, [roomId, refresh, isLive]);
   if (resource.status === "ready" && (!snapshot || !actor)) {
     return { status: "error", data: null, error: { code: "ROOM_CONTEXT_UNAVAILABLE", message: !actor ? "The room API did not return the current server-derived actor." : "The room authority did not return a canonical snapshot.", retryable: true }, refresh: resource.refresh };
   }

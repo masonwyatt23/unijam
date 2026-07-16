@@ -15,7 +15,9 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
     // continue to use the active-room-only authorization default.
     const authorization = await authenticateRoomActor(runtime, request, roomId, { allowEndedOwner: true });
     if (!authorization) return apiError("UNAUTHENTICATED", "Room session is missing or expired", 401);
-    const response = await roomStub(runtime, roomId).fetch(new Request("https://room.internal/state"));
+    const authorityUrl = new URL("https://room.internal/state");
+    authorityUrl.search = new URL(request.url).search;
+    const response = await roomStub(runtime, roomId).fetch(new Request(authorityUrl));
     const body = await response.json();
     if (!response.ok) return apiError("ROOM_STATE_FAILED", "Unable to read canonical room state", response.status, response.status >= 500);
     return apiResponse({ ...body as object, actor: authorization.actor });
