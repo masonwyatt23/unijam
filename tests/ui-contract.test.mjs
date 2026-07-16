@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
@@ -31,6 +32,18 @@ test("provider artwork preserves official digital size and clear-space rules", a
   assert.doesNotMatch(css, /\.resolution-attribution \.provider-brand \{[^}]*padding-inline: 0/);
   assert.match(assets, /Spotify logo exclusion zone/);
   assert.match(assets, /one-tenth of the rendered badge height/);
+});
+
+test("vendored Spotify artwork matches the recorded official package", async () => {
+  const assets = await read("THIRD_PARTY_ASSETS.md");
+  for (const [path, expected] of [
+    ["public/brand/spotify/Full_Logo_Black_RGB.svg", "895e187fe85d90228f4972ece378e9e9a8e6fb995ca59f8037ba1f37727bb611"],
+    ["public/brand/spotify/Full_Logo_White_RGB.svg", "20ee3e587eb0891cccc595e617620a1943f1554e7291218e9158d3522457a3a9"],
+  ]) {
+    const digest = createHash("sha256").update(await readFile(new URL(path, root))).digest("hex");
+    assert.equal(digest, expected, path);
+    assert.match(assets, new RegExp(`${path.replaceAll(".", "\\.")}[^\\n]+${expected}`));
+  }
 });
 
 test("guest room shell cannot render host navigation", async () => {
