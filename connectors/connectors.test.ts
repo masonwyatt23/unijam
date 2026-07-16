@@ -446,7 +446,7 @@ test("router enforces internal auth, pilot allowlist, exact origin, encrypted st
   const startedBody = await started.json() as { data: { authorizeUrl: string } };
   const state = new URL(startedBody.data.authorizeUrl).searchParams.get("state")!;
   const callback = await handleConnectorRequest(
-    new Request("https://connector/v1/oauth/spotify/callback", { method: "POST", headers, body: JSON.stringify({ code: "code", state, callbackUrl: spotifyCallbackUrl(base.PUBLIC_APP_ORIGIN) }) }),
+    new Request("https://connector/v1/oauth/spotify/callback", { method: "POST", headers, body: JSON.stringify({ accountId: "allowed-account", code: "code", state, callbackUrl: spotifyCallbackUrl(base.PUBLIC_APP_ORIGIN) }) }),
     base,
     {
       store,
@@ -458,6 +458,20 @@ test("router enforces internal auth, pilot allowlist, exact origin, encrypted st
   const connection = await store.getConnection("allowed-account", "c", "spotify");
   assert.ok(connection);
   assert.doesNotMatch(JSON.stringify(connection), /secret-access|secret-refresh/);
+
+  const secondStarted = await handleConnectorRequest(
+    new Request("https://connector/v1/oauth/spotify/authorize", { method: "POST", headers, body: JSON.stringify({ accountId: "allowed-account", connectionId: "c-account-bound", origin: "https://unijam.ashlr.ai" }) }),
+    base,
+    { store, now: () => 2_100 },
+  );
+  const secondState = new URL((await secondStarted.json() as { data: { authorizeUrl: string } }).data.authorizeUrl).searchParams.get("state")!;
+  const mismatchedCallback = await handleConnectorRequest(
+    new Request("https://connector/v1/oauth/spotify/callback", { method: "POST", headers, body: JSON.stringify({ accountId: "different-account", code: "code", state: secondState, callbackUrl: spotifyCallbackUrl(base.PUBLIC_APP_ORIGIN) }) }),
+    base,
+    { store, now: () => 2_200 },
+  );
+  assert.equal(mismatchedCallback.status, 403);
+  assert.equal(await store.getConnection("allowed-account", "c-account-bound", "spotify"), null);
 
   const queued: unknown[] = [];
   const publishEnv = env({
@@ -590,7 +604,7 @@ test("disconnect fences an OAuth callback that already consumed its one-time sta
   const callback = handleConnectorRequest(new Request("https://connector/v1/oauth/spotify/callback", {
     method: "POST",
     headers,
-    body: JSON.stringify({ code: "code", state, callbackUrl: spotifyCallbackUrl(base.PUBLIC_APP_ORIGIN) }),
+    body: JSON.stringify({ accountId: "allowed-account", code: "code", state, callbackUrl: spotifyCallbackUrl(base.PUBLIC_APP_ORIGIN) }),
   }), base, {
     store,
     now: () => 2_000,

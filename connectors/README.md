@@ -27,8 +27,9 @@ environment. Do not add a public route to the connector Worker.
 Every feature flag defaults closed. Production and staging need separate D1,
 Queue, secrets, OAuth registrations, and Apple keys. The exact Spotify callback
 is `https://unijam.ashlr.ai/api/v1/providers/spotify/callback`; the application
-route forwards the callback code, state, and exact callback URL to the private
-connector route.
+route requires the same recent passkey-backed host session that started the
+ceremony, then forwards its server-derived account ID with the callback code,
+state, and exact callback URL to the private connector route.
 
 For Apple Music, the trusted web service first calls
 `POST /v1/apple-music/developer-token` with `{ accountId, origin }`. The
@@ -50,7 +51,7 @@ must never forward client-asserted authority fields directly.
 | Method and path | JSON body |
 | --- | --- |
 | `POST /v1/oauth/spotify/authorize` | `{ accountId, connectionId, origin }` |
-| `POST /v1/oauth/spotify/callback` | `{ code, state, callbackUrl }` |
+| `POST /v1/oauth/spotify/callback` | `{ accountId, code, state, callbackUrl }` |
 | `POST /v1/apple-music/developer-token` | `{ accountId, origin }` |
 | `POST /v1/connections/apple-music` | `{ accountId, connectionId, musicUserToken, origin }` |
 | `POST /v1/connections/status` | `{ accountId, connectionId, provider }` |

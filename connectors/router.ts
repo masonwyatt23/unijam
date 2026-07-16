@@ -226,10 +226,12 @@ export async function handleConnectorRequest(
       requireProviderEnabled(env, "spotify");
       const body = await readObject(request);
       assertCallback(body, origin);
+      const accountId = requiredString(body, "accountId");
       const code = requiredString(body, "code");
       const state = requiredString(body, "state");
       const attempt = await store.consumeOAuthAttempt(await sha256Base64Url(state), now());
       if (!attempt) throw new HttpError(400, "OAUTH_STATE_INVALID", "Spotify authorization expired or was already used");
+      if (attempt.accountId !== accountId) throw new HttpError(403, "OAUTH_ACCOUNT_MISMATCH", "Spotify authorization does not belong to this host session");
       allowlisted(env, attempt.accountId);
       const tokens = await exchangeSpotifyAuthorizationCode({
         clientId: env.SPOTIFY_CLIENT_ID,

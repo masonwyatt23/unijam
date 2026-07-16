@@ -20,10 +20,13 @@ if (operation === "deploy" && environment === "production" && productionConfirma
 
 function run(command, args, extraEnvironment = {}) {
   return new Promise((resolveRun, rejectRun) => {
-    const child = spawn(command, args, {
+    const executable = process.platform === "win32" && command === "npm" ? "npm.cmd"
+      : process.platform === "win32" && command === "npx" ? "npx.cmd"
+        : command;
+    const child = spawn(executable, args, {
       stdio: "inherit",
       env: { ...process.env, ...extraEnvironment },
-      shell: process.platform === "win32",
+      shell: false,
     });
     child.once("error", rejectRun);
     child.once("exit", (code, signal) => {

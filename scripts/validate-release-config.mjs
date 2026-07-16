@@ -134,6 +134,21 @@ for (const environment of environments) {
       issue("warning", "FEATURE_FLAG_OPEN", `${environment} ${flag} is committed open; initial deployments must be closed`);
     }
   }
+  const pilotAccounts = String(connectorEnv.vars?.PILOT_ACCOUNT_ALLOWLIST ?? "")
+    .split(",").map((value) => value.trim()).filter(Boolean);
+  const providerActivated = connectorEnv.vars?.SPOTIFY_ENABLED === "true" || connectorEnv.vars?.APPLE_MUSIC_ENABLED === "true";
+  if (providerActivated && pilotAccounts.length === 0) {
+    issue("error", "PILOT_ALLOWLIST_EMPTY", `${environment} cannot activate a provider without an explicit pilot account allowlist`);
+  }
+  if (new Set(pilotAccounts).size !== pilotAccounts.length) {
+    issue("error", "PILOT_ALLOWLIST_DUPLICATE", `${environment} pilot account allowlist contains duplicate entries`);
+  }
+  if (connectorEnv.vars?.SPOTIFY_PUBLISHING_ENABLED === "true" && connectorEnv.vars?.SPOTIFY_ENABLED !== "true") {
+    issue("error", "FEATURE_FLAG_DEPENDENCY", `${environment} Spotify publishing requires Spotify resolution to be enabled`);
+  }
+  if (connectorEnv.vars?.APPLE_MUSIC_PUBLISHING_ENABLED === "true" && connectorEnv.vars?.APPLE_MUSIC_ENABLED !== "true") {
+    issue("error", "FEATURE_FLAG_DEPENDENCY", `${environment} Apple Music publishing requires Apple Music resolution to be enabled`);
+  }
 
   const webDatabase = onlyBinding(webEnv.d1_databases, "DB", `${environment} web D1`);
   const connectorDatabase = onlyBinding(connectorEnv.d1_databases, "CONNECTOR_DB", `${environment} connector D1`);
