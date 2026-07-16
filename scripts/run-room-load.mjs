@@ -8,6 +8,11 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import WebSocket from "ws";
 
+import {
+  assertCandidateWindow,
+  queryActiveCandidate,
+  validateCandidateReference,
+} from "./cloudflare-candidate-identity.mjs";
 import { sameOriginBrowserHeaders } from "./release-request-headers.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -117,8 +122,8 @@ function validateRoom(room, sessionCount, label) {
 }
 
 export function validateManifest(value, profile, targetOrigin) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || value.version !== 2) {
-    throw new Error("Load manifest must be a version 2 object");
+  if (!value || typeof value !== "object" || Array.isArray(value) || value.version !== 3) {
+    throw new Error("Load manifest must be a version 3 object");
   }
   if (typeof value.origin !== "string" || new URL(value.origin).origin !== targetOrigin || value.origin !== targetOrigin) {
     throw new Error("Load manifest origin must exactly match the target origin");
@@ -126,6 +131,7 @@ export function validateManifest(value, profile, targetOrigin) {
   if (value.provisioning !== "normal-join-flow") {
     throw new Error("Load manifest must attest provisioning through the normal join flow");
   }
+  validateCandidateReference(value.candidate, "Load manifest candidate");
   let rooms;
   if (profile === "smoke") {
     if (!Array.isArray(value.smokeRooms) || value.smokeRooms.length !== 10) {
@@ -397,8 +403,14 @@ async function main() {
   if (options.projectionMode && !["local", "remote"].includes(options.projectionMode)) throw new Error("--projection-mode must be local or remote");
   if (production && options.wranglerEnv !== "production") throw new Error("Production load requires --wrangler-env production for projection isolation");
 
-  const manifest = JSON.parse(await readFile(resolve(options.manifest), "utf8"));
+  const manifestSource = await readFile(resolve(options.manifest), "utf8");
+  const manifest = JSON.parse(manifestSource);
   const rooms = validateManifest(manifest, options.profile, target.origin);
+  const expectedCandidate = validateCandidateReference(manifest.candidate, "Load manifest candidate");
+  const remoteEnvironment = target.origin === "https://staging.unijam.ashlr.ai" ? "staging"
+    : target.origin === "https://unijam.ashlr.ai" ? "production"
+      : null;
+  if (options.wranglerEnv && options.wranglerEnv !== remoteEnvironment) throw new Error("Load target and Wrangler environment do not match");
   const metrics = {
     ackMs: [], reconnectMs: [], projectionMs: [], commandErrors: [], divergence: [],
     malformedMessages: 0, deliveryDuplicateEvents: 0, canonicalEventConflicts: 0,
@@ -409,10 +421,18 @@ async function main() {
     clients: room.sessions.map((session) => new RoomSocket({ origin: target.origin, roomId: room.roomId, session, metrics })),
   }));
   const clients = roomGroups.flatMap((group) => group.clients);
+  const candidateBefore = remoteEnvironment ? await queryActiveCandidate({
+    environment: remoteEnvironment,
+    expectedCommit: expectedCandidate.commit,
+    expectedCandidate: expectedCandidate,
+    requireClean: true,
+    requireOperatorUndeployed: true,
+  }) : null;
   const startedAt = new Date();
   console.log(`Starting ${options.profile} against ${target.origin}: ${rooms.length} room(s), ${clients.length} authenticated connections.`);
   if (!options.projectionDatabase) console.log("Projection lag is not measured; use --projection-database and --require-projection for a release gate.");
 
+  let runError;
   try {
     const initialConnections = await Promise.all(clients.map((client) => client.connect(0)));
     metrics.reconnectMs.push(...initialConnections);
@@ -440,11 +460,33 @@ async function main() {
         if (remaining > 0) await delay(Math.min(remaining, Math.max(0, deadline - Date.now())));
       }
     }
+  } catch (error) {
+    runError = error;
   } finally {
     await Promise.allSettled(clients.map((client) => client.close()));
   }
-
   const finishedAt = new Date();
+  let candidateAfter = null;
+  let postRunCandidateError;
+  if (remoteEnvironment) {
+    try {
+      candidateAfter = await queryActiveCandidate({
+        environment: remoteEnvironment,
+        expectedCommit: expectedCandidate.commit,
+        expectedCandidate: expectedCandidate,
+        requireClean: true,
+        requireOperatorUndeployed: true,
+      });
+    } catch (error) {
+      postRunCandidateError = error;
+    }
+  }
+  if (runError && postRunCandidateError) throw new AggregateError([runError, postRunCandidateError], "Load run and post-run candidate verification both failed");
+  if (postRunCandidateError) throw postRunCandidateError;
+  if (runError) throw runError;
+  const deploymentWindow = remoteEnvironment && candidateBefore && candidateAfter
+    ? assertCandidateWindow(candidateBefore, candidateAfter, expectedCandidate, `${options.profile} load`)
+    : null;
   const ackP95 = percentile(metrics.ackMs, 95);
   const reconnectP95 = percentile(metrics.reconnectMs, 95);
   const projectionP95 = percentile(metrics.projectionMs, 95);
@@ -459,10 +501,14 @@ async function main() {
     zeroCanonicalEventConflicts: metrics.canonicalEventConflicts === 0,
   };
   const report = {
-    version: 1,
+    version: 2,
     profile: options.profile,
     target: target.origin,
     production,
+    releaseEvidence: remoteEnvironment !== null,
+    candidate: expectedCandidate,
+    manifestSha256: createHash("sha256").update(manifestSource).digest("hex"),
+    deploymentWindow,
     startedAt: startedAt.toISOString(),
     finishedAt: finishedAt.toISOString(),
     durationMs: finishedAt.getTime() - startedAt.getTime(),

@@ -28,19 +28,26 @@ test("hibernation assurance accepts only the exact staging origin", () => {
 
 test("hibernation assurance validates a disposable, environment-bound credential manifest", () => {
   const fixture = {
-    version: 1,
+    version: 2,
     origin: STAGING_ORIGIN,
     disposable: true,
     roomId: "STAGE123",
     hostCookie: `__Host-unijam_host=${"h".repeat(32)}`,
     guestCookie: `__Host-unijam_guest=${"g".repeat(32)}`,
+    candidate: {
+      commit: "a".repeat(40),
+      webVersionId: "11111111-1111-4111-8111-111111111111",
+      connectorVersionId: "22222222-2222-4222-8222-222222222222",
+    },
   };
   assert.deepEqual(validateManifest(fixture), {
     roomId: "STAGE123",
     hostCookie: fixture.hostCookie,
     guestCookie: fixture.guestCookie,
+    candidate: fixture.candidate,
   });
   assert.throws(() => validateManifest({ ...fixture, disposable: false }), /disposable/);
+  assert.throws(() => validateManifest({ ...fixture, candidate: undefined }), /candidate identity/);
   assert.throws(() => validateManifest({ ...fixture, origin: "https://unijam.ashlr.ai" }), /does not match staging/);
   assert.throws(() => validateManifest({ ...fixture, guestCookie: `${fixture.guestCookie}; extra=value` }), /bounded Cookie/);
 });

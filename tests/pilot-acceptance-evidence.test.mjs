@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
+import {
+  assertCandidateWindow,
+  isMissingWorkerResult,
+} from "../scripts/cloudflare-candidate-identity.mjs";
 import { validateActiveDeployment } from "../scripts/capture-cloudflare-candidate.mjs";
+import { createEvidenceSeal, verifyEvidenceSeal } from "../scripts/pilot-evidence-integrity.mjs";
 import { validateEvidenceBundle } from "../scripts/verify-pilot-acceptance.mjs";
 
 const commit = "a".repeat(40);
@@ -28,16 +36,23 @@ function manual(kind, fields) {
 function load(profile) {
   const smoke = profile === "smoke";
   return {
-    version: 1,
+    version: 2,
     profile,
     target: origin,
     production: false,
+    releaseEvidence: true,
+    candidate: { commit, webVersionId, connectorVersionId },
+    manifestSha256: "b".repeat(64),
     startedAt: iso(smoke ? -40 * 60_000 : -90 * 60_000),
     finishedAt: iso(-30 * 60_000),
     durationMs: smoke ? 10_000 : 60 * 60_000,
     rooms: smoke ? 10 : 1,
     connections: smoke ? 200 : 25,
     thresholds: { ackP95Ms: 250, reconnectP95Ms: 2_000, projectionP95Ms: 5_000 },
+    deploymentWindow: {
+      before: { commit, webVersionId, connectorVersionId, capturedAt: iso(smoke ? -41 * 60_000 : -91 * 60_000) },
+      after: { commit, webVersionId, connectorVersionId, capturedAt: iso(-29 * 60_000) },
+    },
     measurements: { projectionRequired: true, projectionCount: 10 },
     gates: {
       acknowledgements: true, reconnect: true, projection: true, zeroDivergence: true,
@@ -67,7 +82,7 @@ function bundle() {
   };
   return {
     candidate: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       kind: "unijam-cloudflare-candidate",
       environment: "staging",
       origin,
@@ -75,12 +90,20 @@ function bundle() {
       capturedAt: iso(-5 * 60_000),
       clean: true,
       workers,
+      operatorIngress: {
+        policy: "must-remain-undeployed-until-access-activation",
+        deployed: false,
+        publicAliasesDisabled: true,
+        accessConfigurationClosed: true,
+        runtimeFailClosed: true,
+      },
       passed: true,
     },
     preflight: {
       version: 1,
       environment: "staging",
       commit,
+      candidate: { commit, webVersionId, connectorVersionId },
       clean: true,
       ready: true,
       generatedAt: iso(-25 * 60_000),
@@ -92,10 +115,17 @@ function bundle() {
       },
     },
     hibernation: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       kind: "unijam-room-hibernation-assurance",
       targetOrigin: origin,
+      startedAt: iso(-50 * 60_000),
       completedAt: iso(-35 * 60_000),
+      candidate: { commit, webVersionId, connectorVersionId },
+      manifestSha256: "c".repeat(64),
+      deploymentWindow: {
+        before: { commit, webVersionId, connectorVersionId, capturedAt: iso(-51 * 60_000) },
+        after: { commit, webVersionId, connectorVersionId, capturedAt: iso(-34 * 60_000) },
+      },
       idleWindow: {
         requestedSeconds: 12,
         hostConnectionResumedWithoutReconnect: true,
@@ -159,6 +189,13 @@ test("active Cloudflare versions must carry the exact commit release message", (
   );
 });
 
+test("operator-ingress absence is accepted only for the exact missing-worker API result", () => {
+  const worker = "unijam-operator-ingress-staging";
+  assert.equal(isMissingWorkerResult({ status: 1, stdout: "", stderr: `${worker}: This Worker does not exist [code: 10007]` }, worker), true);
+  assert.equal(isMissingWorkerResult({ status: 1, stdout: "", stderr: `${worker}: authentication failed [code: 10000]` }, worker), false);
+  assert.equal(isMissingWorkerResult({ status: 0, stdout: "{}", stderr: "" }, worker), false);
+});
+
 test("pilot acceptance binds every measured and manual gate to one staging candidate", () => {
   const verdict = validateEvidenceBundle(bundle(), now);
   assert.equal(verdict.readyForProductionBaseline, true);
@@ -174,6 +211,58 @@ test("pilot acceptance rejects abbreviated soak and mixed-version provider evide
   const mixedVersion = bundle();
   mixedVersion.providers.candidate.connectorVersionId = webVersionId;
   assert.throws(() => validateEvidenceBundle(mixedVersion, now), /provider.*connector version/i);
+
+  const deployedIngress = bundle();
+  deployedIngress.candidate.operatorIngress.deployed = true;
+  assert.throws(() => validateEvidenceBundle(deployedIngress, now), /operator ingress/);
+});
+
+test("measured candidate windows reject partial observations and version drift", () => {
+  const fixture = bundle().candidate;
+  const expected = { commit, webVersionId, connectorVersionId };
+  const after = structuredClone(fixture);
+  after.capturedAt = iso(-4 * 60_000);
+  assert.doesNotThrow(() => assertCandidateWindow(fixture, after, expected, "fixture"));
+  after.workers.connectors.versionId = webVersionId;
+  assert.throws(() => assertCandidateWindow(fixture, after, expected, "fixture"), /post-run candidate/);
+  assert.throws(() => assertCandidateWindow({ workers: fixture.workers }, fixture, expected, "fixture"), /environment/);
+});
+
+test("evidence seals detect file mutation and reject paths outside the manifest directory", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "unijam-evidence-"));
+  try {
+    const candidate = bundle().candidate;
+    const evidence = {};
+    for (const name of ["candidate", "preflight", "hibernation", "smoke", "soak", "providers", "accessibility", "telemetry", "rollback"]) {
+      const filename = `${name}.json`;
+      evidence[name] = filename;
+      await writeFile(join(directory, filename), JSON.stringify(name === "candidate" ? candidate : { name }), { mode: 0o600 });
+    }
+    const manifestPath = join(directory, "acceptance.json");
+    await writeFile(manifestPath, JSON.stringify({ schemaVersion: 1, kind: "unijam-pilot-acceptance-manifest", evidence }), { mode: 0o600 });
+    const seal = await createEvidenceSeal(manifestPath);
+    const sealPath = join(directory, "acceptance.seal.json");
+    await writeFile(sealPath, JSON.stringify(seal), { mode: 0o600 });
+    await assert.doesNotReject(() => verifyEvidenceSeal(manifestPath, sealPath));
+    assert.deepEqual(seal.candidate, { commit, webVersionId, connectorVersionId });
+    await writeFile(manifestPath, `${JSON.stringify({ schemaVersion: 1, kind: "unijam-pilot-acceptance-manifest", evidence })}\n`, { mode: 0o600 });
+    await assert.rejects(() => verifyEvidenceSeal(manifestPath, sealPath), /manifest SHA-256/);
+    await writeFile(manifestPath, JSON.stringify({ schemaVersion: 1, kind: "unijam-pilot-acceptance-manifest", evidence }), { mode: 0o600 });
+    await writeFile(join(directory, "smoke.json"), JSON.stringify({ changed: true }), { mode: 0o600 });
+    await assert.rejects(() => verifyEvidenceSeal(manifestPath, sealPath), /smoke evidence.*does not match/i);
+
+    const escaped = { ...evidence, candidate: "../outside.json" };
+    await writeFile(manifestPath, JSON.stringify({ schemaVersion: 1, kind: "unijam-pilot-acceptance-manifest", evidence: escaped }), { mode: 0o600 });
+    await assert.rejects(() => createEvidenceSeal(manifestPath), /inside the manifest directory/);
+
+    await symlink(join(directory, "candidate.json"), join(directory, "candidate-link.json"));
+    const linked = { ...evidence, candidate: "candidate-link.json" };
+    await writeFile(manifestPath, JSON.stringify({ schemaVersion: 1, kind: "unijam-pilot-acceptance-manifest", evidence: linked }), { mode: 0o600 });
+    await assert.rejects(() => createEvidenceSeal(manifestPath), /regular file, not a symlink/);
+  } finally {
+    await chmod(directory, 0o700).catch(() => undefined);
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("release wrappers attach immutable candidate messages without shell execution", () => {
@@ -186,4 +275,12 @@ test("release wrappers attach immutable candidate messages without shell executi
   }
   assert.match(connectors, /--strict/);
   assert.match(web, /--strict/);
+  const acceptance = readFileSync(new URL("../scripts/verify-pilot-acceptance.mjs", import.meta.url), "utf8");
+  assert.match(acceptance, /queryActiveCandidate/);
+  assert.match(acceptance, /verifyEvidenceSeal/);
+  for (const sourcePath of ["../scripts/run-room-load.mjs", "../scripts/verify-room-hibernation.mjs"]) {
+    const source = readFileSync(new URL(sourcePath, import.meta.url), "utf8");
+    assert.equal((source.match(/queryActiveCandidate\(/g) ?? []).length, 2);
+    assert.equal((source.match(/expectedCandidate:/g) ?? []).length, 2);
+  }
 });

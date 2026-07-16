@@ -45,6 +45,7 @@
     "dry-run:connectors": "node scripts/cloudflare-connector-release.mjs dry-run",
     "deploy:connectors": "node scripts/cloudflare-connector-release.mjs deploy",
     "capture:release-candidate": "node scripts/capture-cloudflare-candidate.mjs",
+    "seal:pilot-evidence": "node scripts/seal-pilot-evidence.mjs",
     "verify:pilot-acceptance": "node scripts/verify-pilot-acceptance.mjs",
     "pilot:enroll": "node scripts/provision-pilot-host.mjs",
     "pilot:enroll:cofounders": "node scripts/provision-cofounder-cohort.mjs",

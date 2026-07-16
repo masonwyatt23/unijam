@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import WebSocket from "ws";
 
+import {
+  assertCandidateWindow,
+  queryActiveCandidate,
+  validateCandidateReference,
+} from "./cloudflare-candidate-identity.mjs";
 import { sameOriginBrowserHeaders } from "./release-request-headers.mjs";
 
 export const STAGING_ORIGIN = "https://staging.unijam.ashlr.ai";
@@ -81,8 +86,8 @@ function validateCookie(value, name) {
 }
 
 export function validateManifest(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || value.version !== 1) {
-    throw new Error("Assurance manifest must be a version 1 object");
+  if (!value || typeof value !== "object" || Array.isArray(value) || value.version !== 2) {
+    throw new Error("Assurance manifest must be a version 2 object");
   }
   if (value.origin !== STAGING_ORIGIN) throw new Error("Assurance manifest origin does not match staging");
   if (value.disposable !== true) throw new Error("Assurance manifest must explicitly mark the room disposable");
@@ -90,7 +95,8 @@ export function validateManifest(value) {
   if (!/^[A-Z0-9]{6,16}$/.test(roomId)) throw new Error("Assurance roomId is malformed");
   const hostCookie = validateCookie(value.hostCookie, "__Host-unijam_host");
   const guestCookie = validateCookie(value.guestCookie, "__Host-unijam_guest");
-  return { roomId, hostCookie, guestCookie };
+  const candidate = validateCandidateReference(value.candidate, "Assurance manifest candidate");
+  return { roomId, hostCookie, guestCookie, candidate };
 }
 
 function delay(milliseconds) {
@@ -319,8 +325,48 @@ async function main() {
   // Validate the destination before reading the credential-bearing manifest.
   const origin = validateStagingTarget(options.target);
   if (!options.manifest) throw new Error("--manifest is required");
-  const manifest = validateManifest(JSON.parse(await readFile(resolve(options.manifest), "utf8")));
-  const evidence = await runAssurance({ origin, manifest, idleSeconds: options.idleSeconds, timeoutMs: options.timeoutMs });
+  const manifestSource = await readFile(resolve(options.manifest), "utf8");
+  const manifest = validateManifest(JSON.parse(manifestSource));
+  const candidateBefore = await queryActiveCandidate({
+    environment: "staging",
+    expectedCommit: manifest.candidate.commit,
+    expectedCandidate: manifest.candidate,
+    requireClean: true,
+    requireOperatorUndeployed: true,
+  });
+  let assurance;
+  let runError;
+  try {
+    assurance = await runAssurance({ origin, manifest, idleSeconds: options.idleSeconds, timeoutMs: options.timeoutMs });
+  } catch (error) {
+    runError = error;
+  }
+  let candidateAfter;
+  let postRunCandidateError;
+  try {
+    candidateAfter = await queryActiveCandidate({
+      environment: "staging",
+      expectedCommit: manifest.candidate.commit,
+      expectedCandidate: manifest.candidate,
+      requireClean: true,
+      requireOperatorUndeployed: true,
+    });
+  } catch (error) {
+    postRunCandidateError = error;
+  }
+  if (runError && postRunCandidateError) throw new AggregateError([runError, postRunCandidateError], "Hibernation run and post-run candidate verification both failed");
+  if (postRunCandidateError) throw postRunCandidateError;
+  if (!candidateAfter) throw new Error("Hibernation post-run candidate verification produced no result");
+  const deploymentWindow = assertCandidateWindow(candidateBefore, candidateAfter, manifest.candidate, "hibernation assurance");
+  if (runError) throw runError;
+  if (!assurance) throw new Error("Hibernation assurance produced no result");
+  const evidence = {
+    ...assurance,
+    schemaVersion: 2,
+    candidate: manifest.candidate,
+    manifestSha256: createHash("sha256").update(manifestSource).digest("hex"),
+    deploymentWindow,
+  };
   const safeTimestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const output = resolve(options.output ?? `test-results/assurance/room-hibernation-${safeTimestamp}.json`);
   await mkdir(dirname(output), { recursive: true });

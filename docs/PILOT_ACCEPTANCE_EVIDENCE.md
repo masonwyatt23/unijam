@@ -22,6 +22,12 @@ connector version each serve 100% of traffic and both messages equal the current
 commit. Older staging versions deployed before this policy must be redeployed;
 they cannot be grandfathered into acceptance.
 
+For this closed candidate it also requires `unijam-operator-ingress-staging` to
+be absent from the account, its public aliases disabled in configuration, its
+Access audience/team values empty, and its runtime missing-Access guard intact.
+An authentication or API failure is not accepted as proof that the Worker is
+absent. Deploying operator ingress requires a later Access-activated candidate.
+
 Capture once before testing to obtain the two version IDs used in manual
 evidence. Capture again after all tests, overwriting the candidate evidence, so
 the final record proves the same versions were still active at sign-off.
@@ -33,6 +39,20 @@ joined guest cookie. The load manifest contains only sessions created through
 the production join API. Never copy a passkey challenge, recovery code, invite
 fragment, provider token, Music User Token, or private playlist URL into release
 evidence.
+
+Hibernation manifests use schema version 2 and load manifests use version 3.
+Both must include the exact candidate object shown below. The harnesses compare
+all three values to live Cloudflare state before opening a socket, query again
+after the measured work, reject drift, and write the candidate, deployment
+window, and SHA-256 of the credential-bearing manifest into the redacted report.
+
+```json
+{
+  "commit": "<40-char commit>",
+  "webVersionId": "<uuid>",
+  "connectorVersionId": "<uuid>"
+}
+```
 
 Staging enforces 20 guest joins per source IP per 15-minute bucket and 40 joins
 per invite capability per bucket. Consequently:
@@ -65,7 +85,12 @@ npm run load:soak -- \
 ```
 
 The release gate requires the full 60-minute soak. A shortened local diagnostic
-run is useful during development but is not release evidence.
+run is useful during development but is marked as non-release evidence. Pre/post
+queries cannot detect a deployment that rolls out and rolls back entirely inside
+the measurement interval, so retain Cloudflare deployment-history evidence for
+the same window. If the destructive hibernation run succeeds but its post-run
+Cloudflare query fails, its sessions are consumed and a fresh disposable fixture
+is required; no report is emitted.
 
 ## Mixed-provider exercise
 
@@ -184,16 +209,29 @@ Create a private manifest beside the evidence files:
 ```
 
 Generate `preflight.json` with `npm run preflight:staging -- --json` and protect
-it with `chmod 600`. Then run:
+it with `chmod 600`. Preflight itself must name the same commit and both active
+version IDs. Create the SHA-256 integrity seal only after every evidence file is
+final, store that seal in the private release record, then verify:
 
 ```bash
-npm run verify:pilot-acceptance -- --manifest /secure/acceptance.json
+npm run seal:pilot-evidence -- --manifest /secure/acceptance.json --output /secure/acceptance.seal.json
+npm run verify:pilot-acceptance -- \
+  --manifest /secure/acceptance.json \
+  --seal /secure/acceptance.seal.json
 ```
 
-The verifier checks file permissions, evidence freshness, exact commit and
-Worker-version identity, authenticated remote preflight, migration and binding
-state, hibernation/revocation, load thresholds, both providers, accessibility,
-telemetry, and rollback. It outputs a redacted verdict under `test-results/`.
+The verifier rejects symlinks, path traversal, duplicate references, non-private
+files, and any manifest/file whose exact bytes no longer match the seal. It then
+checks evidence freshness, exact commit and Worker-version identity,
+authenticated remote preflight, migration and binding state,
+hibernation/revocation, load thresholds, both providers, accessibility,
+telemetry, and rollback. Finally it re-queries both live Worker versions and the
+undeployed operator-ingress state before emitting a redacted verdict.
+
+The SHA-256 seal provides integrity detection, not signer authentication. Anyone
+able to replace both evidence and seal can regenerate both; store the seal in an
+immutable or independently controlled release record if stronger provenance is
+required.
 
 A passing verdict authorizes only a closed production baseline from the exact
 commit. It does not authorize a public launch, production DNS mutation,

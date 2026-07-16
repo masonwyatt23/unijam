@@ -192,6 +192,7 @@ const remote = {
   requiredSecretsPresent: 0,
   originStatus: null,
   customDomainOriginHealthy: false,
+  candidate: { commit: gitSha, webVersionId: null, connectorVersionId: null },
 };
 
 if (!offline) {
@@ -234,6 +235,7 @@ if (!offline) {
         issue("blocker", "WORKER_NOT_DEPLOYED", `${expectedWorkerName} has no readable deployment.`);
       } else {
         remote.workersWithDeployments += 1;
+        if (versionIds.length !== 1) issue("blocker", "WORKER_GRADUAL_DEPLOYMENT", `${expectedWorkerName} must have exactly one active release version.`);
         for (const versionId of versionIds) {
           const details = wrangler(["versions", "view", versionId, "--config", config, "--env", environment, "--json"]);
           const parsed = details.status === 0 ? safeJson(details.stdout) : undefined;
@@ -246,6 +248,11 @@ if (!offline) {
           if (mismatches.length > 0) {
             for (const mismatch of mismatches) issue("blocker", "WORKER_VERSION_MISMATCH", `${expectedWorkerName}: ${mismatch}.`);
           } else remote.deployedVersionsMatching += 1;
+          if (parsed.annotations?.["workers/message"] !== `unijam-release:${gitSha}`) {
+            issue("blocker", "WORKER_RELEASE_IDENTITY", `${expectedWorkerName} active version is not bound to commit ${gitSha}.`);
+          } else if (versionIds.length === 1) {
+            remote.candidate[kind === "web" ? "webVersionId" : "connectorVersionId"] = versionId;
+          }
         }
       }
     }
@@ -300,6 +307,9 @@ const report = {
   expected,
   configured,
   remote,
+  candidate: typeof remote.candidate.webVersionId === "string" && typeof remote.candidate.connectorVersionId === "string"
+    ? remote.candidate
+    : null,
   ready: blockers.length === 0,
   blockers: blockers.length,
   warnings: issues.filter((entry) => entry.severity === "warning").length,

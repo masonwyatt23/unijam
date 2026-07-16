@@ -20,6 +20,12 @@ function loadSessions(count, { bucketOffset = 0, cohort = "pilot-home-a" } = {})
   }));
 }
 
+const loadCandidate = {
+  commit: "a".repeat(40),
+  webVersionId: "11111111-1111-4111-8111-111111111111",
+  connectorVersionId: "22222222-2222-4222-8222-222222222222",
+};
+
 test("release probes send browser-equivalent same-origin provenance and ignore caller overrides", () => {
   assert.deepEqual(sameOriginBrowserHeaders("https://staging.unijam.ashlr.ai", {
     Cookie: "session=value",
@@ -42,13 +48,16 @@ test("load fixtures preserve the live per-IP join policy without weakening runti
     cookie: `__Host-unijam_guest=${String(index + 21).padStart(32, "0")}`,
   }));
   const fixture = {
-    version: 2,
+    version: 3,
     origin: "https://staging.unijam.ashlr.ai",
     provisioning: "normal-join-flow",
+    candidate: loadCandidate,
     soakRoom: { roomId: "SOAK1234", sessions: [...firstBucket, ...nextBucket] },
   };
   const rooms = validateLoadManifest(fixture, "soak", fixture.origin);
   assert.equal(rooms[0].sessions.length, 25);
+  assert.throws(() => validateLoadManifest({ ...fixture, version: 2 }, "soak", fixture.origin), /version 3/);
+  assert.throws(() => validateLoadManifest({ ...fixture, candidate: undefined }, "soak", fixture.origin), /candidate identity/);
 
   const overLimit = {
     ...fixture,
