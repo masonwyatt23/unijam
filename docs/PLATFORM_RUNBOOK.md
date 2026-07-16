@@ -23,10 +23,12 @@ must never re-enable either public route.
    the web Worker and `CONNECTOR_SHARED_SECRET` on the connector Worker. This
    credential is only for service authentication; all provider credentials stay
    exclusively on the connector Worker.
-   Generate each pilot enrollment credential with
-   `node scripts/create-enrollment-code.mjs`, insert only its `codeHash` into
-   `host_enrollment_codes` with a label and expiry, then deliver the plaintext
-   code once through a separate secure channel.
+   Dry-run each pilot enrollment with
+   `node scripts/provision-pilot-host.mjs --env ENV --label "PERSON - PROVIDER"`,
+   then repeat with `--apply` from the authenticated release workstation. The
+   script inserts only the digest, label, and bounded expiry into
+   `host_enrollment_codes`; deliver its one-time plaintext output through a
+   separate authenticated private channel.
 2. Apply checked-in D1 migrations to staging, then production. Migration 0006
    creates account/session data, the room registry and idempotent projections;
    migration 0008 adds the fail-closed account-deletion coordinator.

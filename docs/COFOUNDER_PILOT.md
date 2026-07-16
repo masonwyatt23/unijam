@@ -92,8 +92,9 @@ publishing, and enable each provider independently.
 ## 4. Expected closed states
 
 - A disabled provider says **Pilot not active**. Rooms continue to work.
-- An enabled provider for a host outside that provider's allowlist says pilot
-  access is pending and never offers an operable connect control.
+- An enabled provider for a host outside that provider's allowlist remains in
+  the closed **Pilot not active** state and never offers an operable connect
+  control.
 - Provider status failure exposes Retry for that provider without blocking the
   other card or any room operation.
 - A host removed from a provider pilot can still disconnect and delete the

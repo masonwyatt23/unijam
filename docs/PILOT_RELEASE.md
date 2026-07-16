@@ -438,12 +438,13 @@ users.
 Create each pilot enrollment code with:
 
 ```bash
-node scripts/create-enrollment-code.mjs
+node scripts/provision-pilot-host.mjs --env staging --label "PERSON - PROVIDER"
 ```
 
 Insert only the emitted hash, label, and expiry into the matching environment's
-`host_enrollment_codes` table. Deliver the plaintext once through a separate
-secure channel. Verify discoverable passkey enrollment, authentication,
+Review the dry-run, then repeat with `--apply`; the provisioner writes only the
+digest and bounded metadata to `host_enrollment_codes`. Deliver the one-time
+plaintext through a separate authenticated private channel. Verify discoverable passkey enrollment, authentication,
 additional credential enrollment after recent passkey confirmation, all ten
 single-use recovery codes, logout, and staging/production RP isolation.
 
