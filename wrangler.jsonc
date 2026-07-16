@@ -2,6 +2,8 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "unijam-web",
   "main": "./worker/index.ts",
+  "workers_dev": false,
+  "preview_urls": false,
   "compatibility_date": "2026-07-15",
   "compatibility_flags": ["nodejs_compat"],
   "assets": {
@@ -30,6 +32,8 @@
   "env": {
     "production": {
       "name": "unijam-web-production",
+      "workers_dev": false,
+      "preview_urls": false,
       "images": { "binding": "IMAGES" },
       "analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "unijam_production" }],
       "routes": [{ "pattern": "unijam.ashlr.ai", "custom_domain": true }],
@@ -58,6 +62,8 @@
     },
     "staging": {
       "name": "unijam-web-staging",
+      "workers_dev": false,
+      "preview_urls": false,
       "images": { "binding": "IMAGES" },
       "analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "unijam_staging" }],
       "routes": [{ "pattern": "staging.unijam.ashlr.ai", "custom_domain": true }],

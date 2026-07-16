@@ -114,6 +114,8 @@ for (const environment of environments) {
   const host = production ? "unijam.ashlr.ai" : "staging.unijam.ashlr.ai";
   expectValue(webEnv.name, `unijam-web-${environment}`, "WORKER_NAME", `${environment} web Worker name`);
   expectValue(connectorEnv.name, `unijam-connectors-${environment}`, "WORKER_NAME", `${environment} connector Worker name`);
+  expectValue(webEnv.workers_dev, false, "WEB_PUBLIC_ROUTE", `${environment} web workers.dev route`);
+  expectValue(webEnv.preview_urls, false, "WEB_PREVIEW_ROUTE", `${environment} web preview URLs`);
   expectValue(connectorEnv.workers_dev, false, "CONNECTOR_PUBLIC_ROUTE", `${environment} connector workers.dev route`);
   expectValue(connectorEnv.preview_urls, false, "CONNECTOR_PREVIEW_ROUTE", `${environment} connector preview URLs`);
   expectValue(webEnv.routes?.[0]?.pattern, host, "CUSTOM_DOMAIN", `${environment} custom domain`);
@@ -160,6 +162,8 @@ for (const environment of environments) {
 
   const projectionProducer = onlyBinding(webEnv.queues?.producers, "ROOM_PROJECTION_QUEUE", `${environment} projection producer`);
   const publishProducer = onlyBinding(connectorEnv.queues?.producers, "PUBLISH_QUEUE", `${environment} publishing producer`);
+  expectValue(webEnv.queues?.consumers?.[0]?.queue, `unijam-room-projection-${environment}`, "QUEUE_NAME", `${environment} projection consumer queue`);
+  expectValue(connectorEnv.queues?.consumers?.[0]?.queue, `unijam-publishing-${environment}`, "QUEUE_NAME", `${environment} publish consumer queue`);
   const queueExpectations = [
     [projectionProducer?.queue, `unijam-room-projection-${environment}`, `${environment} projection queue`],
     [webEnv.queues?.consumers?.[0]?.dead_letter_queue, `unijam-room-projection-${environment}-dlq`, `${environment} projection DLQ`],
@@ -174,6 +178,8 @@ for (const environment of environments) {
   }
 }
 
+expectValue(web.workers_dev, false, "WEB_PUBLIC_ROUTE", "default web workers.dev route");
+expectValue(web.preview_urls, false, "WEB_PREVIEW_ROUTE", "default web preview URLs");
 expectValue(connector.workers_dev, false, "CONNECTOR_PUBLIC_ROUTE", "default connector workers.dev route");
 expectValue(connector.preview_urls, false, "CONNECTOR_PREVIEW_ROUTE", "default connector preview URLs");
 

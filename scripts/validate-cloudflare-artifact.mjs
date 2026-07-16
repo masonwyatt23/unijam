@@ -24,6 +24,8 @@ const errors = [];
 const check = (condition, message) => { if (!condition) errors.push(message); };
 
 check(artifact.name === expected.name, `Worker name must be ${expected.name}; found ${artifact.name}`);
+check(artifact.workers_dev === false, "Deploy artifact must disable the workers.dev route");
+check(artifact.preview_urls === false, "Deploy artifact must disable preview URLs");
 check(artifact.vars?.APP_ENV === environment, `APP_ENV must be ${environment}; found ${artifact.vars?.APP_ENV}`);
 check(artifact.vars?.APP_ORIGIN === origin, `APP_ORIGIN must be ${origin}; found ${artifact.vars?.APP_ORIGIN}`);
 check(artifact.vars?.WEBAUTHN_RP_ID === host, `WEBAUTHN_RP_ID must be ${host}; found ${artifact.vars?.WEBAUTHN_RP_ID}`);
@@ -59,5 +61,5 @@ if (errors.length > 0) {
   console.error(`Refusing ${environment} release: dist/server/wrangler.json does not match the selected Cloudflare environment.`);
   process.exitCode = 1;
 } else {
-  console.log(`Validated ${environment} Cloudflare artifact: name, origin, RP ID, D1, Durable Object, connector service, queue, DLQ, cron, and domain are isolated.`);
+  console.log(`Validated ${environment} Cloudflare artifact: public aliases are disabled and name, origin, RP ID, D1, Durable Object, connector service, queue, DLQ, cron, and domain are isolated.`);
 }

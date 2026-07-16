@@ -87,11 +87,16 @@ test("operator recovery refuses production before reading credentials", () => {
   assert.doesNotMatch(result.stderr, /UNIJAM_CONNECTOR.*SECRET/);
 });
 
-test("connector deployment and recovery refuse public workers.dev ingress", () => {
+test("web and connector deployments refuse unintended public aliases", () => {
+  const web = JSON.parse(readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8").replace(/^\s*\/\/.*$/gm, ""));
   const connector = JSON.parse(readFileSync(new URL("../wrangler.connectors.jsonc", import.meta.url), "utf8").replace(/^\s*\/\/.*$/gm, ""));
+  assert.equal(web.workers_dev, false);
+  assert.equal(web.preview_urls, false);
   assert.equal(connector.workers_dev, false);
   assert.equal(connector.preview_urls, false);
   for (const environment of ["staging", "production"]) {
+    assert.equal(web.env[environment].workers_dev, false);
+    assert.equal(web.env[environment].preview_urls, false);
     assert.equal(connector.env[environment].workers_dev, false);
     assert.equal(connector.env[environment].preview_urls, false);
   }
