@@ -241,6 +241,20 @@ describe("D1-backed connector queue assurance", () => {
     expect(creates).toBe(1);
   });
 
+  it("account purge removes every connector identifier and rejects stale generation writes", async () => {
+    const { store, job } = await seedJob("account-purge");
+    await store.purgeAccountData(job.accountId, 3_000);
+
+    expect(await store.getPublishJob(job.operationId)).toBeNull();
+    expect(await store.getConnectionGeneration(job.accountId, job.connectionId, job.provider)).toBeNull();
+    expect(await testEnv().CONNECTOR_DB.prepare(
+      "SELECT COUNT(*) AS count FROM connector_connection_fences WHERE account_id = ?",
+    ).bind(job.accountId).first<{ count: number }>()).toEqual({ count: 0 });
+
+    await store.savePublishJob(job);
+    expect(await store.getPublishJob(job.operationId)).toBeNull();
+  });
+
   it("reports a lost compare-and-swap instead of claiming retry or cancellation was persisted", async () => {
     const { store, job } = await seedJob("control-cas");
     const acquired = await store.acquirePublishMutation({

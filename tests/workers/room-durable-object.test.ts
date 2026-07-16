@@ -558,6 +558,40 @@ describe("RoomDurableObject serialized authority", () => {
     expect((await closed).code).toBe(1008);
   });
 
+  it("irreversibly purges room-local detail for an authorized account deletion", async () => {
+    const stub = await newRoom("account-deletion-purge");
+    await command(stub, guest, "command_join_delete_01", "participant.join", {});
+    await stageResolved(stub, guest, "command_stage_delete_01", "sug_delete_track_01", "rec_delete_track_01", "Delete me");
+
+    const forbidden = await stub.fetch("https://room/internal/account-delete", {
+      method: "POST",
+      headers: actorHeaders(host),
+    });
+    expect(forbidden.status).toBe(403);
+
+    const headers = actorHeaders(host);
+    headers.set("X-UniJam-Room-Id", "ROOMTEST01");
+    headers.set("X-UniJam-Account-Deletion", "true");
+    const first = await stub.fetch("https://room/internal/account-delete", { method: "POST", headers });
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ purged: true, duplicate: false });
+
+    const replay = await stub.fetch("https://room/internal/account-delete", { method: "POST", headers });
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ purged: true, duplicate: true });
+    expect((await stub.fetch("https://room/state")).status).toBe(404);
+
+    await runInDurableObject(stub, (_instance, durableState) => {
+      for (const table of [
+        "metadata", "participants", "command_results", "events", "suggestions", "resolution_grants",
+        "occurrences", "votes", "cosignatures", "destinations", "operations", "rate_buckets", "outbox", "legacy_imports",
+      ]) {
+        expect(durableState.storage.sql.exec<{ count: number }>(`SELECT COUNT(*) AS count FROM ${table}`).one().count).toBe(0);
+      }
+      expect(durableState.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM account_deletions").one().count).toBe(1);
+    });
+  });
+
   it("sanitizes ended-room authority and removes its expired detailed projection", async () => {
     const stub = await newRoom("retention-sanitization");
     await command(stub, guest, "command_join_retention_01", "participant.join", {});

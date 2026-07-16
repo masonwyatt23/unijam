@@ -333,12 +333,14 @@ export class RoomDurableObject extends DurableObject<RoomEnv> {
       CREATE TABLE IF NOT EXISTS rate_buckets (scope TEXT NOT NULL, bucket_start_ms INTEGER NOT NULL, request_count INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL, PRIMARY KEY(scope, bucket_start_ms));
       CREATE TABLE IF NOT EXISTS outbox (outbox_id TEXT PRIMARY KEY, event_id TEXT UNIQUE NOT NULL, payload_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, delivered_at_ms INTEGER);
       CREATE TABLE IF NOT EXISTS legacy_imports (legacy_room_id TEXT PRIMARY KEY, export_hash TEXT UNIQUE NOT NULL, export_json TEXT NOT NULL, snapshot_json TEXT NOT NULL, events_json TEXT NOT NULL, settings_json TEXT, history_json TEXT, imported_at_ms INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS account_deletions (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), purged_at_ms INTEGER NOT NULL);
     `);
   }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const actor = this.actorFromRequest(request);
+    if (url.pathname === "/internal/account-delete" && request.method === "POST") return this.purgeForAccountDeletion(request, actor);
     if (url.pathname === "/internal/initialize" && request.method === "POST") return this.initialize(request, actor);
     if (url.pathname === "/internal/resolutions" && request.method === "POST") return this.registerResolution(request, actor);
     if (url.pathname === "/internal/legacy-import" && request.method === "POST") return this.importLegacyExport(request, actor);
@@ -410,6 +412,47 @@ export class RoomDurableObject extends DurableObject<RoomEnv> {
       );
     });
     return Response.json(snapshot, { status: 201 });
+  }
+
+  private purgeForAccountDeletion(request: Request, actor: RoomActor | null): Response {
+    if (!actor || actor.role !== "host" || request.headers.get("X-UniJam-Account-Deletion") !== "true") {
+      return Response.json(protocolError("FORBIDDEN", "Only the account deletion coordinator can purge a room", this.latestSeq()), { status: 403 });
+    }
+    const prior = this.ctx.storage.sql.exec<{ purged_at_ms: number }>(
+      "SELECT purged_at_ms FROM account_deletions WHERE singleton = 1 LIMIT 1",
+    ).toArray()[0];
+    if (prior) return Response.json({ purged: true, duplicate: true, purgedAtMs: prior.purged_at_ms });
+    const metadata = this.metadata();
+    if (!metadata) return Response.json({ purged: true, duplicate: true });
+    const roomId = request.headers.get("X-UniJam-Room-Id") ?? "";
+    const snapshot = JSON.parse(metadata.snapshot_json) as RoomSnapshot;
+    if (snapshot.roomId !== roomId || snapshot.participants[actor.participantId]?.role !== "host") {
+      return Response.json(protocolError("FORBIDDEN", "Account deletion authority does not own this room", metadata.sequence), { status: 403 });
+    }
+    const now = Date.now();
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(`
+        DELETE FROM participants;
+        DELETE FROM command_results;
+        DELETE FROM events;
+        DELETE FROM suggestions;
+        DELETE FROM resolution_grants;
+        DELETE FROM occurrences;
+        DELETE FROM votes;
+        DELETE FROM cosignatures;
+        DELETE FROM destinations;
+        DELETE FROM operations;
+        DELETE FROM rate_buckets;
+        DELETE FROM outbox;
+        DELETE FROM legacy_imports;
+        DELETE FROM metadata;
+      `);
+      this.ctx.storage.sql.exec("INSERT INTO account_deletions (singleton, purged_at_ms) VALUES (1, ?)", now);
+    });
+    for (const socket of this.ctx.getWebSockets()) {
+      try { socket.close(1008, "Account deleted"); } catch { /* stale socket */ }
+    }
+    return Response.json({ purged: true, duplicate: false, purgedAtMs: now });
   }
 
   private async registerResolution(request: Request, actor: RoomActor | null): Promise<Response> {

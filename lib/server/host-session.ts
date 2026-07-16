@@ -14,6 +14,7 @@ export type HostSession = {
   expires_at_ms: number;
   recovery_enrollment_expires_at_ms: number | null;
   recovery_enrollment_consumed_at_ms: number | null;
+  deletion_pending_at_ms?: number | null;
 };
 
 export function passkeyVerifiedAt(method: "passkey" | "recovery", now: number): number | null {
@@ -38,17 +39,24 @@ export async function createHostSession(
   return { token, cookie: sessionCookie(HOST_SESSION_COOKIE, token, SESSION_TTL_SECONDS) };
 }
 
-export async function authenticateHost(db: D1Database, request: Request): Promise<HostSession | null> {
+export async function authenticateHost(
+  db: D1Database,
+  request: Request,
+  options: { allowDeletionPending?: boolean } = {},
+): Promise<HostSession | null> {
   const token = readCookie(request, HOST_SESSION_COOKIE);
   if (!token) return null;
   const hash = await hashOpaqueToken(token);
   const now = Date.now();
   const session = await db.prepare(
     `SELECT s.session_id, s.account_id, a.display_name, s.authenticated_at_ms, s.passkey_verified_at_ms, s.expires_at_ms,
-            s.recovery_enrollment_expires_at_ms, s.recovery_enrollment_consumed_at_ms
+            s.recovery_enrollment_expires_at_ms, s.recovery_enrollment_consumed_at_ms, a.deletion_pending_at_ms
      FROM host_sessions s JOIN accounts a ON a.account_id = s.account_id
      WHERE s.token_hash = ? AND s.revoked_at_ms IS NULL AND s.expires_at_ms > ? AND a.deleted_at_ms IS NULL LIMIT 1`,
   ).bind(hash, now).first<HostSession>();
+  if (session?.deletion_pending_at_ms !== null && session?.deletion_pending_at_ms !== undefined && !options.allowDeletionPending) {
+    return null;
+  }
   if (session) {
     await db.prepare("UPDATE host_sessions SET last_seen_at_ms = ? WHERE session_id = ?").bind(now, session.session_id).run();
   }

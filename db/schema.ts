@@ -68,7 +68,17 @@ export const roomRateBuckets = sqliteTable("room_rate_buckets", {
 export const accounts = sqliteTable("accounts", {
   accountId: text("account_id").primaryKey(), displayName: text("display_name").notNull(),
   createdAtMs: integer("created_at_ms").notNull(), updatedAtMs: integer("updated_at_ms").notNull(), deletedAtMs: integer("deleted_at_ms"),
+  deletionPendingAtMs: integer("deletion_pending_at_ms"),
 });
+
+export const accountDeletionRequests = sqliteTable("account_deletion_requests", {
+  accountId: text("account_id"), requestKeyHash: text("request_key_hash").primaryKey(), status: text("status").notNull().default("requested"),
+  authorizedAtMs: integer("authorized_at_ms").notNull(), createdAtMs: integer("created_at_ms").notNull(), updatedAtMs: integer("updated_at_ms").notNull(),
+  completedAtMs: integer("completed_at_ms"), failureCode: text("failure_code"),
+}, (table) => [
+  uniqueIndex("account_deletion_requests_account_idx").on(table.accountId),
+  index("account_deletion_requests_status_updated_idx").on(table.status, table.updatedAtMs),
+]);
 
 export const passkeys = sqliteTable("passkeys", {
   credentialId: text("credential_id").primaryKey(), accountId: text("account_id").notNull(), publicKeyBase64: text("public_key_base64").notNull(),
@@ -114,6 +124,7 @@ export const roomRegistry = sqliteTable("room_registry", {
   roomId: text("room_id").primaryKey(), ownerAccountId: text("owner_account_id").notNull(), durableObjectId: text("durable_object_id").notNull(),
   guestCapabilityHash: text("guest_capability_hash").notNull(), inviteEpoch: integer("invite_epoch").notNull().default(1), lifecycle: text("lifecycle").notNull().default("active"),
   createdAtMs: integer("created_at_ms").notNull(), updatedAtMs: integer("updated_at_ms").notNull(), endedAtMs: integer("ended_at_ms"),
+  deletionPurgedAtMs: integer("deletion_purged_at_ms"),
 }, (table) => [uniqueIndex("room_registry_do_idx").on(table.durableObjectId), index("room_registry_owner_idx").on(table.ownerAccountId, table.updatedAtMs)]);
 
 export const roomProjections = sqliteTable("room_projections", {

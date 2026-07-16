@@ -240,16 +240,15 @@ export class D1ConnectorStore implements ConnectorStore {
   }
 
   async purgeAccountData(accountId: string, nowMs: number): Promise<void> {
+    void nowMs;
     await this.db.batch([
-      this.db.prepare(
-        `UPDATE connector_connection_fences
-         SET generation = generation + 1, status = 'revoked', updated_at_ms = ?
-         WHERE account_id = ?`,
-      ).bind(nowMs, accountId),
       this.db.prepare("DELETE FROM connector_connections WHERE account_id = ?").bind(accountId),
       this.db.prepare("DELETE FROM connector_publish_previews WHERE account_id = ?").bind(accountId),
       this.db.prepare("DELETE FROM connector_publish_jobs WHERE account_id = ?").bind(accountId),
       this.db.prepare("DELETE FROM connector_oauth_attempts WHERE account_id = ?").bind(accountId),
+      // A generation-bound callback cannot write without an active fence, so
+      // removing these identifiers also safely fences every in-flight callback.
+      this.db.prepare("DELETE FROM connector_connection_fences WHERE account_id = ?").bind(accountId),
     ]);
   }
 

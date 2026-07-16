@@ -318,7 +318,9 @@ export async function handleConnectorRequest(
     if (request.method === "POST" && url.pathname === "/v1/accounts/purge") {
       const body = await readObject(request);
       const accountId = requiredString(body, "accountId");
-      allowlisted(env, accountId);
+      // Account deletion must purge provider-private data even for a host who
+      // was removed from (or never entered) the pilot allowlist. This route is
+      // service-bound and receives only the web Worker's server-derived ID.
       await store.purgeAccountData(accountId, now());
       return response(requestId, { accountId, purged: true });
     }

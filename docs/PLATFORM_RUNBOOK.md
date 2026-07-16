@@ -28,7 +28,8 @@ must never re-enable either public route.
    `host_enrollment_codes` with a label and expiry, then deliver the plaintext
    code once through a separate secure channel.
 2. Apply checked-in D1 migrations to staging, then production. Migration 0006
-   creates account/session data, the room registry and idempotent projections.
+   creates account/session data, the room registry and idempotent projections;
+   migration 0008 adds the fail-closed account-deletion coordinator.
 3. Follow `docs/PILOT_RELEASE.md` for deployment. The Cloudflare Vite plugin
    selects staging or production at build time, so use the checked-in
    `npm run deploy:cloudflare -- --env ...` wrapper; never build the default
@@ -57,10 +58,12 @@ compatibility scaffold; an operator must feed the authenticated Sites export.
 The claim transaction verifies the export hash again and imports the complete
 versioned payload into room-local SQLite, including dedicated snapshot, events,
 settings, and history columns plus the lossless raw export. A claim is not marked
-complete unless that authority import succeeds. The imported legacy state is
-preserved for export and later replay, but it is not projected into the v1 live
-room reducer until an actual Sites export fixture defines a safe field mapping.
-API responses distinguish `fullExportImportedIntoAuthority` from reducer replay.
+complete unless that authority import succeeds. The room authority deterministically
+hydrates supported room rules, suggestions, and canonical queue occurrences from
+the imported snapshot while discarding legacy participant identities and votes.
+Malformed or unsupported fields remain only in the lossless raw export. The API
+reports `fullExportImportedIntoAuthority`; the import event records `rulesHydrated`
+and `occurrenceCount` so operators can verify exactly what entered live authority.
 
 ## Security and operations
 
@@ -77,9 +80,17 @@ API responses distinguish `fullExportImportedIntoAuthority` from reducer replay.
 - Durable Object commits include events, snapshot, result, and local outbox.
   Queue delivery is at least once; D1 receipts and monotonic sequences deduplicate
   projections.
+- Account deletion requires a passkey verified in the previous five minutes, the
+  exact confirmation phrase, and a 22-128 character idempotency key. The server
+  stores only a hash of that key and immediately locks the account for every
+  normal host action. It then purges connector-private provider data, every owned
+  room authority, and finally all D1 identity, session, room, recap, and provider
+  records. Completed room purges are checkpointed so a retry skips them. A failed
+  stage stays locked and must be retried with the same key; a completed receipt
+  contains no account ID and expires after 24 hours.
 - Cron removes expired challenges/sessions and projection receipts after 30 days.
-  Derived recap retention and host deletion are handled separately from room
-  authority.
+  Account deletion overrides normal room-detail and derived-recap retention
+  immediately.
 
 ## Stop and rollback
 

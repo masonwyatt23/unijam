@@ -15,6 +15,7 @@ import {
 import { apiError } from "../lib/server/api-response.ts";
 import { expiredRoomProjectionDeletion, ROOM_DETAIL_RETENTION_MS } from "../lib/platform/retention.ts";
 import { BoundedBodyError, requestWithBoundedBody } from "../lib/server/bounded-body.ts";
+import { ACCOUNT_DELETION_RECEIPT_MS } from "../lib/server/account-deletion.ts";
 
 interface Env extends Cloudflare.Env {
   DB: D1Database;
@@ -150,6 +151,7 @@ const worker = {
       env.DB.prepare("DELETE FROM auth_rate_buckets WHERE expires_at_ms <= ?").bind(now),
       env.DB.prepare("DELETE FROM host_sessions WHERE expires_at_ms <= ? OR revoked_at_ms IS NOT NULL").bind(now),
       env.DB.prepare("DELETE FROM guest_sessions WHERE expires_at_ms <= ? OR revoked_at_ms IS NOT NULL").bind(now),
+      env.DB.prepare("DELETE FROM account_deletion_requests WHERE status = 'completed' AND completed_at_ms < ?").bind(now - ACCOUNT_DELETION_RECEIPT_MS),
       env.DB.prepare("DELETE FROM room_projection_receipts WHERE received_at_ms < ?").bind(retentionCutoff),
       expiredRoomProjectionDeletion(env.DB, retentionCutoff),
       env.DB.prepare("UPDATE legacy_room_imports SET status = 'read_only', read_only_at_ms = ? WHERE status = 'imported' AND claim_deadline_ms < ?").bind(now, now),

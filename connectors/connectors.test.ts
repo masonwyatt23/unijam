@@ -75,13 +75,15 @@ class MemoryStore implements ConnectorStore {
       if (attempt.accountId === accountId && attempt.connectionId === connectionId) this.attempts.delete(stateHash);
     }
   }
-  async purgeAccountData(accountId: string) {
+  async purgeAccountData(accountId: string, nowMs: number) {
+    void nowMs;
     for (const connection of [...this.connections.values()]) {
       if (connection.accountId === accountId) await this.purgeProviderData(accountId, connection.connectionId, connection.provider, 0);
     }
     for (const [previewKey, preview] of this.previews) if (preview.preview.ownerAccountId === accountId) this.previews.delete(previewKey);
     for (const [operationId, job] of this.jobs) if (job.accountId === accountId) this.jobs.delete(operationId);
     for (const [stateHash, attempt] of this.attempts) if (attempt.accountId === accountId) this.attempts.delete(stateHash);
+    for (const key of this.fences.keys()) if (key.startsWith(`${accountId}:`)) this.fences.delete(key);
   }
   async purgeExpiredData(nowMs: number) {
     for (const [stateHash, attempt] of this.attempts) if (attempt.expiresAtMs < nowMs) this.attempts.delete(stateHash);
@@ -546,14 +548,16 @@ test("router enforces internal auth, pilot allowlist, exact origin, encrypted st
   assert.equal(store.jobs.size, 0);
   assert.equal(store.previews.size, 0);
 
-  await store.saveConnection({ ...connection!, connectionId: "account-purge", generation: 0 });
+  const removedFromPilot = "removed-from-pilot";
+  await store.saveConnection({ ...connection!, accountId: removedFromPilot, connectionId: "account-purge", generation: 0 });
   const purged = await handleConnectorRequest(
-    new Request("https://connector/v1/accounts/purge", { method: "POST", headers, body: JSON.stringify({ accountId: "allowed-account" }) }),
-    base,
+    new Request("https://connector/v1/accounts/purge", { method: "POST", headers, body: JSON.stringify({ accountId: removedFromPilot }) }),
+    env({ PILOT_ACCOUNT_ALLOWLIST: "" }),
     { store, now: () => 6_000 },
   );
   assert.equal(purged.status, 200);
-  assert.equal(await store.getConnection("allowed-account", "account-purge", "spotify"), null);
+  assert.equal(await store.getConnection(removedFromPilot, "account-purge", "spotify"), null);
+  assert.equal(await store.getConnectionGeneration(removedFromPilot, "account-purge", "spotify"), null);
 });
 
 test("router caps the actual JSON stream when Content-Length is missing", async () => {
