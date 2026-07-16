@@ -5,6 +5,39 @@ import { authenticateHost } from "@/lib/server/host-session";
 import { publicAppOrigin } from "@/lib/server/connector-proxy";
 import { actorHeaders, createRoomAuthority, type RoomAuthorityEnv } from "@/lib/server/room-authority";
 
+export async function GET(request: Request): Promise<Response> {
+  if (!env.DB) return apiError("PLATFORM_UNAVAILABLE", "Room registry is unavailable", 503, true);
+  const host = await authenticateHost(env.DB, request);
+  if (!host) return apiError("UNAUTHENTICATED", "Sign in with a passkey to view rooms", 401);
+  const result = await env.DB.prepare(
+    `SELECT r.room_id, r.lifecycle, r.invite_epoch, r.created_at_ms,
+            MAX(r.updated_at_ms, COALESCE(p.projected_at_ms, 0)) AS updated_at_ms,
+            r.ended_at_ms
+     FROM room_registry r
+     LEFT JOIN room_projections p ON p.room_id = r.room_id
+     WHERE r.owner_account_id = ?
+     ORDER BY CASE r.lifecycle WHEN 'active' THEN 0 ELSE 1 END, updated_at_ms DESC
+     LIMIT 50`,
+  ).bind(host.account_id).all<{
+    room_id: string;
+    lifecycle: "active" | "ended";
+    invite_epoch: number;
+    created_at_ms: number;
+    updated_at_ms: number;
+    ended_at_ms: number | null;
+  }>();
+  return apiResponse({
+    rooms: result.results.map((room) => ({
+      roomId: room.room_id,
+      lifecycle: room.lifecycle,
+      inviteEpoch: room.invite_epoch,
+      createdAtMs: room.created_at_ms,
+      updatedAtMs: room.updated_at_ms,
+      endedAtMs: room.ended_at_ms,
+    })),
+  });
+}
+
 export async function POST(request: Request): Promise<Response> {
   if (!env.DB || !env.ROOM_OBJECTS) return apiError("PLATFORM_UNAVAILABLE", "Room authority is unavailable", 503, true);
   const host = await authenticateHost(env.DB, request);

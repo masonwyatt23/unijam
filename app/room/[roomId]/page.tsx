@@ -3,8 +3,8 @@
 import { useState, type FormEvent } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { CircleAlert, Lock, Users } from "lucide-react";
-import { ErrorPanel, LivingSetlist, LoadingPanel, ProductShell, StatusBanner, useRoomState } from "@/app/components/product";
+import { CircleAlert, Headphones, Lock, RefreshCw, Users } from "lucide-react";
+import { CopyButton, ErrorPanel, LivingSetlist, LoadingPanel, ProductShell, StatusBanner, useRoomState } from "@/app/components/product";
 
 type Provider = "spotify" | "apple-music";
 type ApiEnvelope<T> = { data: T | null; error: { code: string; message: string; retryable?: boolean } | null };
@@ -23,6 +23,35 @@ const holdLabels: Record<string, string> = {
   storefront_unknown: "US availability could not be confirmed",
   storefront_unavailable: "The recording is not available in the US",
 };
+
+function InviteControl({ roomId }: { roomId: string }) {
+  const [confirming, setConfirming] = useState(false);
+  const [working, setWorking] = useState(false);
+  const [invite, setInvite] = useState("");
+  const [message, setMessage] = useState("");
+  const [errorCode, setErrorCode] = useState("");
+  async function replaceInvite() {
+    setWorking(true); setMessage(""); setErrorCode("");
+    try {
+      const response = await fetch(`/api/v1/rooms/${encodeURIComponent(roomId)}/invite/rotate`, { method: "POST", credentials: "include" });
+      const body = await response.json() as ApiEnvelope<{ guestInvite: string }>;
+      if (!response.ok || body.error || !body.data) {
+        const failure = new Error(body.error?.message ?? "The invite could not be replaced.") as Error & { code?: string };
+        failure.code = body.error?.code;
+        throw failure;
+      }
+      setInvite(body.data.guestInvite); setConfirming(false); setMessage("Previous guest sessions were closed. Share only this new invite.");
+    } catch (cause) {
+      const failure = cause as Error & { code?: string };
+      setMessage(failure instanceof Error ? failure.message : "The invite could not be replaced.");
+      setErrorCode(failure.code ?? "");
+    }
+    finally { setWorking(false); }
+  }
+  if (invite) return <div className="invite-result"><code>{invite}</code><CopyButton value={invite}>Copy new invite</CopyButton><p role="status">{message}</p></div>;
+  if (confirming) return <div className="invite-confirm"><p>Replacing the invite immediately closes every current guest session.</p><div><button className="button button-quiet" onClick={() => setConfirming(false)} disabled={working}>Keep current invite</button><button className="button button-primary" onClick={() => void replaceInvite()} disabled={working}>{working ? "Replacing…" : "Replace invite"}</button></div>{message && <p className="inline-error" role="alert">{message}</p>}{errorCode === "RECENT_PASSKEY_REQUIRED" ? <Link className="button button-quiet" href={`/host/sign-in?returnTo=${encodeURIComponent(`/room/${roomId}`)}`}>Confirm passkey and return</Link> : null}</div>;
+  return <button className="button button-quiet" onClick={() => setConfirming(true)}><RefreshCw size={17} /> Replace invite</button>;
+}
 
 function ContributionForm({ roomId, canContribute, onStaged }: { roomId: string; canContribute: boolean; onStaged: () => void }) {
   const [input, setInput] = useState("");
@@ -91,9 +120,10 @@ export default function LiveRoomPage() {
   const participants = Object.values(snapshot.participants);
   const ready = participants.filter((participant) => participant.ready).length;
   const reviewCount = Object.values(snapshot.suggestions).filter((suggestion) => suggestion.status === "pending" || suggestion.status === "held").length;
-  return <ProductShell guest={guest} roomId={roomId} roomLabel={`Room ${roomId}`} displayName={actor.nickname}><div className="room-topbar"><div><span className="status-pill"><span className="live-dot" /> {snapshot.lifecycle === "active" ? "LIVE ROOM" : "ROOM ENDED"}</span><h1>Room {roomId}</h1><p>{snapshot.rules.approvalMode === "host" ? "Host approval" : "Open queue"} · {snapshot.rules.contributionLimit} picks per guest · {snapshot.rules.explicitContent === "hold" ? "explicit tracks held" : "explicit tracks allowed"}</p></div><div className="room-actions"><span className="connection-state"><span />canonical · seq {snapshot.seq}</span>{canHost && <button className="button button-quiet" disabled title="The current API only returns an invite when a room is created.">Invite unavailable here</button>}</div></div>
+  const now = snapshot.occurrences.find((occurrence) => occurrence.status === "now");
+  return <ProductShell guest={guest} roomId={roomId} roomLabel={`Room ${roomId}`} displayName={actor.nickname}><div className="room-topbar"><div><span className="status-pill"><span className="live-dot" /> {snapshot.lifecycle === "active" ? "LIVE ROOM" : "ROOM ENDED"}</span><h1>Room {roomId}</h1><p>{snapshot.rules.approvalMode === "host" ? "Host approval" : "Open queue"} · {snapshot.rules.contributionLimit} picks per guest · {snapshot.rules.explicitContent === "hold" ? "explicit tracks held" : "explicit tracks allowed"}</p></div><div className="room-actions"><span className="connection-state"><span />canonical · seq {snapshot.seq}</span>{actor.role === "host" && snapshot.lifecycle === "active" ? <InviteControl roomId={roomId} /> : null}</div></div>
     {snapshot.lifecycle === "ended" && <StatusBanner tone="warning" title="This room has ended">The setlist is read-only. Open the recap to review played occurrences.</StatusBanner>}
-    <div className="room-layout"><LivingSetlist guest={!canHost} snapshot={snapshot} onRefresh={room.refresh} /><aside className="room-side"><ContributionForm roomId={roomId} canContribute={canContribute} onStaged={room.refresh} />
+    <div className="room-layout"><LivingSetlist guest={!canHost} snapshot={snapshot} onRefresh={room.refresh} /><aside className="room-side">{now ? <section className="handoff-card"><Headphones /><div><p className="eyebrow">NATIVE HANDOFF</p><h2>{now.title}</h2><p>Open the exact matched recording in one service. UniJam never infers playback.</p></div><div><Link href={`/room/${roomId}/handoff/spotify`}>Spotify</Link><Link href={`/room/${roomId}/handoff/apple-music`}>Apple Music</Link></div></section> : null}<ContributionForm roomId={roomId} canContribute={canContribute} onStaged={room.refresh} />
       {canHost && <section className="room-summary"><div><Users /><span><strong>{participants.length} {participants.length === 1 ? "person" : "people"}</strong><small>{ready} ready</small></span></div><div><Lock /><span><strong>{snapshot.rules.locked ? "Room locked" : "Room open"}</strong><small>{snapshot.rules.speakerDuty === "host" ? "Host handles playback" : "Shared speaker duty"}</small></span></div><Link href={`/room/${roomId}/review`}>Review {reviewCount} {reviewCount === 1 ? "pick" : "picks"} <CircleAlert size={17} /></Link></section>}
       {guest && <section className="guest-boundary"><Lock /><div><strong>Private guest session</strong><p>This secure session cannot open host controls, connections, or publishing.</p></div></section>}
     </aside></div>

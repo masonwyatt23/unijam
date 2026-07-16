@@ -72,18 +72,24 @@ export default function ConnectionsPage() {
   const host = useCurrentHost();
   const spotify = useProviderStatus("spotify");
   const apple = useProviderStatus("apple-music");
-  const [appleState, setAppleState] = useState<"idle" | "working" | "error" | "success">("idle");
-  const [actionMessage, setActionMessage] = useState("");
+  const [appleState, setAppleState] = useState<"idle" | "working">("idle");
+  const [actionFeedback, setActionFeedback] = useState<{ tone: "success" | "error"; message: string } | null>(null);
 
   async function disconnect(provider: Provider, refresh: () => void) {
-    setActionMessage("");
-    const response = await fetch(`/api/v1/providers/${provider}/disconnect`, { method: "POST", credentials: "include" });
-    if (!response.ok) { setActionMessage(await apiMessage(response, `${provider === "spotify" ? "Spotify" : "Apple Music"} could not be disconnected.`)); return; }
-    refresh();
+    setActionFeedback(null);
+    const name = provider === "spotify" ? "Spotify" : "Apple Music";
+    try {
+      const response = await fetch(`/api/v1/providers/${provider}/disconnect`, { method: "POST", credentials: "include" });
+      if (!response.ok) { setActionFeedback({ tone: "error", message: await apiMessage(response, `${name} could not be disconnected.`) }); return; }
+      setActionFeedback({ tone: "success", message: `${name} was disconnected.` });
+      refresh();
+    } catch {
+      setActionFeedback({ tone: "error", message: `${name} could not be disconnected because the connector could not be reached. Try again.` });
+    }
   }
 
   async function connectAppleMusic() {
-    setAppleState("working"); setActionMessage("");
+    setAppleState("working"); setActionFeedback(null);
     try {
       const tokenResponse = await fetch("/api/v1/providers/apple-music/developer-token", { method: "POST", credentials: "include" });
       if (!tokenResponse.ok) throw new Error(await apiMessage(tokenResponse, "Apple Music authorization could not start."));
@@ -98,17 +104,17 @@ export default function ConnectionsPage() {
         body: JSON.stringify({ musicUserToken }),
       });
       if (!connection.ok) throw new Error(await apiMessage(connection, "Apple Music could not be connected."));
-      setAppleState("success");
-      setActionMessage("Apple Music is connected for the US storefront.");
+      setAppleState("idle");
+      setActionFeedback({ tone: "success", message: "Apple Music is connected for the US storefront." });
       apple.refresh();
     } catch (cause) {
-      setAppleState("error");
-      setActionMessage(cause instanceof Error ? cause.message : "Apple Music could not be connected.");
+      setAppleState("idle");
+      setActionFeedback({ tone: "error", message: cause instanceof Error ? cause.message : "Apple Music could not be connected." });
     }
   }
 
   if (host.status === "loading") return <ProductShell><LoadingPanel label="Checking provider availability…" /></ProductShell>;
   if (host.status === "error" || !host.data) return <ProductShell><ErrorPanel title="Host access required" message={host.error?.message ?? "Sign in before managing provider connections."} /></ProductShell>;
   const unavailable = spotify.state === "error" && apple.state === "error";
-  return <ProductShell displayName={host.data.displayName}><PageHeader eyebrow="CONNECTIONS" title="Provider connections" description="Each provider is authorized, stored, disconnected, and retried independently." />{unavailable && <StatusBanner tone="warning" title="Connector unavailable">{spotify.message || apple.message}</StatusBanner>}{!host.data.recentPasskey && <StatusBanner tone="warning" title="Passkey confirmation required">Provider changes require a recent passkey confirmation. Sign in with your passkey again before connecting or disconnecting.</StatusBanner>}{actionMessage && <p className={appleState === "error" ? "inline-error" : "inline-success"} role={appleState === "error" ? "alert" : "status"}>{actionMessage}</p>}<div className="connection-grid"><article className="connection-card"><div className="provider-isolation provider-spotify-bg"><ProviderBrand provider="spotify" background="dark" purpose="connect" /></div><div className="connection-copy"><div><h2>Spotify</h2><span className="connection-wait">{spotify.data?.connected ? <><CircleCheck /> Connected</> : spotify.state === "loading" ? "Checking…" : <><CircleAlert /> {spotify.data?.enabled ? "Not connected" : "Unavailable"}</>}</span></div><p>Authorization Code + PKCE. Spotify credentials remain inside the connector service.</p><dl><div><dt>Storefront</dt><dd>{spotify.data?.storefront ?? "US pilot"}</dd></div><div><dt>Publishing</dt><dd>{spotify.data?.publishingEnabled ? "Enabled" : "Feature-gated"}</dd></div></dl>{spotify.data?.connected ? <button className="button button-quiet" onClick={() => void disconnect("spotify", spotify.refresh)}><Unplug size={18} /> Disconnect Spotify</button> : spotify.data?.enabled ? <a className="button button-ink" href="/api/v1/providers/spotify/connect"><KeyRound size={18} /> Connect Spotify</a> : <button className="button button-ink" disabled><KeyRound size={18} /> Connect Spotify</button>}</div></article><article className="connection-card"><div className="provider-isolation provider-apple-bg"><span className="neutral-provider"><Link2 /><strong>Apple Music</strong></span></div><div className="connection-copy"><div><h2>Apple Music</h2><span className="connection-wait">{apple.data?.connected ? <><CircleCheck /> Connected</> : apple.state === "loading" ? "Checking…" : <><CircleAlert /> {apple.data?.enabled ? "Not connected" : "Unavailable"}</>}</span></div><p>MusicKit authorization runs only on this isolated connection screen. The connector validates and encrypts the Music User Token.</p><dl><div><dt>Storefront</dt><dd>{apple.data?.storefront ?? "US pilot"}</dd></div><div><dt>Publishing</dt><dd>{apple.data?.publishingEnabled ? "Enabled" : "Feature-gated"}</dd></div></dl>{apple.data?.connected ? <button className="button button-quiet" onClick={() => void disconnect("apple-music", apple.refresh)}><Unplug size={18} /> Disconnect Apple Music</button> : apple.data?.enabled ? <button className="button button-ink" disabled={appleState === "working"} onClick={() => void connectAppleMusic()}><KeyRound size={18} /> {appleState === "working" ? "Waiting for Apple Music…" : "Connect Apple Music"}</button> : <button className="button button-ink" disabled><KeyRound size={18} /> Connect Apple Music</button>}</div></article></div><p className="provider-footnote">No provider token, playlist, metadata, or artwork is fabricated on this screen.</p></ProductShell>;
+  return <ProductShell displayName={host.data.displayName}><PageHeader eyebrow="CONNECTIONS" title="Provider connections" description="Each provider is authorized, stored, disconnected, and retried independently." />{unavailable && <StatusBanner tone="warning" title="Connector unavailable">{spotify.message || apple.message}</StatusBanner>}{!host.data.recentPasskey && <StatusBanner tone="warning" title="Passkey confirmation required" action={<a className="button button-quiet" href="/host/sign-in">Confirm passkey</a>}>Provider changes require a recent passkey confirmation. Sign in with your passkey again before connecting or disconnecting.</StatusBanner>}{actionFeedback && <p className={actionFeedback.tone === "error" ? "inline-error" : "inline-success"} role={actionFeedback.tone === "error" ? "alert" : "status"}>{actionFeedback.message}</p>}<div className="connection-grid"><article className="connection-card"><div className="provider-isolation provider-spotify-bg"><ProviderBrand provider="spotify" background="dark" purpose="connect" /></div><div className="connection-copy"><div><h2>Spotify</h2><span className="connection-wait">{spotify.data?.connected ? <><CircleCheck /> Connected</> : spotify.state === "loading" ? "Checking…" : <><CircleAlert /> {spotify.data?.enabled ? "Not connected" : "Unavailable"}</>}</span></div><p>Authorization Code + PKCE. Spotify credentials remain inside the connector service.</p><dl><div><dt>Storefront</dt><dd>{spotify.data?.storefront ?? "US pilot"}</dd></div><div><dt>Publishing</dt><dd>{spotify.data?.publishingEnabled ? "Enabled" : "Feature-gated"}</dd></div></dl>{spotify.state === "error" ? <button className="button button-quiet" onClick={spotify.refresh}>Retry Spotify status</button> : spotify.data?.connected ? <button className="button button-quiet" disabled={!host.data.recentPasskey} onClick={() => void disconnect("spotify", spotify.refresh)}><Unplug size={18} /> Disconnect Spotify</button> : spotify.data?.enabled && host.data.recentPasskey ? <a className="button button-ink" href="/api/v1/providers/spotify/connect"><KeyRound size={18} /> Connect Spotify</a> : <button className="button button-ink" disabled><KeyRound size={18} /> Connect Spotify</button>}</div></article><article className="connection-card"><div className="provider-isolation provider-apple-bg"><span className="neutral-provider"><Link2 /><strong>Apple Music</strong></span></div><div className="connection-copy"><div><h2>Apple Music</h2><span className="connection-wait">{apple.data?.connected ? <><CircleCheck /> Connected</> : apple.state === "loading" ? "Checking…" : <><CircleAlert /> {apple.data?.enabled ? "Not connected" : "Unavailable"}</>}</span></div><p>MusicKit authorization runs only on this isolated connection screen. The connector validates and encrypts the Music User Token.</p><dl><div><dt>Storefront</dt><dd>{apple.data?.storefront ?? "US pilot"}</dd></div><div><dt>Publishing</dt><dd>{apple.data?.publishingEnabled ? "Enabled" : "Feature-gated"}</dd></div></dl>{apple.state === "error" ? <button className="button button-quiet" onClick={apple.refresh}>Retry Apple Music status</button> : apple.data?.connected ? <button className="button button-quiet" disabled={!host.data.recentPasskey} onClick={() => void disconnect("apple-music", apple.refresh)}><Unplug size={18} /> Disconnect Apple Music</button> : apple.data?.enabled ? <button className="button button-ink" disabled={!host.data.recentPasskey || appleState === "working"} onClick={() => void connectAppleMusic()}><KeyRound size={18} /> {appleState === "working" ? "Waiting for Apple Music…" : "Connect Apple Music"}</button> : <button className="button button-ink" disabled><KeyRound size={18} /> Connect Apple Music</button>}</div></article></div><p className="provider-footnote">No provider token, playlist, metadata, or artwork is fabricated on this screen.</p></ProductShell>;
 }

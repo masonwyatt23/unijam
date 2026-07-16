@@ -37,6 +37,7 @@ interface PublishRow {
   connection_generation: number;
   revision: number;
   destination_playlist_id: string | null;
+  destination_url: string | null;
   reconciliation_attempts: number;
   reconciliation_not_before_ms: number | null;
   last_observed_ids_json: string | null;
@@ -49,6 +50,10 @@ interface PublishRow {
   recovery_code: "PLAYLIST_CREATION_OUTCOME_UNKNOWN" | null;
   recovery_marker: string | null;
   recovery_detected_at_ms: number | null;
+  recovery_resolved_marker: string | null;
+  recovery_playlist_hash: string | null;
+  recovery_resolved_by: string | null;
+  recovery_resolved_at_ms: number | null;
   updated_at_ms: number;
 }
 
@@ -302,11 +307,13 @@ export class D1ConnectorStore implements ConnectorStore {
     const row = await this.db.prepare(
       `SELECT operation_id, account_id, connection_id, provider,
               connection_generation, revision,
-              destination_playlist_id, reconciliation_attempts,
+              destination_playlist_id, destination_url, reconciliation_attempts,
               reconciliation_not_before_ms, last_observed_ids_json,
               state_json, mutation_token, mutation_stage, mutation_acquired_at_ms,
               mutation_expires_at_ms, mutation_marker, recovery_code,
-              recovery_marker, recovery_detected_at_ms, updated_at_ms
+              recovery_marker, recovery_detected_at_ms, recovery_resolved_marker,
+              recovery_playlist_hash, recovery_resolved_by, recovery_resolved_at_ms,
+              updated_at_ms
        FROM connector_publish_jobs WHERE operation_id = ? AND cancelled = 0`,
     ).bind(operationId).first<PublishRow>();
     if (!row) return null;
@@ -318,6 +325,7 @@ export class D1ConnectorStore implements ConnectorStore {
       connectionGeneration: row.connection_generation,
       revision: row.revision,
       ...(row.destination_playlist_id ? { destinationPlaylistId: row.destination_playlist_id } : {}),
+      ...(row.destination_url ? { destinationUrl: row.destination_url } : {}),
       reconciliationAttempts: row.reconciliation_attempts,
       ...(row.reconciliation_not_before_ms === null ? {} : { reconciliationNotBeforeMs: row.reconciliation_not_before_ms }),
       ...(row.last_observed_ids_json === null ? {} : { lastObservedProviderRecordingIds: JSON.parse(row.last_observed_ids_json) as string[] }),
@@ -327,19 +335,27 @@ export class D1ConnectorStore implements ConnectorStore {
       ...(row.recovery_code && row.recovery_marker && row.recovery_detected_at_ms !== null
         ? { recoveryRequired: { code: row.recovery_code, marker: row.recovery_marker, detectedAtMs: row.recovery_detected_at_ms } }
         : {}),
+      ...(row.recovery_resolved_marker && row.recovery_playlist_hash && row.recovery_resolved_by && row.recovery_resolved_at_ms !== null
+        ? { recoveryResolution: {
+          marker: row.recovery_resolved_marker,
+          destinationPlaylistHash: row.recovery_playlist_hash,
+          resolvedBy: row.recovery_resolved_by,
+          resolvedAtMs: row.recovery_resolved_at_ms,
+        } }
+        : {}),
       state: JSON.parse(row.state_json) as DestinationPublishState,
       updatedAtMs: row.updated_at_ms,
     };
   }
 
-  async savePublishJob(job: PublishJobRecord): Promise<void> {
-    await this.db.prepare(
+  async savePublishJob(job: PublishJobRecord): Promise<boolean> {
+    const result = await this.db.prepare(
       `INSERT INTO connector_publish_jobs
-       (operation_id, account_id, connection_id, provider, connection_generation, revision, destination_playlist_id,
+       (operation_id, account_id, connection_id, provider, connection_generation, revision, destination_playlist_id, destination_url,
         reconciliation_attempts, reconciliation_not_before_ms,
         last_observed_ids_json, state_json, recovery_code, recovery_marker,
         recovery_detected_at_ms, updated_at_ms, cancelled)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0
        WHERE EXISTS (
          SELECT 1 FROM connector_connection_fences
          WHERE account_id = ? AND connection_id = ? AND provider = ?
@@ -347,6 +363,7 @@ export class D1ConnectorStore implements ConnectorStore {
        )
        ON CONFLICT(operation_id) DO UPDATE SET
          destination_playlist_id = excluded.destination_playlist_id,
+         destination_url = excluded.destination_url,
          reconciliation_attempts = excluded.reconciliation_attempts,
          reconciliation_not_before_ms = excluded.reconciliation_not_before_ms,
          last_observed_ids_json = excluded.last_observed_ids_json,
@@ -367,6 +384,7 @@ export class D1ConnectorStore implements ConnectorStore {
       job.connectionGeneration,
       job.revision,
       job.destinationPlaylistId ?? null,
+      job.destinationUrl ?? null,
       job.reconciliationAttempts ?? 0,
       job.reconciliationNotBeforeMs ?? null,
       job.lastObservedProviderRecordingIds ? JSON.stringify(job.lastObservedProviderRecordingIds) : null,
@@ -380,6 +398,7 @@ export class D1ConnectorStore implements ConnectorStore {
       job.provider,
       job.connectionGeneration,
     ).run();
+    return (result.meta.changes ?? 0) === 1;
   }
 
   async acquirePublishMutation(input: Parameters<ConnectorStore["acquirePublishMutation"]>[0]): Promise<Awaited<ReturnType<ConnectorStore["acquirePublishMutation"]>>> {
@@ -433,14 +452,14 @@ export class D1ConnectorStore implements ConnectorStore {
   async completePublishMutation(job: PublishJobRecord, leaseToken: string): Promise<boolean> {
     const result = await this.db.prepare(
       `UPDATE connector_publish_jobs SET
-         destination_playlist_id = ?, reconciliation_attempts = ?, reconciliation_not_before_ms = ?,
+         destination_playlist_id = ?, destination_url = ?, reconciliation_attempts = ?, reconciliation_not_before_ms = ?,
          last_observed_ids_json = ?, state_json = ?, recovery_code = ?, recovery_marker = ?,
          recovery_detected_at_ms = ?, mutation_token = NULL, mutation_stage = NULL,
          mutation_acquired_at_ms = NULL, mutation_expires_at_ms = NULL, mutation_marker = NULL,
          revision = revision + 1, updated_at_ms = ?
        WHERE operation_id = ? AND mutation_token = ? AND connection_generation = ? AND cancelled = 0`,
     ).bind(
-      job.destinationPlaylistId ?? null, job.reconciliationAttempts ?? 0,
+      job.destinationPlaylistId ?? null, job.destinationUrl ?? null, job.reconciliationAttempts ?? 0,
       job.reconciliationNotBeforeMs ?? null,
       job.lastObservedProviderRecordingIds ? JSON.stringify(job.lastObservedProviderRecordingIds) : null,
       JSON.stringify(job.state), job.recoveryRequired?.code ?? null,
@@ -448,6 +467,48 @@ export class D1ConnectorStore implements ConnectorStore {
       job.updatedAtMs, job.operationId, leaseToken, job.connectionGeneration,
     ).run();
     return (result.meta.changes ?? 0) === 1;
+  }
+
+  async recoverPublishPlaylist(input: Parameters<ConnectorStore["recoverPublishPlaylist"]>[0]): Promise<Awaited<ReturnType<ConnectorStore["recoverPublishPlaylist"]>>> {
+    const result = await this.db.prepare(
+      `UPDATE connector_publish_jobs SET
+         destination_playlist_id = ?, destination_url = ?, recovery_code = NULL, recovery_marker = NULL,
+         recovery_detected_at_ms = NULL, recovery_resolved_marker = ?,
+         recovery_playlist_hash = ?, recovery_resolved_by = ?, recovery_resolved_at_ms = ?,
+         revision = revision + 1, updated_at_ms = ?
+       WHERE operation_id = ? AND destination_playlist_id IS NULL
+         AND recovery_code = 'PLAYLIST_CREATION_OUTCOME_UNKNOWN' AND recovery_marker = ?
+         AND mutation_token IS NULL AND cancelled = 0
+         AND EXISTS (
+           SELECT 1 FROM connector_connection_fences f
+           WHERE f.account_id = connector_publish_jobs.account_id
+             AND f.connection_id = connector_publish_jobs.connection_id
+             AND f.provider = connector_publish_jobs.provider
+             AND f.generation = connector_publish_jobs.connection_generation
+             AND f.status = 'active'
+         )`,
+    ).bind(
+      input.destinationPlaylistId, input.destinationUrl ?? null, input.expectedMarker, input.destinationPlaylistHash,
+      input.resolvedBy, input.resolvedAtMs, input.resolvedAtMs,
+      input.operationId, input.expectedMarker,
+    ).run();
+    if ((result.meta.changes ?? 0) === 1) {
+      const job = await this.getPublishJob(input.operationId);
+      return job ? { kind: "recovered", job } : { kind: "missing" };
+    }
+
+    const job = await this.getPublishJob(input.operationId);
+    if (!job) return { kind: "missing" };
+    const generation = await this.getConnectionGeneration(job.accountId, job.connectionId, job.provider);
+    if (generation !== job.connectionGeneration) return { kind: "revoked" };
+    if (
+      job.destinationPlaylistId === input.destinationPlaylistId &&
+      job.recoveryResolution?.marker === input.expectedMarker &&
+      job.recoveryResolution.destinationPlaylistHash === input.destinationPlaylistHash
+    ) {
+      return { kind: "already_recovered", job };
+    }
+    return { kind: "conflict" };
   }
 }
 

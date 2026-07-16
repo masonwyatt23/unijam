@@ -8,6 +8,7 @@ import type {
   ProviderPlaylistSnapshot,
   ProviderRequestContext,
 } from "../lib/providers/contracts.ts";
+import { recoveryMarkerFromDescription } from "../lib/publishing/model.ts";
 import { invalidProviderResponse } from "./errors.ts";
 import { providerJson } from "./http.ts";
 import { inferEdition, inferVersion, isRecord, numberValue, stringValue } from "./catalog-shape.ts";
@@ -30,6 +31,20 @@ function bearer(accessToken: string, json = false): HeadersInit {
     Authorization: `Bearer ${accessToken}`,
     ...(json ? { "Content-Type": "application/json" } : {}),
   };
+}
+
+function spotifyPlaylistUrl(value: unknown, playlistId: string): string | undefined {
+  const raw = stringValue(value);
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:" || url.hostname !== "open.spotify.com" || url.pathname !== `/playlist/${playlistId}`) {
+      return undefined;
+    }
+    return url.href;
+  } catch {
+    return undefined;
+  }
 }
 
 function spotifyCandidate(value: unknown): CatalogCandidate | null {
@@ -131,9 +146,11 @@ export class SpotifyAdapter implements ProviderAdapter {
     );
     const playlistId = stringValue(body.id);
     if (!playlistId) throw invalidProviderResponse("spotify", true);
+    const destinationUrl = spotifyPlaylistUrl(isRecord(body.external_urls) ? body.external_urls.spotify : undefined, playlistId);
     return {
       provider: "spotify",
       playlistId,
+      ...(destinationUrl ? { destinationUrl } : {}),
       ...(stringValue(body.snapshot_id) ? { revisionToken: String(body.snapshot_id) } : {}),
       items: [],
       observedAtMs: (this.options.now ?? Date.now)(),
@@ -145,8 +162,14 @@ export class SpotifyAdapter implements ProviderAdapter {
     playlistId: string,
   ): Promise<ProviderPlaylistSnapshot> {
     if (!playlistId.trim()) throw new Error("playlist ID is required");
-    const summary = await this.json(`/playlists/${encodeURIComponent(playlistId)}?fields=snapshot_id`);
+    const summary = await this.json(`/playlists/${encodeURIComponent(playlistId)}?fields=snapshot_id,external_urls.spotify,name,description,public,owner.id,tracks.total`);
+    const currentUser = await this.json("/me");
     const revisionToken = stringValue(summary.snapshot_id);
+    const description = stringValue(summary.description);
+    const ownerId = isRecord(summary.owner) ? stringValue(summary.owner.id) : undefined;
+    const currentUserId = stringValue(currentUser.id);
+    const rawItemCount = isRecord(summary.tracks) ? numberValue(summary.tracks.total) : undefined;
+    const destinationUrl = spotifyPlaylistUrl(isRecord(summary.external_urls) ? summary.external_urls.spotify : undefined, playlistId);
     const items: { providerRecordingId: string; position: number }[] = [];
     let next: string | null = `${API}/playlists/${encodeURIComponent(playlistId)}/items?market=US&limit=50`;
     for (let page = 0; next && page < 100; page += 1) {
@@ -165,7 +188,19 @@ export class SpotifyAdapter implements ProviderAdapter {
       }
       next = body.next === null ? null : stringValue(body.next) ?? null;
     }
-    return { provider: "spotify", playlistId, ...(revisionToken ? { revisionToken } : {}), items, observedAtMs: (this.options.now ?? Date.now)() };
+    return {
+      provider: "spotify",
+      playlistId,
+      ...(destinationUrl ? { destinationUrl } : {}),
+      ...(stringValue(summary.name) ? { name: stringValue(summary.name) } : {}),
+      ...(description ? { recoveryMarker: recoveryMarkerFromDescription(description) } : {}),
+      ...(rawItemCount === undefined ? {} : { rawItemCount }),
+      ...(typeof summary.public === "boolean" ? { isPrivate: summary.public === false } : {}),
+      ownershipVerified: Boolean(ownerId && currentUserId && ownerId === currentUserId),
+      ...(revisionToken ? { revisionToken } : {}),
+      items,
+      observedAtMs: (this.options.now ?? Date.now)(),
+    };
   }
 
   async appendItems(

@@ -39,6 +39,7 @@ export interface ConnectorRouterDependencies {
   readonly store?: ConnectorStore;
   readonly fetcher?: typeof fetch;
   readonly now?: () => number;
+  readonly recoveryAdapter?: ProviderAdapter;
 }
 
 function response(requestId: string, data: unknown, status = 200): Response {
@@ -53,7 +54,15 @@ function errorResponse(requestId: string, status: number, code: string, message:
 }
 
 async function authenticated(request: Request, secret: string): Promise<boolean> {
-  const supplied = request.headers.get("Authorization")?.match(/^Bearer (.+)$/)?.[1] ?? "";
+  return authenticatedHeader(request, "Authorization", secret);
+}
+
+function bearerValue(request: Request, header: string): string {
+  return request.headers.get(header)?.match(/^Bearer (.+)$/)?.[1] ?? "";
+}
+
+async function authenticatedHeader(request: Request, header: string, secret: string): Promise<boolean> {
+  const supplied = bearerValue(request, header);
   if (!supplied || !secret) return false;
   const [actual, expected] = await Promise.all([sha256Base64Url(supplied), sha256Base64Url(secret)]);
   let difference = actual.length ^ expected.length;
@@ -427,7 +436,7 @@ export async function handleConnectorRequest(
         if (connectionGeneration === null) {
           throw new HttpError(409, "PROVIDER_NOT_CONNECTED", "Connect this provider first");
         }
-        await store.savePublishJob({
+        const inserted = await store.savePublishJob({
           operationId: operation.operationId,
           accountId,
           connectionId: stored.connectionId,
@@ -437,9 +446,10 @@ export async function handleConnectorRequest(
           state: createDestinationPublishState(operation),
           updatedAtMs: now(),
         });
+        if (!inserted) throw new HttpError(409, "OPERATION_CHANGED", "Publish operation changed before it could be confirmed");
       }
       if (!env.PUBLISH_QUEUE) throw new HttpError(503, "QUEUE_UNAVAILABLE", "Publishing queue is unavailable");
-      if (!existing) {
+      if (!existing || !["succeeded", "cancelled"].includes(existing.state.phase)) {
         await env.PUBLISH_QUEUE.send({ version: 1, type: "publish_destination", operationId: operation.operationId });
       }
       await store.deletePublishPreview(accountId, previewId);
@@ -456,10 +466,81 @@ export async function handleConnectorRequest(
         operationId: job.operationId,
         provider: job.provider,
         destinationPlaylistId: job.destinationPlaylistId ?? null,
+        destinationUrl: job.destinationUrl ?? null,
         state: job.state,
         recoveryRequired: job.recoveryRequired ?? null,
         updatedAtMs: job.updatedAtMs,
       });
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/operator/publish/recover-playlist") {
+      if (!(await authenticatedHeader(request, "X-UniJam-Operator-Authorization", env.CONNECTOR_OPERATOR_SECRET))) {
+        throw new HttpError(403, "OPERATOR_UNAUTHORIZED", "Operator authorization failed");
+      }
+      if (!env.PUBLISH_QUEUE) throw new HttpError(503, "QUEUE_UNAVAILABLE", "Publishing queue is unavailable");
+      const body = await readObject(request);
+      const operationId = requiredString(body, "operationId");
+      const expectedMarker = requiredString(body, "expectedRecoveryMarker");
+      const destinationPlaylistId = requiredString(body, "destinationPlaylistId");
+      const operatorCredential = bearerValue(request, "X-UniJam-Operator-Authorization");
+      const resolvedBy = `operator-credential:${(await sha256Base64Url(operatorCredential)).slice(0, 20)}`;
+      const job = await store.getPublishJob(operationId);
+      if (!job) throw new HttpError(404, "OPERATION_NOT_FOUND", "Publish operation was not found");
+      requireProviderEnabled(env, job.provider, true);
+
+      if (!job.recoveryRequired) {
+        if (
+          job.destinationPlaylistId === destinationPlaylistId &&
+          job.recoveryResolution?.marker === expectedMarker
+        ) {
+          await env.PUBLISH_QUEUE.send({ version: 1, type: "reconcile_destination", operationId });
+          return response(requestId, { operationId, status: "already_recovered" }, 202);
+        }
+        throw new HttpError(409, "RECOVERY_NOT_REQUIRED", "This operation is not awaiting playlist recovery");
+      }
+      if (job.recoveryRequired.marker !== expectedMarker) {
+        throw new HttpError(409, "RECOVERY_MARKER_CONFLICT", "The recovery marker does not match the current operation");
+      }
+
+      const adapter = dependencies.recoveryAdapter ?? await adapterFor({
+        env,
+        store,
+        provider: job.provider,
+        accountId: job.accountId,
+        connectionId: job.connectionId,
+        fetcher: dependencies.fetcher,
+        now,
+      });
+      const snapshot = await adapter.readPlaylist(
+        { requestId, provider: job.provider, credentialRef: job.connectionId, storefront: "US" },
+        destinationPlaylistId,
+      );
+      if (snapshot.rawItemCount !== 0) {
+        throw new HttpError(409, "RECOVERY_PLAYLIST_NOT_EMPTY", "Recovered playlist must be verifiably empty before UniJam resumes publishing");
+      }
+      if (
+        snapshot.recoveryMarker !== expectedMarker ||
+        snapshot.name !== job.state.operation.preview.destination.name ||
+        snapshot.isPrivate !== true ||
+        snapshot.ownershipVerified !== true
+      ) {
+        throw new HttpError(409, "RECOVERY_PLAYLIST_MISMATCH", "Recovered playlist metadata does not match this private UniJam destination");
+      }
+
+      const result = await store.recoverPublishPlaylist({
+        operationId,
+        expectedMarker,
+        destinationPlaylistId,
+        ...(snapshot.destinationUrl ? { destinationUrl: snapshot.destinationUrl } : {}),
+        destinationPlaylistHash: await sha256Base64Url(destinationPlaylistId),
+        resolvedBy,
+        resolvedAtMs: now(),
+      });
+      if (result.kind === "missing") throw new HttpError(404, "OPERATION_NOT_FOUND", "Publish operation was not found");
+      if (result.kind === "revoked") throw new HttpError(409, "CONNECTION_REVOKED", "The provider connection was disconnected");
+      if (result.kind === "conflict") throw new HttpError(409, "RECOVERY_CONFLICT", "The operation changed while recovery was verified");
+      await env.PUBLISH_QUEUE.send({ version: 1, type: "reconcile_destination", operationId });
+      return response(requestId, { operationId, status: result.kind }, 202);
     }
 
     if (request.method === "POST" && url.pathname === "/v1/publish/retry") {
@@ -473,7 +554,9 @@ export async function handleConnectorRequest(
         throw new HttpError(409, "OPERATOR_RECOVERY_REQUIRED", "Playlist creation outcome requires operator recovery");
       }
       const state = requestPublishRetry(job.state, now());
-      await store.savePublishJob({ ...job, state, updatedAtMs: now() });
+      if (!(await store.savePublishJob({ ...job, state, updatedAtMs: now() }))) {
+        throw new HttpError(409, "OPERATION_CHANGED", "Publish operation changed before the retry was accepted");
+      }
       if (!env.PUBLISH_QUEUE) throw new HttpError(503, "QUEUE_UNAVAILABLE", "Publishing queue is unavailable");
       await env.PUBLISH_QUEUE.send({ version: 1, type: state.phase === "reconcile_before_retry" ? "reconcile_destination" : "publish_destination", operationId: job.operationId });
       return response(requestId, { operationId: job.operationId, status: state.phase }, 202);
@@ -486,7 +569,9 @@ export async function handleConnectorRequest(
       const job = await store.getPublishJob(requiredString(body, "operationId"));
       if (!job || job.accountId !== accountId) throw new HttpError(404, "OPERATION_NOT_FOUND", "Publish operation was not found");
       const state = cancelPublishOperation(job.state);
-      await store.savePublishJob({ ...job, state, updatedAtMs: now() });
+      if (!(await store.savePublishJob({ ...job, state, updatedAtMs: now() }))) {
+        throw new HttpError(409, "OPERATION_IN_FLIGHT", "This destination changed or has an active provider mutation; refresh before cancelling");
+      }
       return response(requestId, { operationId: job.operationId, status: state.phase });
     }
 

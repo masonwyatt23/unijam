@@ -78,9 +78,10 @@ export async function authenticateRoomActor(
   env: RoomAuthorityEnv,
   request: Request,
   roomId: string,
+  options: { allowEndedOwner?: boolean } = {},
 ): Promise<{ actor: RoomActor; registry: RegistryRow; session: RoomSessionContext } | null> {
   const registry = await getRoomRegistry(env.DB, roomId);
-  if (!registry || registry.lifecycle !== "active") return null;
+  if (!registry || registry.lifecycle !== "active" && !options.allowEndedOwner) return null;
   const host = await authenticateHost(env.DB, request);
   if (host?.account_id === registry.owner_account_id) {
     return {
@@ -88,6 +89,7 @@ export async function authenticateRoomActor(
       session: { kind: "host", sessionId: host.session_id, expiresAtMs: host.expires_at_ms, inviteEpoch: registry.invite_epoch },
     };
   }
+  if (registry.lifecycle !== "active") return null;
   const token = readCookie(request, GUEST_SESSION_COOKIE);
   if (!token) return null;
   const guest = await env.DB.prepare(

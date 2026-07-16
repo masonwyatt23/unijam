@@ -92,6 +92,33 @@ function keyPart(value: string): string {
   return encodeURIComponent(value);
 }
 
+function compactFingerprint(value: string): string {
+  let left = 0x811c9dc5;
+  let right = 0x9e3779b9;
+  for (const codePoint of value) {
+    const valueCode = codePoint.codePointAt(0) ?? 0;
+    left = Math.imul(left ^ valueCode, 0x01000193) >>> 0;
+    right = Math.imul(right ^ valueCode, 0x85ebca6b) >>> 0;
+  }
+  return `${left.toString(16).padStart(8, "0")}${right.toString(16).padStart(8, "0")}`;
+}
+
+export function publishRecoveryMarker(operationId: string): string {
+  return `unijam:v1:create_playlist:${compactFingerprint(requireValue(operationId, "operationId"))}`;
+}
+
+export function publishDescription(description: string, marker: string): string {
+  const tag = `[UniJam recovery ${marker}]`;
+  if (tag.length >= 300) throw new Error("publish recovery marker is too long");
+  const prefix = description.trim().slice(0, 300 - tag.length - 1).trimEnd();
+  return `${prefix ? `${prefix}\n` : ""}${tag}`;
+}
+
+export function recoveryMarkerFromDescription(description: unknown): string | undefined {
+  if (typeof description !== "string") return undefined;
+  return description.match(/\[UniJam recovery (unijam:v1:create_playlist:[a-f0-9]{16})\]/)?.[1];
+}
+
 function validTime(value: number, field: string): void {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new Error(`${field} must be a non-negative safe integer`);
@@ -132,7 +159,11 @@ export function createPublishPreview(input: CreatePublishPreviewInput): PublishP
       itemKey: `${previewId}:item:${position}:${keyPart(canonicalRecordingId)}:${keyPart(providerRecordingId)}`,
     });
   });
-  const description = input.playlistDescription?.trim() ?? "Created by UniJam";
+  const operationId = previewId.replace(/^preview:/, "publish:");
+  const description = publishDescription(
+    input.playlistDescription?.trim() || "Created by UniJam",
+    publishRecoveryMarker(operationId),
+  );
   const payloadFingerprint = [
     "v1",
     previewId,

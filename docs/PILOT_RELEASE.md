@@ -70,7 +70,17 @@ npm run lint
 npm test
 npm run test:e2e
 npm run validate:release-config
+npm run preflight:staging
 ```
+
+`preflight:staging` is read-only. It combines strict configuration validation
+with Cloudflare authentication, D1/Queue inventory, Worker deployment,
+secret-name (never value), and HTTPS-origin checks. Before provisioning it must
+fail with explicit blockers. After staging activation, save its output in the
+private release record. Run `npm run preflight:production` before DNS delegation
+and again after production deployment. Use `-- --json` for machine-readable
+evidence; `--offline` is only for testing the local report contract and never
+satisfies a release gate.
 
 Repository validation may report only the four known D1 sentinel warnings
 before provisioning. Any other warning or any error blocks provisioning.
@@ -155,6 +165,11 @@ unset CONNECTOR_SERVICE_CREDENTIAL
 ```
 
 Repeat with a newly generated value and `--env production`.
+
+Generate a separate operator-only credential per environment and install it
+only on the connector Worker as `CONNECTOR_OPERATOR_SECRET`. Never install or
+expose this credential on the web Worker; it gates the manual ambiguous-create
+recovery route in addition to the connector service credential.
 
 Install the following on `unijam-connectors-staging`, then install independent
 production values on `unijam-connectors-production`:
@@ -350,6 +365,37 @@ timeout), disconnect, kill-switch, and room-independence verification.
    playlist creation, propagation-aware reconciliation, and partial-success
    isolation.
 
+### Ambiguous playlist-creation recovery
+
+If an operation reports `PLAYLIST_CREATION_OUTCOME_UNKNOWN`, ordinary retries
+must remain blocked. Inspect the provider account, identify the exact empty
+playlist created by the timed-out request, and record the persisted recovery
+marker. Export the two staging connector credentials only in the operator shell
+as `UNIJAM_CONNECTOR_SERVICE_TOKEN` and
+`UNIJAM_CONNECTOR_OPERATOR_SECRET`, then run a dry validation before sending
+anything:
+
+```bash
+npm run recover:publish -- \
+  --env staging \
+  --endpoint https://unijam-connectors-staging.ACCOUNT.workers.dev/v1/operator/publish/recover-playlist \
+  --workers-subdomain ACCOUNT \
+  --operation-id OPERATION_ID \
+  --marker RECOVERY_MARKER \
+  --playlist-id PROVIDER_PLAYLIST_ID \
+  --dry-run
+```
+
+Remove `--dry-run` only after a second operator verifies the operation, marker,
+provider, and that the destination is empty. The connector independently reads
+the playlist, checks its exact name, embedded marker, private/editable ownership,
+raw item count, and active connection generation before atomically attaching it.
+It stores only hashed destination and operator-credential evidence, then queues
+reconciliation. The script never prints the operation, marker, playlist
+ID, or credentials. Production additionally requires
+`--production-confirmation I_UNDERSTAND_THIS_RESUMES_A_PROVIDER_MUTATION`.
+Unset both shell credentials immediately after the drill.
+
 Promote one flag at a time to production and observe a controlled cohort before
 opening the next. A failure in one provider must never block room commands,
 handoff to the other provider, or the other publish destination.
@@ -424,6 +470,52 @@ operator supplies both `--allow-production` and
 soak cannot be shortened below 60 minutes. Production load is not part of the
 initial pilot gate unless separately approved.
 
+### Staging WebSocket hibernation and revocation assurance
+
+Run the dedicated lifecycle check after the staging custom domain, D1, and
+Durable Object namespace are live. Cloudflare's hibernation lifecycle currently
+transitions an eligible Durable Object after 10 seconds without an event; the
+harness leaves both sockets completely idle for 15 seconds by default, then
+sends `hello` on the same host and guest connections. See Cloudflare's
+[Durable Object lifecycle](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/)
+and [hibernation API](https://developers.cloudflare.com/durable-objects/best-practices/websockets/)
+documentation for the platform contract.
+
+This check is intentionally destructive to its fixture: it rotates the guest
+invite and logs out the host session. Create a disposable staging room, join one
+guest normally, and run within five minutes of the host's passkey confirmation.
+Store this manifest outside Git with owner-only permissions:
+
+```json
+{
+  "version": 1,
+  "origin": "https://staging.unijam.ashlr.ai",
+  "disposable": true,
+  "roomId": "STAGE123",
+  "hostCookie": "__Host-unijam_host=opaque-session-token-from-browser",
+  "guestCookie": "__Host-unijam_guest=opaque-session-token-from-browser"
+}
+```
+
+Run:
+
+```bash
+chmod 600 ./hibernation-manifest.staging.json
+npm run assure:websocket:staging -- \
+  --manifest ./hibernation-manifest.staging.json \
+  --output ./test-results/assurance/staging-hibernation.json
+rm ./hibernation-manifest.staging.json
+```
+
+The command refuses every origin except the exact staging origin, and it
+validates that boundary before reading the manifest. It records only redacted
+evidence: the idle interval, initial and resumed sequence cursors, same-socket
+resume status for both actors, guest close code `1008` plus rejected stale-cookie
+upgrade `401`, host close code `1008` after logout plus rejected stale-cookie
+upgrade `401`, and pass/fail. It never records room/participant identity,
+cookies, invite capabilities, response bodies, or new invite links. A passing
+local WebSocket test is not a substitute for this deployed lifecycle evidence.
+
 ## 11. Pilot acceptance and observability
 
 Before each feature promotion, verify the complete room loop with Chromium and
@@ -488,6 +580,7 @@ The pilot is ready only when the private release record contains:
 - provider registration evidence and secret-name inventory (never values);
 - DNS before/after evidence proving child-only delegation;
 - migration source/export/import hash reconciliation;
+- passing staging WebSocket hibernation/revocation assurance evidence;
 - passing 10 × 20 smoke and 60-minute 25-participant soak reports;
 - accessibility scripts/results and provider failure-injection results;
 - named pilot accounts, feature-flag sequence, stop owner, and rollback owner;

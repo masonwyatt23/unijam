@@ -6,7 +6,7 @@ import { expiredRoomProjectionDeletion, ROOM_DETAIL_RETENTION_MS } from "../../l
 
 type Actor = { participantId: string; role: "host" | "cohost" | "guest"; nickname: string };
 type ProtocolResult =
-  | { type: "ack"; commandId: string; seq: number; duplicate: boolean; events: Array<{ payload: Record<string, unknown> }> }
+  | { type: "ack"; commandId: string; seq: number; duplicate: boolean; events: Array<{ type: string; payload: Record<string, unknown> }> }
   | { type: "error"; commandId?: string; code: string; latestSeq: number };
 
 const host: Actor = { participantId: "participant_host_01", role: "host", nickname: "Host" };
@@ -91,7 +91,7 @@ async function command(
 
 async function snapshot(stub: DurableObjectStub) {
   const response = await stub.fetch("https://room/state");
-  const body = await response.json<{ snapshot: { seq: number; suggestions: Record<string, unknown>; occurrences: Array<{ occurrenceId: string; recordingId: string; status: string; cosignerIds: string[]; voterIds: string[] }> } }>();
+  const body = await response.json<{ snapshot: { seq: number; suggestions: Record<string, unknown>; occurrences: Array<{ occurrenceId: string; recordingId: string; status: string; cosignerIds: string[]; voterIds: string[]; playbackConfirmedAtMs?: number }> } }>();
   return body.snapshot;
 }
 
@@ -183,6 +183,27 @@ describe("RoomDurableObject serialized authority", () => {
     const state = await snapshot(restartedStub);
     expect(state.suggestions).toHaveProperty("sug_before_evict_01");
     expect(state.seq).toBe(accepted.type === "ack" ? accepted.seq : -1);
+  });
+
+  it("records requested, opened, and host-confirmed handoffs without inferring playback", async () => {
+    const stub = await newRoom("handoff-observations");
+    await command(stub, guest, "command_stage_handoff_01", "suggestion.stage", {
+      suggestionId: "sug_handoff_track_01", recordingId: "rec_handoff_track_01", title: "Handoff track",
+    });
+    await command(stub, host, "command_approve_handoff_01", "suggestion.approve", { suggestionId: "sug_handoff_track_01" });
+    const occurrence = (await snapshot(stub)).occurrences.find((item) => item.status === "now");
+    expect(occurrence).toBeDefined();
+
+    const requested = await command(stub, guest, "command_handoff_request_01", "handoff.request", { occurrenceId: occurrence!.occurrenceId, provider: "spotify" });
+    const opened = await command(stub, guest, "command_handoff_open_01", "handoff.open", { occurrenceId: occurrence!.occurrenceId, provider: "spotify" });
+    const forbiddenConfirm = await command(stub, guest, "command_handoff_confirm_guest_01", "handoff.confirm", { occurrenceId: occurrence!.occurrenceId, provider: "spotify" });
+    const confirmed = await command(stub, host, "command_handoff_confirm_host_01", "handoff.confirm", { occurrenceId: occurrence!.occurrenceId, provider: "spotify" });
+
+    expect(requested).toMatchObject({ type: "ack", events: [{ type: "handoff.requested" }] });
+    expect(opened).toMatchObject({ type: "ack", events: [{ type: "handoff.opened" }] });
+    expect(forbiddenConfirm).toMatchObject({ type: "error", code: "FORBIDDEN" });
+    expect(confirmed).toMatchObject({ type: "ack", events: [{ type: "handoff.host_confirmed" }] });
+    expect((await snapshot(stub)).occurrences[0].playbackConfirmedAtMs).toBeUndefined();
   });
 
   it("imports the complete verified legacy export into room-local SQLite", async () => {
@@ -328,6 +349,14 @@ describe("RoomDurableObject serialized authority", () => {
     expect(rotateResponse.status).toBe(200);
     const closeEvent = await closed;
     expect(closeEvent.code).toBe(1008);
+    expect(await command(stub, host, "command_rotate_invite_stale_01", "room.invite.rotate", { inviteEpoch: 2 }))
+      .toMatchObject({ type: "error", code: "CONTROL_ENDPOINT_REQUIRED" });
+    const staleControl = await stub.fetch("https://room/commands", {
+      method: "POST",
+      headers: actorHeaders(host, true),
+      body: JSON.stringify({ commandId: "command_rotate_invite_stale_control_01", action: "room.invite.rotate", payload: { inviteEpoch: 2 } }),
+    });
+    expect(await staleControl.json()).toMatchObject({ type: "error", code: "COMMAND_REJECTED" });
   });
 
   it("revalidates guest revocation in D1 before every WebSocket message", async () => {

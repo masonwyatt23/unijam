@@ -6,6 +6,8 @@ import {
   confirmPublishPreview,
   createDestinationPublishState,
   createPublishPreview,
+  publishRecoveryMarker,
+  recoveryMarkerFromDescription,
   recordPublishAttemptOutcome,
   recordPublishReconciliation,
   startPublishAttempt,
@@ -39,6 +41,11 @@ function confirmed(provider: "spotify" | "apple_music") {
 test("preview, operation, and item keys are stable while owner confirmation is immutable", () => {
   assert.deepEqual(preview("spotify"), preview("spotify"));
   const value = preview("spotify");
+  assert.equal(
+    recoveryMarkerFromDescription(value.destination.description),
+    publishRecoveryMarker(value.previewId.replace(/^preview:/, "publish:")),
+  );
+  assert.ok(value.destination.description.length <= 300);
   assert.equal(new Set(value.items.map(({ itemKey }) => itemKey)).size, 2);
   assert.throws(
     () => confirmPublishPreview(value, {

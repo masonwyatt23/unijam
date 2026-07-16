@@ -8,6 +8,7 @@ import type {
   ProviderPlaylistSnapshot,
   ProviderRequestContext,
 } from "../lib/providers/contracts.ts";
+import { recoveryMarkerFromDescription } from "../lib/publishing/model.ts";
 import { inferEdition, inferVersion, isRecord, numberValue, stringValue } from "./catalog-shape.ts";
 import { invalidProviderResponse } from "./errors.ts";
 import { providerFetch, providerJson } from "./http.ts";
@@ -25,6 +26,23 @@ export interface AppleMusicAdapterOptions {
 
 function objectResponse(value: unknown): value is Record<string, unknown> {
   return isRecord(value);
+}
+
+function appleMusicPlaylistUrl(value: unknown): string | undefined {
+  const raw = stringValue(value);
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw);
+    return url.protocol === "https:" && url.hostname === "music.apple.com" && url.pathname.startsWith("/us/playlist/")
+      ? url.href
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function appleMusicDescription(value: unknown): string | undefined {
+  return stringValue(value) ?? (isRecord(value) ? stringValue(value.standard) : undefined);
 }
 
 function songCandidate(value: unknown): CatalogCandidate | null {
@@ -139,14 +157,22 @@ export class AppleMusicAdapter implements ProviderAdapter {
   ): Promise<ProviderPlaylistSnapshot> {
     const body = await this.json(
       "/me/library/playlists",
-      { method: "POST", body: JSON.stringify({ attributes: { name: request.name, description: request.description, isPublic: false } }) },
+      { method: "POST", body: JSON.stringify({ attributes: { name: request.name, description: request.description } }) },
       true,
       true,
     );
     const data = Array.isArray(body.data) ? body.data : [];
     const playlistId = data[0] && isRecord(data[0]) ? stringValue(data[0].id) : undefined;
     if (!playlistId) throw invalidProviderResponse("apple_music", true);
-    return { provider: "apple_music", playlistId, items: [], observedAtMs: (this.options.now ?? Date.now)() };
+    const attributes = data[0] && isRecord(data[0]) && isRecord(data[0].attributes) ? data[0].attributes : undefined;
+    const destinationUrl = appleMusicPlaylistUrl(attributes?.url);
+    return {
+      provider: "apple_music",
+      playlistId,
+      ...(destinationUrl ? { destinationUrl } : {}),
+      items: [],
+      observedAtMs: (this.options.now ?? Date.now)(),
+    };
   }
 
   async readPlaylist(
@@ -154,7 +180,12 @@ export class AppleMusicAdapter implements ProviderAdapter {
     playlistId: string,
   ): Promise<ProviderPlaylistSnapshot> {
     if (!playlistId.trim()) throw new Error("playlist ID is required");
+    const summary = await this.json(`/me/library/playlists/${encodeURIComponent(playlistId)}`, {}, false, true);
+    const summaryData = Array.isArray(summary.data) && isRecord(summary.data[0]) ? summary.data[0] : undefined;
+    const attributes = summaryData && isRecord(summaryData.attributes) ? summaryData.attributes : undefined;
+    const description = appleMusicDescription(attributes?.description);
     const items: { providerRecordingId: string; position: number }[] = [];
+    let rawItemCount = 0;
     let next: string | null = `${API}/me/library/playlists/${encodeURIComponent(playlistId)}/tracks?limit=100`;
     for (let page = 0; next && page < 100; page += 1) {
       const url: URL = new URL(next, API);
@@ -163,12 +194,27 @@ export class AppleMusicAdapter implements ProviderAdapter {
       }
       const body = await providerJson(url, { headers: this.headers(false, true) }, { provider: "apple_music", fetcher: this.options.fetcher, now: this.options.now }, objectResponse);
       for (const item of Array.isArray(body.data) ? body.data : []) {
-        const id = isRecord(item) ? stringValue(item.id) : undefined;
-        if (id) items.push({ providerRecordingId: id, position: items.length });
+        rawItemCount += 1;
+        const itemAttributes = isRecord(item) && isRecord(item.attributes) ? item.attributes : undefined;
+        const playParams = itemAttributes && isRecord(itemAttributes.playParams) ? itemAttributes.playParams : undefined;
+        const catalogId = stringValue(playParams?.catalogId);
+        if (!catalogId || !APPLE_CATALOG_ID.test(catalogId)) throw invalidProviderResponse("apple_music");
+        items.push({ providerRecordingId: catalogId, position: items.length });
       }
       next = body.next === null ? null : stringValue(body.next) ?? null;
     }
-    return { provider: "apple_music", playlistId, items, observedAtMs: (this.options.now ?? Date.now)() };
+    return {
+      provider: "apple_music",
+      playlistId,
+      ...(stringValue(attributes?.url) && appleMusicPlaylistUrl(attributes?.url) ? { destinationUrl: appleMusicPlaylistUrl(attributes?.url) } : {}),
+      ...(stringValue(attributes?.name) ? { name: stringValue(attributes?.name) } : {}),
+      ...(description ? { recoveryMarker: recoveryMarkerFromDescription(description) } : {}),
+      rawItemCount,
+      ...(typeof attributes?.isPublic === "boolean" ? { isPrivate: attributes.isPublic === false } : {}),
+      ownershipVerified: attributes?.canEdit === true,
+      items,
+      observedAtMs: (this.options.now ?? Date.now)(),
+    };
   }
 
   async appendItems(

@@ -241,3 +241,89 @@ test("a failed join keeps the cleared capability available for one retry", async
   await expect(page).toHaveURL(/\/room\/ROOM1234$/);
   expect(capabilities).toEqual(["secret-capability", "secret-capability"]);
 });
+
+test("host workspace lists active rooms and ended recaps from the registry", async ({ page }) => {
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ data: { accountId: "account_12345678", displayName: "Room Host", recentPasskey: true, recoveryEnrollmentAvailable: false }, error: null, requestId: "req_host" }),
+  }));
+  await page.route("**/api/v1/rooms", (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ data: { rooms: [
+      { roomId: "ROOM1234", lifecycle: "active", inviteEpoch: 2, createdAtMs: 1_700_000_000_000, updatedAtMs: 1_700_000_001_000, endedAtMs: null },
+      { roomId: "ENDED123", lifecycle: "ended", inviteEpoch: 1, createdAtMs: 1_699_000_000_000, updatedAtMs: 1_700_000_002_000, endedAtMs: 1_700_000_002_000 },
+    ] }, error: null, requestId: "req_rooms" }),
+  }));
+
+  await gotoReady(page, "/host");
+  await expect(page.getByRole("link", { name: /Room ROOM1234/ })).toHaveAttribute("href", "/room/ROOM1234");
+  await expect(page.getByRole("link", { name: /Room ENDED123/ })).toHaveAttribute("href", "/room/ENDED123/recap");
+});
+
+test("host can replace and copy the live room invite with an explicit warning", async ({ page }) => {
+  await mockRoom(page, "host");
+  await page.route("**/api/v1/rooms/ROOM1234/invite/rotate", (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ data: { roomId: "ROOM1234", inviteEpoch: 2, guestInvite: "https://staging.unijam.ashlr.ai/join/ROOM1234#cap=replaced-capability" }, error: null, requestId: "req_rotate" }),
+  }));
+
+  await gotoReady(page, "/room/ROOM1234");
+  await page.getByRole("button", { name: "Replace invite" }).click();
+  await expect(page.getByText(/closes every current guest session/i)).toBeVisible();
+  await page.getByRole("button", { name: "Replace invite", exact: true }).last().click();
+  await expect(page.getByRole("button", { name: "Copy new invite" })).toBeVisible();
+  await expect(page.getByRole("status")).toContainText("Previous guest sessions were closed");
+});
+
+test("native handoff records request and host confirmation around an exact provider link", async ({ page }) => {
+  const nowSnapshot = { ...snapshot, occurrences: [{ occurrenceId: "occ_now12345", recordingId: "rec_now12345", suggestionId: "sug_now12345", title: "Confirmed Pick", status: "now", position: 0, cosignerIds: [], voterIds: [] }] };
+  await mockRoom(page, "host", nowSnapshot);
+  const actions: string[] = [];
+  await page.route("**/api/v1/rooms/ROOM1234/handoff/spotify", (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ data: { occurrenceId: "occ_now12345", recordingId: "rec_now12345", title: "Confirmed Pick", provider: "spotify", links: { universalUrl: "https://open.spotify.com/track/4iV5W9uYEdYUVa79Axb7Rh", nativeUri: "spotify:track:4iV5W9uYEdYUVa79Axb7Rh", storefront: "US" } }, error: null, requestId: "req_handoff" }),
+  }));
+  await page.route("**/api/v1/rooms/ROOM1234/commands", (route) => {
+    actions.push((route.request().postDataJSON() as { action: string }).action);
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: { type: "ack", seq: 5 }, error: null, requestId: "req_command" }) });
+  });
+
+  await gotoReady(page, "/room/ROOM1234/handoff/spotify");
+  await page.getByRole("button", { name: "Prepare Spotify handoff" }).click();
+  await expect(page.getByRole("link", { name: /Open Confirmed Pick on Spotify/ })).toHaveAttribute("href", "https://open.spotify.com/track/4iV5W9uYEdYUVa79Axb7Rh");
+  await page.getByRole("button", { name: "Confirm handoff opened" }).click();
+  await expect(page.getByRole("button", { name: "Handoff confirmed" })).toBeDisabled();
+  expect(actions).toEqual(["handoff.request", "handoff.confirm"]);
+  const accessibility = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"]).analyze();
+  expect(accessibility.violations.filter(({ impact }) => impact === "serious" || impact === "critical")).toEqual([]);
+});
+
+test("immutable publishing completes through preview, owner confirmation, and status", async ({ page }) => {
+  const publishSnapshot = { ...snapshot, occurrences: [{ occurrenceId: "occ_now12345", recordingId: "rec_now12345", suggestionId: "sug_now12345", title: "Confirmed Pick", status: "played", position: 0, cosignerIds: [], voterIds: [], playbackConfirmedAtMs: 1_700_000_001_000 }] };
+  const immutablePreview = { previewId: "preview:spotify:ROOM1234:r4:account", payloadFingerprint: "fingerprint-v1", roomRevision: 4, provider: "spotify", destination: { kind: "new_private_playlist", name: "UniJam ROOM1234", description: "Created from a live UniJam room\n[UniJam recovery unijam:v1:create_playlist:0123456789abcdef]" }, items: [{ canonicalRecordingId: "rec_now12345", providerRecordingId: "4iV5W9uYEdYUVa79Axb7Rh", position: 0, itemKey: "item-1" }], createdAtMs: 1_700_000_002_000 };
+  await mockRoom(page, "host", publishSnapshot);
+  await page.route("**/api/v1/rooms/ROOM1234/publish-preview", (route) => route.fulfill({
+    status: 201, contentType: "application/json",
+    body: JSON.stringify({ data: immutablePreview, error: null, requestId: "req_preview" }),
+  }));
+  await page.route("**/api/v1/rooms/ROOM1234/publish-confirmation", (route) => route.fulfill({
+    status: 202, contentType: "application/json",
+    body: JSON.stringify({ data: { operationId: "publish:spotify:ROOM1234:r4:account" }, error: null, requestId: "req_confirm" }),
+  }));
+  await page.route(/\/api\/v1\/rooms\/ROOM1234\/publish\/operations\/publish%3Aspotify%3AROOM1234%3Ar4%3Aaccount$/, (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ data: { operationId: "publish:spotify:ROOM1234:r4:account", provider: "spotify", destinationPlaylistId: "3cEYpjA9oz9GiPac4AsH4n", destinationUrl: "https://open.spotify.com/playlist/3cEYpjA9oz9GiPac4AsH4n", state: { operation: { preview: immutablePreview }, phase: "succeeded", attempt: 1, appliedItemKeys: ["item-1"], pendingItemKeys: [] }, recoveryRequired: null, updatedAtMs: 1_700_000_003_000 }, error: null, requestId: "req_operation" }),
+  }));
+
+  await gotoReady(page, "/room/ROOM1234/publish");
+  await page.getByRole("button", { name: "Review immutable preview" }).click();
+  await expect(page.getByText("Fingerprint locked")).toBeVisible();
+  await page.getByRole("checkbox", { name: /Create this exact private playlist/ }).check();
+  await page.getByRole("button", { name: "Confirm and publish" }).click();
+  await expect(page.getByRole("heading", { name: "Published" })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Open UniJam ROOM1234 on Spotify/ })).toHaveAttribute("href", "https://open.spotify.com/playlist/3cEYpjA9oz9GiPac4AsH4n");
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Published" })).toBeVisible();
+  const accessibility = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"]).analyze();
+  expect(accessibility.violations.filter(({ impact }) => impact === "serious" || impact === "critical")).toEqual([]);
+});

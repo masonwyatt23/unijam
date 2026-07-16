@@ -11,7 +11,8 @@ and authenticate every non-health request with `CONNECTOR_SHARED_SECRET`.
 - Queue binding `PUBLISH_QUEUE` plus a consumer for publish and reconciliation messages shaped as
   `{ version: 1, type: "publish_destination" | "reconcile_destination",
   operationId }`.
-- Secrets: `CONNECTOR_SHARED_SECRET`, `TOKEN_ENCRYPTION_KEY_B64URL` (exactly 32
+- Secrets: `CONNECTOR_SHARED_SECRET`, `CONNECTOR_OPERATOR_SECRET`,
+  `TOKEN_ENCRYPTION_KEY_B64URL` (exactly 32
   random bytes, base64url), `TOKEN_KEY_VERSION`, `SPOTIFY_CLIENT_ID`,
   `APPLE_TEAM_ID`, `APPLE_KEY_ID`, and `APPLE_PRIVATE_KEY_JWK` (private P-256
   JWK). Spotify uses Authorization Code with PKCE and therefore sends the
@@ -59,6 +60,7 @@ must never forward client-asserted authority fields directly.
 | `POST /v1/publish/operation` | `{ accountId, operationId }` |
 | `POST /v1/publish/retry` | `{ accountId, operationId }` |
 | `POST /v1/publish/cancel` | `{ accountId, operationId }` |
+| `POST /v1/operator/publish/recover-playlist` | `{ operationId, expectedRecoveryMarker, destinationPlaylistId }` |
 
 `provider` is `spotify` or `apple_music`. Catalog `mode` is `recording_id`,
 `isrc`, or `search`. Preview `items` contain only
@@ -66,6 +68,19 @@ must never forward client-asserted authority fields directly.
 connector-persisted preview and compares its fingerprint; the caller cannot
 replace the approved destination or item list. Confirm and retry enqueue work,
 while operation status and cancel affect only that provider destination.
+Operation status includes `destinationUrl` only when the provider returned a
+validated official HTTPS URL. Spotify create responses normally provide one;
+Apple Music private library-playlist responses do not guarantee a share URL,
+so callers must support `null` and must never construct an Apple Music slug.
+
+Operator recovery additionally requires
+`X-UniJam-Operator-Authorization: Bearer <CONNECTOR_OPERATOR_SECRET>`. The
+operator must supply the exact persisted recovery marker. The connector reads
+the candidate playlist with the operation's encrypted provider connection,
+requires exact name, embedded recovery marker, private/editable ownership, and
+zero raw items before atomically attaching it. Resolution evidence retains only
+a destination hash and nonreversible operator-credential fingerprint. The
+same request is idempotent; a different marker or playlist is rejected.
 
 ## Operational boundaries
 

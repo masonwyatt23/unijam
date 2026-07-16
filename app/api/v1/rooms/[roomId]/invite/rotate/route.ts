@@ -17,22 +17,25 @@ export async function POST(request: Request, context: Context): Promise<Response
   const capability = randomToken();
   const nextEpoch = registry.invite_epoch + 1;
   const now = Date.now();
+  const runtime = env as RoomAuthorityEnv;
+  const authority = await roomStub(runtime, roomId).fetch(new Request("https://room.internal/commands", {
+    method: "POST",
+    headers: { ...Object.fromEntries(actorHeaders({ participantId: host.account_id, role: "host", nickname: host.display_name }, roomId)), "Content-Type": "application/json", "X-UniJam-Control-Action": "true" },
+    // The target epoch is the operation identity. If D1 fails after the DO
+    // commits, the retry replays this exact intent and can finalize D1.
+    body: JSON.stringify({ commandId: `rotate_${roomId}_${nextEpoch}`, action: "room.invite.rotate", payload: { inviteEpoch: nextEpoch } }),
+  }));
+  if (!authority.ok) return apiError("INVITE_ROTATION_CONFLICT", "Invite changed in another host session", 409, true);
   const [rotation] = await env.DB.batch([
     env.DB.prepare("UPDATE room_registry SET guest_capability_hash = ?, invite_epoch = ?, updated_at_ms = ? WHERE room_id = ? AND invite_epoch = ?")
       .bind(await hashOpaqueToken(capability), nextEpoch, now, roomId, registry.invite_epoch),
     env.DB.prepare("UPDATE guest_sessions SET revoked_at_ms = ? WHERE room_id = ? AND revoked_at_ms IS NULL").bind(now, roomId),
   ]);
   if ((rotation.meta.changes ?? 0) !== 1) return apiError("INVITE_ROTATION_CONFLICT", "Invite changed in another host session", 409, true);
-  const runtime = env as RoomAuthorityEnv;
-  const response = await roomStub(runtime, roomId).fetch(new Request("https://room.internal/commands", {
-    method: "POST",
-    headers: { ...Object.fromEntries(actorHeaders({ participantId: host.account_id, role: "host", nickname: host.display_name }, roomId)), "Content-Type": "application/json", "X-UniJam-Control-Action": "true" },
-    body: JSON.stringify({ commandId: `rotate_${crypto.randomUUID()}`, action: "room.invite.rotate", payload: { inviteEpoch: nextEpoch } }),
-  }));
   return apiResponse({
     roomId,
     inviteEpoch: nextEpoch,
     guestInvite: `${publicAppOrigin(env)}/join/${roomId}#cap=${encodeURIComponent(capability)}`,
-    roomEventRecorded: response.ok,
+    roomEventRecorded: true,
   });
 }

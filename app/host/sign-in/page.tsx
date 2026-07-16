@@ -2,7 +2,7 @@
 
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import { useState, type FormEvent } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Brand, CopyButton, KeyRound } from "@/app/components/product";
 
 type Mode = "passkey" | "recovery" | "enroll";
@@ -16,6 +16,9 @@ async function responseMessage(response: Response, fallback: string): Promise<st
 
 export default function HostSignInPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const requestedReturn = searchParams.get("returnTo") ?? "";
+  const passkeyReturnTo = /^\/room\/[A-Za-z0-9]{6,16}$/.test(requestedReturn) ? requestedReturn : "/host";
   const [mode, setMode] = useState<Mode>("passkey");
   const [status, setStatus] = useState<"idle" | "working" | "error">("idle");
   const [message, setMessage] = useState("");
@@ -40,7 +43,7 @@ export default function HostSignInPage() {
         body: JSON.stringify({ response: credential }),
       });
       if (!verification.ok) throw new Error(await responseMessage(verification, "Host access could not be verified."));
-      router.replace("/host");
+      router.replace(passkeyReturnTo);
     } catch (cause) {
       setStatus("error");
       setMessage(cause instanceof Error ? cause.message : "Host access could not be verified.");

@@ -5,6 +5,7 @@ import type { TokenEnvelope } from "../lib/providers/token-envelope.ts";
 export interface ConnectorEnv {
   readonly CONNECTOR_DB: D1Database;
   readonly CONNECTOR_SHARED_SECRET: string;
+  readonly CONNECTOR_OPERATOR_SECRET: string;
   readonly TOKEN_ENCRYPTION_KEY_B64URL: string;
   readonly TOKEN_KEY_VERSION: string;
   readonly PILOT_ACCOUNT_ALLOWLIST: string;
@@ -55,11 +56,13 @@ export interface PublishJobRecord {
   readonly connectionGeneration: number;
   readonly revision: number;
   readonly destinationPlaylistId?: string;
+  readonly destinationUrl?: string;
   readonly reconciliationAttempts?: number;
   readonly reconciliationNotBeforeMs?: number;
   readonly lastObservedProviderRecordingIds?: readonly string[];
   readonly mutationLease?: PublishMutationLease;
   readonly recoveryRequired?: PublishRecoveryRequired;
+  readonly recoveryResolution?: PublishRecoveryResolution;
   readonly state: DestinationPublishState;
   readonly updatedAtMs: number;
 }
@@ -79,6 +82,17 @@ export interface PublishRecoveryRequired {
   readonly marker: string;
   readonly detectedAtMs: number;
 }
+
+export interface PublishRecoveryResolution {
+  readonly marker: string;
+  readonly destinationPlaylistHash: string;
+  readonly resolvedBy: string;
+  readonly resolvedAtMs: number;
+}
+
+export type PublishRecoveryResult =
+  | { readonly kind: "recovered" | "already_recovered"; readonly job: PublishJobRecord }
+  | { readonly kind: "conflict" | "missing" | "revoked" };
 
 export type PublishLeaseResult =
   | { readonly kind: "acquired"; readonly job: PublishJobRecord }
@@ -106,7 +120,7 @@ export interface ConnectorStore {
   getPublishPreview(accountId: string, previewId: string, nowMs: number): Promise<StoredPublishPreview | null>;
   deletePublishPreview(accountId: string, previewId: string): Promise<void>;
   getPublishJob(operationId: string): Promise<PublishJobRecord | null>;
-  savePublishJob(job: PublishJobRecord): Promise<void>;
+  savePublishJob(job: PublishJobRecord): Promise<boolean>;
   acquirePublishMutation(input: {
     readonly operationId: string;
     readonly expectedRevision: number;
@@ -117,6 +131,15 @@ export interface ConnectorStore {
   }): Promise<PublishLeaseResult>;
   validatePublishMutation(operationId: string, leaseToken: string, connectionGeneration: number, nowMs: number): Promise<boolean>;
   completePublishMutation(job: PublishJobRecord, leaseToken: string): Promise<boolean>;
+  recoverPublishPlaylist(input: {
+    readonly operationId: string;
+    readonly expectedMarker: string;
+    readonly destinationPlaylistId: string;
+    readonly destinationUrl?: string;
+    readonly destinationPlaylistHash: string;
+    readonly resolvedBy: string;
+    readonly resolvedAtMs: number;
+  }): Promise<PublishRecoveryResult>;
 }
 
 export interface ConnectorQueueMessage {

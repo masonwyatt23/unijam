@@ -1,6 +1,7 @@
 import {
   recordPublishAttemptOutcome,
   recordPublishReconciliation,
+  publishRecoveryMarker,
   startPublishAttempt,
   type DestinationPublishState,
   type PublishAttemptOutcome,
@@ -56,11 +57,13 @@ function disposition(state: DestinationPublishState, nowMs: number): JobDisposit
 }
 
 function markerFor(job: PublishJobRecord, stage: PublishMutationStage): string {
-  return `unijam:v1:${stage}:${job.operationId}`;
+  return stage === "create_playlist"
+    ? publishRecoveryMarker(job.operationId)
+    : `unijam:v1:${stage}:${job.operationId}`;
 }
 
 async function saveAndReload(store: ConnectorStore, job: PublishJobRecord): Promise<PublishJobRecord | null> {
-  await store.savePublishJob(job);
+  if (!(await store.savePublishJob(job))) return null;
   return store.getPublishJob(job.operationId);
 }
 
@@ -205,7 +208,12 @@ export async function processPublishJob(
     }
     await dependencies.afterProviderMutation?.("create_playlist");
     if (!(await store.validatePublishMutation(job.operationId, lease.token, job.connectionGeneration, now()))) return { kind: "ack" };
-    const completed = { ...job, destinationPlaylistId: playlist.playlistId, updatedAtMs: now() };
+    const completed = {
+      ...job,
+      destinationPlaylistId: playlist.playlistId,
+      ...(playlist.destinationUrl ? { destinationUrl: playlist.destinationUrl } : {}),
+      updatedAtMs: now(),
+    };
     if (!(await store.completePublishMutation(completed, lease.token))) return { kind: "ack" };
     job = (await store.getPublishJob(job.operationId)) ?? completed;
   }

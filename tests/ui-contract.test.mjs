@@ -124,3 +124,41 @@ test("all planned product routes exist", async () => {
   ];
   for (const route of routes) assert.ok((await read(route)).length > 100, route);
 });
+
+test("pilot UI exposes real room, invite, handoff, and publishing operations", async () => {
+  const [host, room, publish, handoff] = await Promise.all([
+    read("app/host/page.tsx"),
+    read("app/room/[roomId]/page.tsx"),
+    read("app/room/[roomId]/publish/page.tsx"),
+    read("app/room/[roomId]/handoff/provider-handoff-page.tsx"),
+  ]);
+  assert.match(host, /fetch\("\/api\/v1\/rooms"/);
+  assert.doesNotMatch(host, /No room list yet|does not expose a host room index/);
+  assert.match(room, /invite\/rotate/);
+  assert.doesNotMatch(room, /Invite unavailable/);
+  assert.match(handoff, /handoff\.request/);
+  assert.match(handoff, /handoff\.open/);
+  assert.match(handoff, /handoff\.confirm/);
+  assert.match(publish, /publish-preview/);
+  assert.match(publish, /publish-confirmation/);
+  assert.match(publish, /action: "retry" \| "cancel"/);
+  assert.match(publish, /operations\/\$\{encodeURIComponent\(operationId\)\}\/\$\{action\}/);
+  assert.doesNotMatch(publish, /Publishing API not deployed|Publishing unavailable/);
+});
+
+test("room controls are retryable across the DO-to-D1 projection boundary", async () => {
+  const [end, rotate, state, authority] = await Promise.all([
+    read("app/api/v1/rooms/[roomId]/end/route.ts"),
+    read("app/api/v1/rooms/[roomId]/invite/rotate/route.ts"),
+    read("app/api/v1/rooms/[roomId]/state/route.ts"),
+    read("lib/server/room-authority.ts"),
+  ]);
+  assert.match(end, /commandId: `end_\$\{roomId\}_v1`/);
+  assert.match(end, /event\.type === "room\.ended"/);
+  assert.match(end, /ended_at_ms = COALESCE\(ended_at_ms, \?\)/);
+  assert.match(rotate, /commandId: `rotate_\$\{roomId\}_\$\{nextEpoch\}`/);
+  assert.match(authority, /allowEndedOwner\?: boolean/);
+  assert.match(state, /allowEndedOwner: true/);
+  assert.doesNotMatch(await read("app/api/v1/rooms/[roomId]/handoff/[provider]/route.ts"), /allowEndedOwner/);
+  assert.doesNotMatch(await read("app/api/v1/rooms/[roomId]/resolve/route.ts"), /allowEndedOwner/);
+});

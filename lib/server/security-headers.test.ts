@@ -8,6 +8,7 @@ test("production responses deny embedding and constrain MusicKit", () => {
   assert.match(headers["Content-Security-Policy"], /form-action 'self'/);
   assert.match(headers["Content-Security-Policy"], /upgrade-insecure-requests/);
   assert.match(headers["Content-Security-Policy"], /js-cdn\.music\.apple\.com/);
+  assert.match(headers["Content-Security-Policy"], /marketing\.services\.apple/);
   assert.match(headers["Content-Security-Policy"], /wss:\/\/unijam\.ashlr\.ai/);
   assert.equal(headers["X-Content-Type-Options"], "nosniff");
   assert.match(headers["Strict-Transport-Security"], /max-age=31536000/);

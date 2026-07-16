@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createPublishPreview, confirmPublishPreview, createDestinationPublishState, recordPublishAttemptOutcome, startPublishAttempt } from "../lib/publishing/model.ts";
+import { createPublishPreview, confirmPublishPreview, createDestinationPublishState, publishRecoveryMarker, recordPublishAttemptOutcome, startPublishAttempt } from "../lib/publishing/model.ts";
 import type { ProviderAdapter } from "../lib/providers/contracts.ts";
 import type { MusicProvider } from "../lib/provider-state-engine.ts";
 import { AppleMusicAdapter, createAppleDeveloperToken } from "./apple-music.ts";
@@ -97,8 +97,15 @@ class MemoryStore implements ConnectorStore {
   async savePublishJob(job: PublishJobRecord) {
     const current = this.jobs.get(job.operationId);
     const generation = await this.getConnectionGeneration(job.accountId, job.connectionId, job.provider);
-    if (!current && generation === job.connectionGeneration) this.jobs.set(job.operationId, job);
-    else if (current && current.revision === job.revision && !current.mutationLease) this.jobs.set(job.operationId, { ...job, revision: job.revision + 1 });
+    if (!current && generation === job.connectionGeneration) {
+      this.jobs.set(job.operationId, job);
+      return true;
+    }
+    if (current && current.revision === job.revision && !current.mutationLease) {
+      this.jobs.set(job.operationId, { ...job, revision: job.revision + 1 });
+      return true;
+    }
+    return false;
   }
   async acquirePublishMutation(input: Parameters<ConnectorStore["acquirePublishMutation"]>[0]) {
     const job = this.jobs.get(input.operationId);
@@ -130,12 +137,48 @@ class MemoryStore implements ConnectorStore {
     this.jobs.set(job.operationId, { ...withoutLease, revision: current.revision + 1 });
     return true;
   }
+  async recoverPublishPlaylist(input: Parameters<ConnectorStore["recoverPublishPlaylist"]>[0]) {
+    const job = this.jobs.get(input.operationId);
+    if (!job) return { kind: "missing" as const };
+    const generation = await this.getConnectionGeneration(job.accountId, job.connectionId, job.provider);
+    if (generation !== job.connectionGeneration) return { kind: "revoked" as const };
+    if (
+      job.destinationPlaylistId === input.destinationPlaylistId &&
+      job.recoveryResolution?.marker === input.expectedMarker &&
+      job.recoveryResolution.destinationPlaylistHash === input.destinationPlaylistHash
+    ) {
+      return { kind: "already_recovered" as const, job };
+    }
+    if (
+      job.destinationPlaylistId || job.recoveryRequired?.marker !== input.expectedMarker ||
+      job.mutationLease
+    ) {
+      return { kind: "conflict" as const };
+    }
+    const recovered: PublishJobRecord = {
+      ...job,
+      destinationPlaylistId: input.destinationPlaylistId,
+      ...(input.destinationUrl ? { destinationUrl: input.destinationUrl } : {}),
+      recoveryRequired: undefined,
+      recoveryResolution: {
+        marker: input.expectedMarker,
+        destinationPlaylistHash: input.destinationPlaylistHash,
+        resolvedBy: input.resolvedBy,
+        resolvedAtMs: input.resolvedAtMs,
+      },
+      revision: job.revision + 1,
+      updatedAtMs: input.resolvedAtMs,
+    };
+    this.jobs.set(input.operationId, recovered);
+    return { kind: "recovered" as const, job: recovered };
+  }
 }
 
 function env(changes: Partial<ConnectorEnv> = {}): ConnectorEnv {
   return {
     CONNECTOR_DB: {} as D1Database,
     CONNECTOR_SHARED_SECRET: ["internal", "fixture", "secret"].join("-"),
+    CONNECTOR_OPERATOR_SECRET: ["operator", "fixture", "secret"].join("-"),
     TOKEN_ENCRYPTION_KEY_B64URL: encodeBase64Url(new Uint8Array(32).fill(7)),
     TOKEN_KEY_VERSION: ["fixture", "key", "v1"].join("-"),
     PILOT_ACCOUNT_ALLOWLIST: "allowed-account",
@@ -200,8 +243,9 @@ test("Spotify PKCE uses one-time state, S256, exact callback, and no client secr
 test("Spotify adapter uses current private-playlist and playlist-item contracts", async () => {
   const requests: Request[] = [];
   const responses = [
-    Response.json({ id: "playlist-fixture", snapshot_id: "snapshot-1" }),
-    Response.json({ snapshot_id: "snapshot-2" }),
+    Response.json({ id: "playlist-fixture", snapshot_id: "snapshot-1", external_urls: { spotify: "https://open.spotify.com/playlist/playlist-fixture" } }),
+    Response.json({ snapshot_id: "snapshot-2", name: "Fixture", description: "Synthetic", public: false, owner: { id: "owner-1" }, tracks: { total: 1 }, external_urls: { spotify: "https://open.spotify.com/playlist/playlist-fixture" } }),
+    Response.json({ id: "owner-1" }),
     Response.json({ items: [{ item: { id: "4uLU6hMCjMI75M1A2tKUQC", type: "track" } }], next: null }),
   ];
   const adapter = new SpotifyAdapter({
@@ -217,9 +261,12 @@ test("Spotify adapter uses current private-playlist and playlist-item contracts"
   assert.equal(requests[0].url, "https://api.spotify.com/v1/me/playlists");
   assert.deepEqual(await requests[0].json(), { name: "Fixture", description: "Synthetic", public: false });
   assert.equal(created.playlistId, "playlist-fixture");
+  assert.equal(created.destinationUrl, "https://open.spotify.com/playlist/playlist-fixture");
   const read = await adapter.readPlaylist(context, "playlist-fixture");
-  assert.match(requests[2].url, /limit=50/);
+  assert.match(requests[3].url, /limit=50/);
   assert.deepEqual(read.items, [{ providerRecordingId: "4uLU6hMCjMI75M1A2tKUQC", position: 0 }]);
+  assert.equal(read.rawItemCount, 1);
+  assert.equal(read.ownershipVerified, true);
 });
 
 test("provider failures map auth, Retry-After, 5xx writes, and malformed bodies safely", async () => {
@@ -242,6 +289,34 @@ test("provider failures map auth, Retry-After, 5xx writes, and malformed bodies 
     ),
     (error: unknown) => error instanceof ConnectorProviderError && error.failure.kind === "ambiguous_write",
   );
+});
+
+test("provider playlist links are accepted only from official HTTPS origins", async () => {
+  const spotify = new SpotifyAdapter({
+    accessToken: "access",
+    fetcher: async () => Response.json({
+      id: "playlist-safe",
+      external_urls: { spotify: "https://spotify.example/playlist/playlist-safe" },
+    }),
+  });
+  const spotifyCreated = await spotify.createPrivatePlaylist(
+    { requestId: "r", provider: "spotify", storefront: "US" },
+    { name: "Fixture", description: "Synthetic" },
+  );
+  assert.equal(spotifyCreated.destinationUrl, undefined);
+
+  const apple = new AppleMusicAdapter({
+    developerToken: "developer-token",
+    musicUserToken: "music-user-token",
+    fetcher: async () => Response.json({
+      data: [{ id: "library-playlist", attributes: { url: "https://music.apple.example/us/playlist/fake" } }],
+    }),
+  });
+  const appleCreated = await apple.createPrivatePlaylist(
+    { requestId: "r", provider: "apple_music", storefront: "US" },
+    { name: "Fixture", description: "Synthetic" },
+  );
+  assert.equal(appleCreated.destinationUrl, undefined);
 });
 
 test("Apple developer token is short lived and Music User Token is validated against US", async () => {
@@ -272,16 +347,17 @@ test("Apple developer token is short lived and Music User Token is validated aga
     musicUserToken: "music-user-fixture",
     fetcher: async (input, init) => {
       createRequest = new Request(input, init);
-      return Response.json({ data: [{ id: "library-playlist", type: "library-playlists" }] });
+      return Response.json({ data: [{ id: "library-playlist", type: "library-playlists", attributes: { url: "https://music.apple.com/us/playlist/fixture/pl.u-fixture" } }] });
     },
   });
-  await createAdapter.createPrivatePlaylist(
+  const createdPlaylist = await createAdapter.createPrivatePlaylist(
     { requestId: "r", provider: "apple_music", storefront: "US" },
     { name: "Fixture", description: "Synthetic" },
   );
   assert.deepEqual(await createRequest?.json(), {
-    attributes: { name: "Fixture", description: "Synthetic", isPublic: false },
+    attributes: { name: "Fixture", description: "Synthetic" },
   });
+  assert.equal(createdPlaylist.destinationUrl, "https://music.apple.com/us/playlist/fixture/pl.u-fixture");
 
   const developerResponse = await handleConnectorRequest(
     new Request("https://connector/v1/apple-music/developer-token", {
@@ -297,6 +373,34 @@ test("Apple developer token is short lived and Music User Token is validated aga
   assert.equal(developerBody.data.expiresAtMs, 1_000_000);
   assert.equal(developerBody.data.developerToken.split(".").length, 3);
   assert.equal(JSON.stringify(developerBody).includes(jwk.d!), false);
+});
+
+test("Apple playlist reconciliation maps library song IDs to catalog IDs and fails closed when unmappable", async () => {
+  const responses = [
+    Response.json({ data: [{ id: "p.library", attributes: { name: "Fixture", description: { standard: "Synthetic" }, isPublic: false, canEdit: true } }] }),
+    Response.json({ data: [{ id: "i.library-song", type: "library-songs", attributes: { playParams: { catalogId: "203709340" } } }], next: null }),
+  ];
+  const adapter = new AppleMusicAdapter({
+    developerToken: "developer",
+    musicUserToken: "user",
+    fetcher: async () => responses.shift()!,
+  });
+  const snapshot = await adapter.readPlaylist({ requestId: "r", provider: "apple_music", storefront: "US" }, "p.library");
+  assert.deepEqual(snapshot.items, [{ providerRecordingId: "203709340", position: 0 }]);
+  assert.equal(snapshot.rawItemCount, 1);
+  assert.equal(snapshot.ownershipVerified, true);
+
+  const malformed = new AppleMusicAdapter({
+    developerToken: "developer",
+    musicUserToken: "user",
+    fetcher: async (input) => String(input).includes("/tracks")
+      ? Response.json({ data: [{ id: "i.no-catalog-id", type: "library-songs", attributes: {} }], next: null })
+      : Response.json({ data: [{ id: "p.library", attributes: { canEdit: true } }] }),
+  });
+  await assert.rejects(
+    malformed.readPlaylist({ requestId: "r", provider: "apple_music", storefront: "US" }, "p.library"),
+    (error: unknown) => error instanceof ConnectorProviderError && error.failure.kind === "invalid_response",
+  );
 });
 
 test("router enforces internal auth, pilot allowlist, exact origin, encrypted storage, and disconnect", async () => {
@@ -628,6 +732,65 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
+test("confirmation re-enqueues an existing nonterminal operation after a Queue delivery failure", async () => {
+  const store = new MemoryStore();
+  const job = confirmedJob();
+  activate(store, job);
+  const preview = job.state.operation.preview;
+  store.previews.set(`${job.accountId}:${preview.previewId}`, {
+    preview,
+    connectionId: job.connectionId,
+    expiresAtMs: 30_000,
+  });
+  let sends = 0;
+  const connectorEnv = env({
+    PUBLISH_QUEUE: { send: async () => { sends += 1; if (sends === 1) throw new Error("queue unavailable"); } } as unknown as Queue,
+  });
+  const request = () => new Request("https://connector/v1/publish/confirm", {
+    method: "POST",
+    headers: { Authorization: "Bearer internal-fixture-secret", "Content-Type": "application/json" },
+    body: JSON.stringify({
+      accountId: job.accountId,
+      previewId: preview.previewId,
+      payloadFingerprint: preview.payloadFingerprint,
+      confirmedAtMs: 3_000,
+    }),
+  });
+  assert.equal((await handleConnectorRequest(request(), connectorEnv, { store, now: () => 3_000 })).status, 500);
+  assert.equal(store.jobs.get(job.operationId)?.state.phase, "confirmed");
+  assert.equal((await handleConnectorRequest(request(), connectorEnv, { store, now: () => 3_001 })).status, 202);
+  assert.equal(sends, 2);
+});
+
+test("retry and cancel report a conflict when a provider mutation lease wins the CAS", async () => {
+  const store = new MemoryStore();
+  const base = confirmedJob();
+  activate(store, base);
+  store.jobs.set(base.operationId, {
+    ...base,
+    mutationLease: {
+      token: "active-lease",
+      stage: "create_playlist",
+      acquiredAtMs: 3_000,
+      expiresAtMs: 33_000,
+      marker: publishRecoveryMarker(base.operationId),
+    },
+  });
+  const connectorEnv = env({ PUBLISH_QUEUE: { send: async () => undefined } as unknown as Queue });
+  const request = (path: "retry" | "cancel") => new Request(`https://connector/v1/publish/${path}`, {
+    method: "POST",
+    headers: { Authorization: "Bearer internal-fixture-secret", "Content-Type": "application/json" },
+    body: JSON.stringify({ accountId: base.accountId, operationId: base.operationId }),
+  });
+  const retried = await handleConnectorRequest(request("retry"), connectorEnv, { store, now: () => 4_000 });
+  assert.equal(retried.status, 409);
+  assert.equal((await retried.json() as { error: { code: string } }).error.code, "OPERATION_CHANGED");
+  const cancelled = await handleConnectorRequest(request("cancel"), connectorEnv, { store, now: () => 4_001 });
+  assert.equal(cancelled.status, 409);
+  assert.equal((await cancelled.json() as { error: { code: string } }).error.code, "OPERATION_IN_FLIGHT");
+  assert.equal(store.jobs.get(base.operationId)?.state.phase, "confirmed");
+});
+
 test("concurrent duplicate deliveries acquire one fence and perform one provider mutation", async () => {
   const store = new MemoryStore();
   const job = confirmedJob();
@@ -692,6 +855,99 @@ test("crash-after-create never replays playlist creation and requires operator r
   assert.equal(creates, 1);
   assert.equal(store.jobs.get(job.operationId)?.recoveryRequired?.code, "PLAYLIST_CREATION_OUTCOME_UNKNOWN");
   assert.match(store.jobs.get(job.operationId)?.recoveryRequired?.marker ?? "", /^unijam:v1:create_playlist:/);
+});
+
+test("operator recovery requires dual credentials, verifies an empty playlist, and resumes idempotently", async () => {
+  const store = new MemoryStore();
+  const base = confirmedJob();
+  activate(store, base);
+  const marker = publishRecoveryMarker(base.operationId);
+  const state = recordPublishAttemptOutcome(startPublishAttempt(base.state, 3_000), {
+    kind: "ambiguous_timeout",
+    safeError: "Playlist creation outcome is unknown",
+  });
+  const job: PublishJobRecord = {
+    ...base,
+    state,
+    recoveryRequired: { code: "PLAYLIST_CREATION_OUTCOME_UNKNOWN", marker, detectedAtMs: 3_001 },
+  };
+  store.jobs.set(job.operationId, job);
+  const queued: unknown[] = [];
+  let observedItems = [{ providerRecordingId: "unexpected-item", position: 0 }];
+  let reads = 0;
+  const adapter = {
+    provider: "spotify",
+    async readPlaylist() {
+      reads += 1;
+      return {
+        provider: "spotify",
+        playlistId: "playlist-recovered",
+        destinationUrl: "https://open.spotify.com/playlist/playlist-recovered",
+        name: job.state.operation.preview.destination.name,
+        recoveryMarker: marker,
+        rawItemCount: observedItems.length,
+        isPrivate: true,
+        ownershipVerified: true,
+        items: observedItems,
+        observedAtMs: 4_000,
+      };
+    },
+  } as unknown as ProviderAdapter;
+  const connectorEnv = env({
+    PUBLISH_QUEUE: { send: async (message: unknown) => { queued.push(message); } } as unknown as Queue,
+  });
+  const request = (operatorSecret: string, expectedRecoveryMarker = marker) => new Request("https://connector/v1/operator/publish/recover-playlist", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer internal-fixture-secret",
+      "X-UniJam-Operator-Authorization": `Bearer ${operatorSecret}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      operationId: job.operationId,
+      expectedRecoveryMarker,
+      destinationPlaylistId: "playlist-recovered",
+    }),
+  });
+
+  const unauthorized = await handleConnectorRequest(request("wrong-secret"), connectorEnv, { store, recoveryAdapter: adapter, now: () => 4_000 });
+  assert.equal(unauthorized.status, 403);
+  assert.equal(reads, 0);
+  const conflict = await handleConnectorRequest(request("operator-fixture-secret", "wrong-marker"), connectorEnv, { store, recoveryAdapter: adapter, now: () => 4_000 });
+  assert.equal(conflict.status, 409);
+  assert.equal(reads, 0);
+  const nonempty = await handleConnectorRequest(request("operator-fixture-secret"), connectorEnv, { store, recoveryAdapter: adapter, now: () => 4_000 });
+  assert.equal(nonempty.status, 409);
+  assert.equal((await nonempty.json() as { error: { code: string } }).error.code, "RECOVERY_PLAYLIST_NOT_EMPTY");
+  assert.equal(reads, 1);
+
+  observedItems = [];
+  const recovered = await handleConnectorRequest(request("operator-fixture-secret"), connectorEnv, { store, recoveryAdapter: adapter, now: () => 4_001 });
+  assert.equal(recovered.status, 202);
+  assert.equal((await recovered.json() as { data: { status: string } }).data.status, "recovered");
+  assert.equal(store.jobs.get(job.operationId)?.destinationPlaylistId, "playlist-recovered");
+  assert.equal(store.jobs.get(job.operationId)?.destinationUrl, "https://open.spotify.com/playlist/playlist-recovered");
+  assert.equal(store.jobs.get(job.operationId)?.recoveryRequired, undefined);
+  assert.match(store.jobs.get(job.operationId)?.recoveryResolution?.resolvedBy ?? "", /^operator-credential:[A-Za-z0-9_-]{20}$/);
+  assert.notEqual(store.jobs.get(job.operationId)?.recoveryResolution?.destinationPlaylistHash, "playlist-recovered");
+  assert.deepEqual(queued, [{ version: 1, type: "reconcile_destination", operationId: job.operationId }]);
+
+  const status = await handleConnectorRequest(new Request("https://connector/v1/publish/operation", {
+    method: "POST",
+    headers: { Authorization: "Bearer internal-fixture-secret", "Content-Type": "application/json" },
+    body: JSON.stringify({ accountId: job.accountId, operationId: job.operationId }),
+  }), connectorEnv, { store, now: () => 4_001 });
+  assert.equal(status.status, 200);
+  assert.equal(
+    (await status.json() as { data: { destinationUrl: string } }).data.destinationUrl,
+    "https://open.spotify.com/playlist/playlist-recovered",
+  );
+
+  const repeated = await handleConnectorRequest(request("operator-fixture-secret"), connectorEnv, { store, recoveryAdapter: adapter, now: () => 4_002 });
+  assert.equal(repeated.status, 202);
+  assert.equal((await repeated.json() as { data: { status: string } }).data.status, "already_recovered");
+  assert.equal(reads, 2);
+  assert.equal(queued.length, 2);
 });
 
 test("crash-after-append reconciles committed items before any retry", async () => {

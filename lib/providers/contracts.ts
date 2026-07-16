@@ -20,6 +20,12 @@ export interface ProviderPlaylistItem {
 export interface ProviderPlaylistSnapshot {
   readonly provider: MusicProvider;
   readonly playlistId: string;
+  readonly destinationUrl?: string;
+  readonly name?: string;
+  readonly recoveryMarker?: string;
+  readonly rawItemCount?: number;
+  readonly isPrivate?: boolean;
+  readonly ownershipVerified?: boolean;
   readonly revisionToken?: string;
   readonly items: readonly ProviderPlaylistItem[];
   readonly observedAtMs: number;

@@ -89,7 +89,7 @@ const defaultRules: RoomRules = {
 const hostActions = new Set([
   "suggestion.approve", "suggestion.reject", "queue.reorder", "queue.advance", "queue.skip",
   "playback.confirm", "room.rules.update", "room.end", "room.invite.rotate", "participant.moderate",
-  "legacy.import",
+  "handoff.confirm", "legacy.import",
 ]);
 
 function protocolError(code: string, message: string, latestSeq: number, commandId?: string, retryable = false): RoomProtocolError {
@@ -662,6 +662,16 @@ export class RoomDurableObject extends DurableObject<RoomEnv> {
         emit("handoff.requested", { occurrenceId, provider });
         break;
       }
+      case "handoff.open":
+      case "handoff.confirm": {
+        const occurrenceId = requiredId(command.payload, "occurrenceId", "occ_");
+        const provider = command.payload.provider;
+        if (provider !== "spotify" && provider !== "apple_music") throw new RoomCommandRejection("Provider is unsupported");
+        const occurrence = snapshot.occurrences.find((item) => item.occurrenceId === occurrenceId && !["played", "skipped"].includes(item.status));
+        if (!occurrence) throw new RoomCommandRejection("Queue occurrence is no longer active");
+        emit(command.action === "handoff.open" ? "handoff.opened" : "handoff.host_confirmed", { occurrenceId, provider });
+        break;
+      }
       case "playback.confirm": {
         const occurrenceId = requiredId(command.payload, "occurrenceId", "occ_");
         const occurrence = snapshot.occurrences.find((item) => item.occurrenceId === occurrenceId && item.status === "now");
@@ -720,7 +730,7 @@ export class RoomDurableObject extends DurableObject<RoomEnv> {
         break;
       case "room.invite.rotate": {
         const inviteEpoch = Number(command.payload.inviteEpoch);
-        if (!Number.isSafeInteger(inviteEpoch) || inviteEpoch < 2) throw new Error("inviteEpoch is invalid");
+        if (!Number.isSafeInteger(inviteEpoch) || inviteEpoch !== snapshot.inviteEpoch + 1) throw new Error("inviteEpoch is invalid");
         snapshot.inviteEpoch = inviteEpoch;
         emit("room.invite_rotated", { inviteEpoch });
         break;

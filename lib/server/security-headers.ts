@@ -16,7 +16,7 @@ export function securityHeaders(environment: SecurityEnvironment): Record<string
       "form-action 'self'",
       "frame-ancestors 'none'",
       "frame-src https://embed.music.apple.com",
-      "img-src 'self' data: https://*.mzstatic.com",
+      "img-src 'self' data: https://*.mzstatic.com https://marketing.services.apple",
       "object-src 'none'",
       `script-src ${scriptSources}`,
       "style-src 'self' 'unsafe-inline'",

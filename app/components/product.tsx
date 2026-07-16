@@ -197,6 +197,17 @@ function initials(value: string): string {
 export function ProductShell({ children, guest = false, roomId, displayName, roomLabel }: { children: ReactNode; guest?: boolean; roomId?: string; displayName?: string; roomLabel?: string }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const menuButtonRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      menuButtonRef.current?.focus();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [open]);
   const navItems = useMemo(() => [
     { href: "/host", label: "Rooms", icon: Radio },
     ...(roomId ? [{ href: `/room/${roomId}/review`, label: "Pick review", icon: ListChecks }] : []),
@@ -207,7 +218,7 @@ export function ProductShell({ children, guest = false, roomId, displayName, roo
   const accountName = guest ? "Guest" : displayName ?? "Host session";
   return <div className={`product-shell${guest ? " is-guest" : ""}`}>
     <a href="#main-content" className="skip-link">Skip to main content</a>
-    <header className="mobile-bar"><Brand compact /><button className="icon-button" onClick={() => setOpen(!open)} aria-expanded={open} aria-controls="app-nav" aria-label="Toggle navigation">{open ? <X /> : <Menu />}</button></header>
+    <header className="mobile-bar"><Brand compact /><button ref={menuButtonRef} className="icon-button" onClick={() => setOpen(!open)} aria-expanded={open} aria-controls="app-nav" aria-label={open ? "Close navigation" : "Open navigation"}>{open ? <X /> : <Menu />}</button></header>
     <aside className={`rail${open ? " is-open" : ""}`} id="app-nav"><Brand />
       {guest ? <div className="guest-rail-copy"><span className="utility">GUEST ACCESS</span><strong>{roomName}</strong><p>Your session only opens this room.</p></div> : <nav aria-label="Host workspace">{navItems.map((item) => { const active = pathname === item.href; const Icon = item.icon; return <Link key={item.href} href={item.href} className={active ? "active" : ""} aria-current={active ? "page" : undefined}><Icon size={19} />{item.label}</Link>; })}</nav>}
       <div className="rail-bottom">{!guest && roomId && <Link href={`/room/${roomId}`} className="rail-live"><span className="live-dot" /> {roomName} <ArrowRight size={17} /></Link>}<div className="rail-account"><span className="avatar">{guest ? "G" : initials(accountName)}</span><span><strong>{accountName}</strong><small>{guest ? "Room-scoped session" : "Passkey secured"}</small></span><ChevronDown size={16} aria-hidden="true" /></div></div>
@@ -269,7 +280,6 @@ export function LivingSetlist({ snapshot, guest, onRefresh }: { snapshot: RoomSn
   }
   return <section className="setlist" aria-labelledby="setlist-title">
     <div className="section-heading"><div><p className="eyebrow">LIVING SETLIST</p><h2 id="setlist-title">Room queue</h2></div><span className="utility">{visibleCount} {visibleCount === 1 ? "SONG" : "SONGS"} · SEQ {snapshot.seq}</span></div>
-    <p className="sr-only" aria-live="polite">{announcement}</p>
     {announcement && <p className="setlist-feedback" role="status">{announcement}</p>}
     {visibleCount === 0 ? <div className="setlist-empty"><Music2 /><h3>No songs yet</h3><p>Approved picks will appear here in one continuous queue.</p></div> : <div className="setlist-spine">{groups.map((group) => group.items.length > 0 && <div className={`queue-group queue-${group.key}`} key={group.key}><div className="queue-label"><span className={group.key === "now" ? `cue-lamp${group.items[0]?.playbackConfirmedAtMs ? " is-on" : ""}` : "spine-node"} /><strong>{group.key}</strong></div><div className="queue-items">{group.items.map((item, index) => <article className="track-row" key={item.occurrenceId}><span className="track-position utility">{group.key === "now" ? "LIVE" : group.key === "next" ? "UP" : String(index + 1).padStart(2, "0")}</span><div className="track-copy"><strong>{item.title}</strong><span>Picked by {submitter(item)} · {item.cosignerIds.length} co-signs</span><small className="recording-id">{item.recordingId}</small></div><span className="track-duration utility">{item.voterIds.length} VOTES</span>{!(["played", "held"] as string[]).includes(group.key) && <button className="cosign" disabled={pendingId === item.occurrenceId} onClick={() => void command(item.occurrenceId, "queue.vote", { occurrenceId: item.occurrenceId, vote: true }, `Vote saved for ${item.title}`)} aria-label={`Vote for ${item.title}`}><ThumbsUp size={16} /><span>{item.voterIds.length}</span></button>}{group.key === "played" && <CircleCheck className="played-check" aria-label="Played" />}</article>)}</div></div>)}</div>}
     {!guest && now && <div className="setlist-controls"><div><strong>{now.playbackConfirmedAtMs ? "Playback confirmed" : `Did ${now.title} start?`}</strong><span>{now.playbackConfirmedAtMs ? "Advance when the track finishes, or skip it if playback stops." : "Confirm only after you hear it begin. Advance stays locked until then."}</span></div><div className="setlist-control-actions"><button className="button button-quiet" disabled={pendingId === now.occurrenceId} onClick={() => void command(now.occurrenceId, "queue.skip", { occurrenceId: now.occurrenceId }, `${now.title} was skipped`)}>Skip</button><button className="button button-primary" disabled={!now.playbackConfirmedAtMs || pendingId === now.occurrenceId} title={!now.playbackConfirmedAtMs ? "Confirm playback before advancing" : undefined} onClick={() => void command(now.occurrenceId, "queue.advance", { occurrenceId: now.occurrenceId }, `${now.title} moved to Played`)}>Advance <ArrowRight size={19} /></button><button className="button button-quiet" disabled={Boolean(now.playbackConfirmedAtMs) || pendingId === now.occurrenceId} onClick={() => void command(now.occurrenceId, "playback.confirm", { occurrenceId: now.occurrenceId }, `Playback confirmed for ${now.title}`)}>{now.playbackConfirmedAtMs ? <><Check size={19} /> Confirmed</> : "Confirm playback"}</button></div></div>}
