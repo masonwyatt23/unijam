@@ -6,6 +6,7 @@ import type { ProviderAdapter } from "../lib/providers/contracts.ts";
 import type { MusicProvider } from "../lib/provider-state-engine.ts";
 import { AppleMusicAdapter, createAppleDeveloperToken } from "./apple-music.ts";
 import { ConnectorProviderError, failureForResponse } from "./errors.ts";
+import { providerFetch, providerJson } from "./http.ts";
 import { exchangeSpotifyAuthorizationCode, spotifyCallbackUrl, startSpotifyAuthorization } from "./oauth.ts";
 import { processPublishJob } from "./queue.ts";
 import { handleConnectorRequest } from "./router.ts";
@@ -327,6 +328,64 @@ test("provider failures map auth, Retry-After, 5xx writes, and malformed bodies 
     ),
     (error: unknown) => error instanceof ConnectorProviderError && error.failure.kind === "ambiguous_write",
   );
+});
+
+test("provider JSON is bounded by declared and streamed bytes", async () => {
+  const validate = (value: unknown): value is { ok: boolean } =>
+    Boolean(value && typeof value === "object" && "ok" in value && (value as { ok?: unknown }).ok === true);
+  const declared = providerJson("https://provider.test/data", {}, {
+    provider: "spotify",
+    fetcher: async () => new Response("{}", { headers: { "Content-Length": "1048577" } }),
+  }, validate);
+  await assert.rejects(declared, (error: unknown) =>
+    error instanceof ConnectorProviderError && error.failure.kind === "invalid_response");
+
+  let cancelled = false;
+  const oversizedStream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new Uint8Array(600_000).fill(32));
+      controller.enqueue(new Uint8Array(600_000).fill(32));
+    },
+    cancel() { cancelled = true; },
+  });
+  const chunked = providerJson("https://provider.test/data", {}, {
+    provider: "apple_music",
+    mutation: true,
+    fetcher: async () => new Response(oversizedStream),
+  }, validate);
+  await assert.rejects(chunked, (error: unknown) =>
+    error instanceof ConnectorProviderError && error.failure.kind === "ambiguous_write");
+  assert.equal(cancelled, true);
+
+  const encoded = new TextEncoder().encode('{"ok":true}');
+  const validStream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoded.slice(0, 5));
+      controller.enqueue(encoded.slice(5));
+      controller.close();
+    },
+  });
+  assert.deepEqual(await providerJson("https://provider.test/data", {}, {
+    provider: "spotify",
+    fetcher: async () => new Response(validStream),
+  }, validate), { ok: true });
+});
+
+test("provider fetches reject redirects without forwarding credentials", async () => {
+  let redirectMode: RequestRedirect | undefined;
+  const redirected = providerFetch("https://provider.test/start", {
+    headers: { Authorization: "Bearer fixture" },
+    redirect: "follow",
+  }, {
+    provider: "spotify",
+    fetcher: async (_input, init) => {
+      redirectMode = init?.redirect;
+      return new Response(null, { status: 302, headers: { Location: "https://evil.test/collect" } });
+    },
+  });
+  await assert.rejects(redirected, (error: unknown) =>
+    error instanceof ConnectorProviderError && error.failure.kind === "permanent");
+  assert.equal(redirectMode, "error");
 });
 
 test("provider playlist links are accepted only from official HTTPS origins", async () => {
