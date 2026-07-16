@@ -1,0 +1,20 @@
+title = "UniJam secret scanning"
+
+[extend]
+useDefault = true
+
+# These are deterministic unit-test fixtures generated from a fixed byte
+# sequence. Match both their exact source lines and their exact test path so
+# no other value or file is suppressed.
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Deterministic enrollment-code unit-test fixtures"
+condition = "AND"
+regexTarget = "line"
+paths = ['''tests/pilot-enrollment-admin\.test\.mjs''']
+regexes = [
+  '''assert\.equal\(credential\.code, "UJ-00112233-44556677-8899AABB"\);''',
+  '''assert\.equal\(credential\.record\.codeHash, "d74a527075fac316d1328a8dda54ecc05944dcb60ae423ba735e00ae7b1ebd39"\);''',
+]
