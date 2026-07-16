@@ -114,6 +114,8 @@ for (const environment of environments) {
   const host = production ? "unijam.ashlr.ai" : "staging.unijam.ashlr.ai";
   expectValue(webEnv.name, `unijam-web-${environment}`, "WORKER_NAME", `${environment} web Worker name`);
   expectValue(connectorEnv.name, `unijam-connectors-${environment}`, "WORKER_NAME", `${environment} connector Worker name`);
+  expectValue(connectorEnv.workers_dev, false, "CONNECTOR_PUBLIC_ROUTE", `${environment} connector workers.dev route`);
+  expectValue(connectorEnv.preview_urls, false, "CONNECTOR_PREVIEW_ROUTE", `${environment} connector preview URLs`);
   expectValue(webEnv.routes?.[0]?.pattern, host, "CUSTOM_DOMAIN", `${environment} custom domain`);
   expectValue(webEnv.routes?.[0]?.custom_domain, true, "CUSTOM_DOMAIN", `${environment} route custom_domain`);
   expectValue(webEnv.vars?.APP_ENV, environment, "APP_ENV", `${environment} APP_ENV`);
@@ -171,6 +173,9 @@ for (const environment of environments) {
     if (actual) queueNames.set(actual, label);
   }
 }
+
+expectValue(connector.workers_dev, false, "CONNECTOR_PUBLIC_ROUTE", "default connector workers.dev route");
+expectValue(connector.preview_urls, false, "CONNECTOR_PREVIEW_ROUTE", "default connector preview URLs");
 
 const forbiddenWebSecrets = [
   "CONNECTOR_SHARED_SECRET", "CONNECTOR_OPERATOR_SECRET", "TOKEN_ENCRYPTION_KEY_B64URL", "TOKEN_KEY_VERSION", "SPOTIFY_CLIENT_ID",

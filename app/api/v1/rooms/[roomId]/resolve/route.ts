@@ -12,6 +12,7 @@ import {
 } from "@/lib/server/catalog-resolution";
 import { connectorJsonRequest, type ConnectorProxyEnv } from "@/lib/server/connector-proxy";
 import { authenticateRoomActor, normalizeV1RoomId, type RoomAuthorityEnv } from "@/lib/server/room-authority";
+import { createProviderHandoffLinks } from "@/lib/providers/handoff";
 import type { MusicProvider } from "@/lib/provider-state-engine";
 
 type Context = { params: Promise<{ roomId: string }> };
@@ -108,8 +109,21 @@ export async function POST(request: Request, context: Context): Promise<Response
       ? resolutionRequestForCandidate(candidates[0])
       : { provider, storefront: "US", title: intent.kind === "text_search" ? intent.title ?? intent.query : "", artists: intent.kind === "text_search" ? intent.artists : [] };
     const resolution = resolveUsCatalogRecording(resolutionRequest, candidates);
-    if (resolution.status !== "matched") return apiResponse(resolution);
+    if (resolution.status === "hold") {
+      return apiResponse({
+        ...resolution,
+        candidates: resolution.candidates.map((entry) => ({
+          ...entry,
+          candidate: {
+            ...entry.candidate,
+            providerUrl: createProviderHandoffLinks(entry.candidate.provider, entry.candidate.providerRecordingId).universalUrl,
+          },
+        })),
+      });
+    }
+    if (resolution.status === "no_match") return apiResponse(resolution);
     const candidate = resolution.match.candidate;
+    const providerUrl = createProviderHandoffLinks(candidate.provider, candidate.providerRecordingId).universalUrl;
     const recordingId = await persistMatch(env.DB, candidate, intent.kind === "provider_recording" ? "provider_id" : "metadata", resolution.match.evidence);
     return apiResponse({
       status: "matched",
@@ -122,6 +136,7 @@ export async function POST(request: Request, context: Context): Promise<Response
       version: candidate.version ?? "unknown",
       provider: candidate.provider === "apple_music" ? "apple-music" : candidate.provider,
       providerRecordingId: candidate.providerRecordingId,
+      providerUrl,
       evidence: resolution.match.evidence,
     });
   } catch {

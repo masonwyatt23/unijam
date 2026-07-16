@@ -69,6 +69,17 @@ test("MusicKit authorization is isolated to the provider connection route", asyn
   assert.doesNotMatch(otherUi.join("\n"), /MusicKit|musicUserToken|musickit\.js/);
 });
 
+test("Spotify connect consumes the connector PKCE authorization URL contract", async () => {
+  const [connectRoute, connectorOAuth] = await Promise.all([
+    read("app/api/v1/providers/[provider]/connect/route.ts"),
+    read("connectors/oauth.ts"),
+  ]);
+  assert.match(connectorOAuth, /return \{ authorizeUrl:/);
+  assert.match(connectRoute, /data\?: \{ authorizeUrl\?: string \}/);
+  assert.match(connectRoute, /Response\.redirect\(result\.data\.authorizeUrl, 303\)/);
+  assert.doesNotMatch(connectRoute, /authorizationUrl/);
+});
+
 test("live contributions resolve before staging a canonical suggestion", async () => {
   const room = await read("app/room/[roomId]/page.tsx");
   assert.match(room, /\/resolve/);

@@ -164,18 +164,18 @@ if (!offline) {
       }
     }
 
-    for (const [config, workerName] of [["wrangler.jsonc", web.name], ["wrangler.connectors.jsonc", connector.name]]) {
-      const deployments = wrangler(["deployments", "list", "--config", config, "--env", environment, "--name", workerName, "--json"]);
+    for (const [config, expectedWorkerName] of [["wrangler.jsonc", web.name], ["wrangler.connectors.jsonc", connector.name]]) {
+      const deployments = wrangler(["deployments", "list", "--config", config, "--env", environment, "--json"]);
       const parsed = safeJson(deployments.stdout);
       if (deployments.status !== 0 || !Array.isArray(parsed) || parsed.length === 0) {
-        issue("blocker", "WORKER_NOT_DEPLOYED", `${workerName} has no readable deployment.`);
+        issue("blocker", "WORKER_NOT_DEPLOYED", `${expectedWorkerName} has no readable deployment.`);
       } else {
         remote.workersWithDeployments += 1;
       }
     }
 
-    const webSecrets = namesFromSecretList(wrangler(["secret", "list", "--config", "wrangler.jsonc", "--env", environment, "--name", web.name]));
-    const connectorSecrets = namesFromSecretList(wrangler(["secret", "list", "--config", "wrangler.connectors.jsonc", "--env", environment, "--name", connector.name]));
+    const webSecrets = namesFromSecretList(wrangler(["secret", "list", "--config", "wrangler.jsonc", "--env", environment]));
+    const connectorSecrets = namesFromSecretList(wrangler(["secret", "list", "--config", "wrangler.connectors.jsonc", "--env", environment]));
     const requiredWebSecrets = ["CONNECTOR_SERVICE_TOKEN"];
     const requiredConnectorSecrets = ["CONNECTOR_SHARED_SECRET", "CONNECTOR_OPERATOR_SECRET", "TOKEN_ENCRYPTION_KEY_B64URL", "TOKEN_KEY_VERSION"];
     if (connector.vars.SPOTIFY_ENABLED === "true" || connector.vars.SPOTIFY_PUBLISHING_ENABLED === "true") requiredConnectorSecrets.push("SPOTIFY_CLIENT_ID");

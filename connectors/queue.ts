@@ -262,7 +262,33 @@ export async function processPublishJob(
       if ((await store.getConnectionGeneration(job.accountId, job.connectionId, job.provider)) !== job.connectionGeneration) {
         return { kind: "ack" };
       }
-      if (error instanceof ConnectorProviderError && error.failure.kind === "authorization") return { kind: "ack" };
+      if (error instanceof ConnectorProviderError && error.failure.kind === "authorization") {
+        const saved = await saveAndReload(store, {
+          ...job,
+          state: Object.freeze({ ...state, phase: "reconnect", safeError: error.failure.safeMessage }),
+          updatedAtMs: now(),
+        });
+        return saved ? { kind: "ack" } : { kind: "retry", delaySeconds: 1 };
+      }
+      if (error instanceof ConnectorProviderError && error.failure.kind === "rate_limit") {
+        const retryAtMs = error.failure.retryAtMs ?? nowMs + 60_000;
+        const saved = await saveAndReload(store, {
+          ...job,
+          reconciliationNotBeforeMs: retryAtMs,
+          updatedAtMs: now(),
+        });
+        return saved
+          ? { kind: "retry", delaySeconds: Math.max(1, Math.ceil((retryAtMs - nowMs) / 1_000)) }
+          : { kind: "retry", delaySeconds: 1 };
+      }
+      if (error instanceof ConnectorProviderError && error.failure.kind === "permanent") {
+        const saved = await saveAndReload(store, {
+          ...job,
+          state: Object.freeze({ ...state, phase: "failed", safeError: error.failure.safeMessage }),
+          updatedAtMs: now(),
+        });
+        return saved ? { kind: "ack" } : { kind: "retry", delaySeconds: 1 };
+      }
       return { kind: "retry", delaySeconds: 60 };
     }
   }

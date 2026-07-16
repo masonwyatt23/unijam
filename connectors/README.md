@@ -4,6 +4,8 @@ This directory is the isolated provider boundary. It performs real Spotify and
 Apple Music HTTP requests, but contains no credentials or simulated success
 paths. The application Worker must call it through a private service binding
 and authenticate every non-health request with `CONNECTOR_SHARED_SECRET`.
+`workers.dev` and version preview URLs are explicitly disabled in every
+environment. Do not add a public route to the connector Worker.
 
 ## Required bindings
 
@@ -81,6 +83,11 @@ requires exact name, embedded recovery marker, private/editable ownership, and
 zero raw items before atomically attaching it. Resolution evidence retains only
 a destination hash and nonreversible operator-credential fingerprint. The
 same request is idempotent; a different marker or playlist is rejected.
+The connector route remains service-bound and is never called directly from an
+operator shell. A separately deployed operator ingress must be protected by
+Cloudflare Access, validate the Access assertion, hold its own matching
+`CONNECTOR_SHARED_SECRET`, and invoke the connector through a service binding.
+Provisioning and validating that ingress is an external release gate.
 
 ## Operational boundaries
 

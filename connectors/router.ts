@@ -21,6 +21,7 @@ import {
 import { D1ConnectorStore, sha256Base64Url } from "./storage.ts";
 import { SpotifyAdapter } from "./spotify.ts";
 import type { ConnectorEnv, ConnectorStore } from "./types.ts";
+import { BoundedBodyError, readBoundedJson } from "../lib/server/bounded-body.ts";
 
 const MAX_BODY_BYTES = 32_768;
 
@@ -73,18 +74,14 @@ async function authenticatedHeader(request: Request, header: string, secret: str
 }
 
 async function readObject(request: Request): Promise<Record<string, unknown>> {
-  const declared = Number(request.headers.get("Content-Length") ?? 0);
-  if (declared > MAX_BODY_BYTES) throw new HttpError(413, "BODY_TOO_LARGE", "Request body is too large");
-  if (!request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) {
-    throw new HttpError(415, "JSON_REQUIRED", "Request must use application/json");
-  }
   let value: unknown;
   try {
-    value = await request.json();
-  } catch {
-    throw new HttpError(400, "INVALID_JSON", "Request body is not valid JSON");
+    value = await readBoundedJson(request, MAX_BODY_BYTES);
+  } catch (error) {
+    if (error instanceof BoundedBodyError) throw new HttpError(error.status, error.code, error.message);
+    throw error;
   }
-  if (!isRecord(value) || JSON.stringify(value).length > MAX_BODY_BYTES) {
+  if (!isRecord(value)) {
     throw new HttpError(400, "INVALID_BODY", "Request body must be a JSON object");
   }
   return value;
@@ -300,6 +297,7 @@ export async function handleConnectorRequest(
         privateKeyJwk: applePrivateJwk(env),
         nowMs: issuedAtMs,
         lifetimeSeconds: 900,
+        origin,
       });
       return response(requestId, { developerToken, expiresAtMs: issuedAtMs + 900_000 });
     }

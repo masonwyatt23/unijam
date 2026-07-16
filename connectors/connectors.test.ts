@@ -210,6 +210,9 @@ test("Spotify PKCE uses one-time state, S256, exact callback, and no client secr
   const authorize = new URL(started.authorizeUrl);
   assert.equal(authorize.origin, "https://accounts.spotify.com");
   assert.equal(authorize.searchParams.get("code_challenge_method"), "S256");
+  assert.deepEqual(new Set(authorize.searchParams.get("scope")?.split(" ")), new Set([
+    "playlist-modify-private", "playlist-read-private", "user-read-private",
+  ]));
   assert.equal(authorize.searchParams.get("redirect_uri"), spotifyCallbackUrl("https://unijam.ashlr.ai"));
   assert.equal(store.attempts.size, 1);
   assert.equal([...store.attempts.values()][0].codeVerifier, "v".repeat(86));
@@ -228,7 +231,7 @@ test("Spotify PKCE uses one-time state, S256, exact callback, and no client secr
         token_type: "Bearer",
         expires_in: 3600,
         refresh_token: "refresh-fixture",
-        scope: "playlist-modify-private playlist-read-private",
+        scope: "playlist-modify-private playlist-read-private user-read-private",
       });
     },
   });
@@ -244,9 +247,10 @@ test("Spotify adapter uses current private-playlist and playlist-item contracts"
   const requests: Request[] = [];
   const responses = [
     Response.json({ id: "playlist-fixture", snapshot_id: "snapshot-1", external_urls: { spotify: "https://open.spotify.com/playlist/playlist-fixture" } }),
-    Response.json({ snapshot_id: "snapshot-2", name: "Fixture", description: "Synthetic", public: false, owner: { id: "owner-1" }, tracks: { total: 1 }, external_urls: { spotify: "https://open.spotify.com/playlist/playlist-fixture" } }),
+    Response.json({ snapshot_id: "snapshot-2", name: "Fixture", description: "Synthetic", public: false, owner: { id: "owner-1" }, items: { total: 1 }, external_urls: { spotify: "https://open.spotify.com/playlist/playlist-fixture" } }),
     Response.json({ id: "owner-1" }),
     Response.json({ items: [{ item: { id: "4uLU6hMCjMI75M1A2tKUQC", type: "track" } }], next: null }),
+    Response.json({ tracks: { items: [] } }),
   ];
   const adapter = new SpotifyAdapter({
     accessToken: "access-fixture",
@@ -263,10 +267,14 @@ test("Spotify adapter uses current private-playlist and playlist-item contracts"
   assert.equal(created.playlistId, "playlist-fixture");
   assert.equal(created.destinationUrl, "https://open.spotify.com/playlist/playlist-fixture");
   const read = await adapter.readPlaylist(context, "playlist-fixture");
+  assert.match(requests[1].url, /items\.total/);
+  assert.doesNotMatch(requests[1].url, /tracks\.total/);
   assert.match(requests[3].url, /limit=50/);
   assert.deepEqual(read.items, [{ providerRecordingId: "4uLU6hMCjMI75M1A2tKUQC", position: 0 }]);
   assert.equal(read.rawItemCount, 1);
   assert.equal(read.ownershipVerified, true);
+  await adapter.search(context, { title: "Fixture", artists: ["Artist"], limit: 50 });
+  assert.equal(new URL(requests[4].url).searchParams.get("limit"), "10");
 });
 
 test("provider failures map auth, Retry-After, 5xx writes, and malformed bodies safely", async () => {
@@ -372,6 +380,8 @@ test("Apple developer token is short lived and Music User Token is validated aga
   const developerBody = await developerResponse.json() as { data: { developerToken: string; expiresAtMs: number } };
   assert.equal(developerBody.data.expiresAtMs, 1_000_000);
   assert.equal(developerBody.data.developerToken.split(".").length, 3);
+  const browserClaims = JSON.parse(Buffer.from(developerBody.data.developerToken.split(".")[1], "base64url").toString());
+  assert.deepEqual(browserClaims.origin, ["https://unijam.ashlr.ai"]);
   assert.equal(JSON.stringify(developerBody).includes(jwk.d!), false);
 });
 
@@ -441,7 +451,7 @@ test("router enforces internal auth, pilot allowlist, exact origin, encrypted st
     {
       store,
       now: () => 2_000,
-      fetcher: async () => Response.json({ access_token: "secret-access", refresh_token: "secret-refresh", token_type: "Bearer", expires_in: 3600, scope: "playlist-modify-private playlist-read-private" }),
+      fetcher: async () => Response.json({ access_token: "secret-access", refresh_token: "secret-refresh", token_type: "Bearer", expires_in: 3600, scope: "playlist-modify-private playlist-read-private user-read-private" }),
     },
   );
   assert.equal(callback.status, 201);
@@ -532,6 +542,18 @@ test("router enforces internal auth, pilot allowlist, exact origin, encrypted st
   assert.equal(await store.getConnection("allowed-account", "account-purge", "spotify"), null);
 });
 
+test("router caps the actual JSON stream when Content-Length is missing", async () => {
+  const request = new Request("https://connector/v1/connections/status", {
+    method: "POST",
+    headers: { Authorization: "Bearer internal-fixture-secret", "Content-Type": "application/json" },
+    body: JSON.stringify({ padding: "x".repeat(33_000) }),
+  });
+  assert.equal(request.headers.has("Content-Length"), false);
+  const response = await handleConnectorRequest(request, env(), { store: new MemoryStore() });
+  assert.equal(response.status, 413);
+  assert.equal((await response.json() as { error: { code: string } }).error.code, "BODY_TOO_LARGE");
+});
+
 test("disconnect fences an OAuth callback that already consumed its one-time state", async () => {
   const store = new MemoryStore();
   const base = env();
@@ -554,7 +576,7 @@ test("disconnect fences an OAuth callback that already consumed its one-time sta
     fetcher: async () => {
       entered.resolve();
       await release.promise;
-      return Response.json({ access_token: "stale-access", refresh_token: "stale-refresh", token_type: "Bearer", expires_in: 3600, scope: "playlist-modify-private playlist-read-private" });
+      return Response.json({ access_token: "stale-access", refresh_token: "stale-refresh", token_type: "Bearer", expires_in: 3600, scope: "playlist-modify-private playlist-read-private user-read-private" });
     },
   });
   await entered.promise;
@@ -641,6 +663,44 @@ test("queue reconciles timeout-after-commit before appending and kill switches f
   const paused = await processPublishJob(env({ SPOTIFY_PUBLISHING_ENABLED: "false" }), job.operationId, { store: pausedStore, adapter, now: () => 5_000 });
   assert.deepEqual(paused, { kind: "retry", delaySeconds: 300 });
   assert.equal(pausedStore.jobs.get(job.operationId)?.state.phase, "reconcile_before_retry");
+});
+
+test("reconciliation persists reconnect and honors provider Retry-After", async () => {
+  const authorizationStore = new MemoryStore();
+  const authorizationJob = publishJob();
+  authorizationStore.jobs.set(authorizationJob.operationId, authorizationJob);
+  activate(authorizationStore, authorizationJob);
+  const unauthorizedAdapter = {
+    provider: "spotify",
+    async readPlaylist() {
+      throw failureForResponse("spotify", new Response(null, { status: 401 }), 5_000, false);
+    },
+  } as unknown as ProviderAdapter;
+  const unauthorized = await processPublishJob(env(), authorizationJob.operationId, {
+    store: authorizationStore,
+    adapter: unauthorizedAdapter,
+    now: () => 5_000,
+  });
+  assert.deepEqual(unauthorized, { kind: "ack" });
+  assert.equal(authorizationStore.jobs.get(authorizationJob.operationId)?.state.phase, "reconnect");
+
+  const limitedStore = new MemoryStore();
+  const limitedJob = publishJob();
+  limitedStore.jobs.set(limitedJob.operationId, limitedJob);
+  activate(limitedStore, limitedJob);
+  const limitedAdapter = {
+    provider: "spotify",
+    async readPlaylist() {
+      throw failureForResponse("spotify", new Response(null, { status: 429, headers: { "Retry-After": "12" } }), 5_000, false);
+    },
+  } as unknown as ProviderAdapter;
+  const limited = await processPublishJob(env(), limitedJob.operationId, {
+    store: limitedStore,
+    adapter: limitedAdapter,
+    now: () => 5_000,
+  });
+  assert.deepEqual(limited, { kind: "retry", delaySeconds: 12 });
+  assert.equal(limitedStore.jobs.get(limitedJob.operationId)?.reconciliationNotBeforeMs, 17_000);
 });
 
 test("Apple reconciliation waits for two stable observations before an append retry", async () => {

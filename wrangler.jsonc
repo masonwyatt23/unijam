@@ -70,8 +70,7 @@
       "d1_databases": [{
         "binding": "DB",
         "database_name": "unijam-staging",
-        // Provision before deployment and replace this non-routable sentinel.
-        "database_id": "00000000-0000-4000-8000-000000000002",
+        "database_id": "8f827583-be7a-404d-a5b5-4309d3c05ec6",
         "migrations_dir": "drizzle"
       }],
       "durable_objects": {

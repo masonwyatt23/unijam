@@ -125,7 +125,9 @@ export class SpotifyAdapter implements ProviderAdapter {
     _context: ProviderRequestContext,
     query: ProviderCatalogQuery,
   ): Promise<readonly CatalogCandidate[]> {
-    const limit = Math.min(50, Math.max(1, Math.trunc(query.limit)));
+    // Development-mode apps have a hard maximum of 10 results as of the
+    // February 2026 Web API contract. Extended-quota apps accept this too.
+    const limit = Math.min(10, Math.max(1, Math.trunc(query.limit)));
     const terms = [`track:${query.title}`, ...query.artists.map((artist) => `artist:${artist}`), ...(query.album ? [`album:${query.album}`] : [])];
     const body = await this.json(`/search?${new URLSearchParams({ q: terms.join(" "), type: "track", market: "US", limit: String(limit) })}`);
     const items = isRecord(body.tracks) && Array.isArray(body.tracks.items) ? body.tracks.items : [];
@@ -162,13 +164,13 @@ export class SpotifyAdapter implements ProviderAdapter {
     playlistId: string,
   ): Promise<ProviderPlaylistSnapshot> {
     if (!playlistId.trim()) throw new Error("playlist ID is required");
-    const summary = await this.json(`/playlists/${encodeURIComponent(playlistId)}?fields=snapshot_id,external_urls.spotify,name,description,public,owner.id,tracks.total`);
+    const summary = await this.json(`/playlists/${encodeURIComponent(playlistId)}?fields=snapshot_id,external_urls.spotify,name,description,public,owner.id,items.total`);
     const currentUser = await this.json("/me");
     const revisionToken = stringValue(summary.snapshot_id);
     const description = stringValue(summary.description);
     const ownerId = isRecord(summary.owner) ? stringValue(summary.owner.id) : undefined;
     const currentUserId = stringValue(currentUser.id);
-    const rawItemCount = isRecord(summary.tracks) ? numberValue(summary.tracks.total) : undefined;
+    const rawItemCount = isRecord(summary.items) ? numberValue(summary.items.total) : undefined;
     const destinationUrl = spotifyPlaylistUrl(isRecord(summary.external_urls) ? summary.external_urls.spotify : undefined, playlistId);
     const items: { providerRecordingId: string; position: number }[] = [];
     let next: string | null = `${API}/playlists/${encodeURIComponent(playlistId)}/items?market=US&limit=50`;

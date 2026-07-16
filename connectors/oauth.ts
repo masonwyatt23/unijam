@@ -4,7 +4,7 @@ import { randomBase64Url, sha256Base64Url } from "./storage.ts";
 import type { ConnectorStore, OAuthAttempt, StoredProviderTokens } from "./types.ts";
 
 export const SPOTIFY_CALLBACK_PATH = "/api/v1/providers/spotify/callback";
-const SPOTIFY_SCOPES = ["playlist-modify-private", "playlist-read-private"] as const;
+const SPOTIFY_SCOPES = ["playlist-modify-private", "playlist-read-private", "user-read-private"] as const;
 
 export function exactAppOrigin(value: string): string {
   const url = new URL(value);

@@ -14,6 +14,7 @@ import {
   type RoomProtocolError,
 } from "../lib/platform/protocol.ts";
 import { legacyExportHash, validateLegacyExport } from "../lib/server/legacy-migration.ts";
+import { BoundedBodyError, readBoundedJson } from "../lib/server/bounded-body.ts";
 
 type RoomRules = {
   contributionLimit: number;
@@ -364,13 +365,16 @@ export class RoomDurableObject extends DurableObject<RoomEnv> {
     if (!actor || actor.role !== "host" || request.headers.get("X-UniJam-Control-Action") !== "true") {
       return Response.json(protocolError("FORBIDDEN", "Only the room owner can import a legacy room", this.latestSeq()), { status: 403 });
     }
-    const declaredLength = Number(request.headers.get("Content-Length") ?? 0);
-    if (declaredLength > 5_250_000) {
-      return Response.json(protocolError("LEGACY_EXPORT_TOO_LARGE", "Legacy export exceeds the import limit", this.latestSeq()), { status: 413 });
-    }
     let body: unknown;
-    try { body = await request.json(); }
-    catch { return Response.json(protocolError("INVALID_LEGACY_EXPORT", "Legacy export is invalid", this.latestSeq()), { status: 400 }); }
+    try { body = await readBoundedJson(request, 5_250_000); }
+    catch (error) {
+      const tooLarge = error instanceof BoundedBodyError && error.status === 413;
+      return Response.json(protocolError(
+        tooLarge ? "LEGACY_EXPORT_TOO_LARGE" : "INVALID_LEGACY_EXPORT",
+        tooLarge ? "Legacy export exceeds the import limit" : "Legacy export is invalid",
+        this.latestSeq(),
+      ), { status: tooLarge ? 413 : 400 });
+    }
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       return Response.json(protocolError("INVALID_LEGACY_EXPORT", "Legacy export is invalid", this.latestSeq()), { status: 400 });
     }
@@ -502,29 +506,44 @@ export class RoomDurableObject extends DurableObject<RoomEnv> {
     let command;
     try { command = parseRoomCommand(raw); }
     catch (error) { return protocolError("INVALID_COMMAND", error instanceof Error ? error.message : "Command is invalid", latestSeq); }
-    const intent = commandIntent(command, actor);
+    const metadata = this.metadata();
+    if (!metadata) return protocolError("ROOM_NOT_INITIALIZED", "Room has not been initialized", 0, command.commandId);
+    const snapshot = JSON.parse(metadata.snapshot_json) as RoomSnapshot;
+    let canonicalActor = actor;
+    if (actor.role !== "host") {
+      const participant = snapshot.participants[actor.participantId];
+      if (!participant && command.action !== "participant.join") {
+        return protocolError("FORBIDDEN", "Join the room before sending commands", metadata.sequence, command.commandId);
+      }
+      // D1 is an asynchronous projection. Existing non-host authority and
+      // display identity therefore come only from the canonical room snapshot,
+      // never from a potentially stale forwarded session role. An absent actor
+      // may join, but a stale co-host projection cannot carry authority back in.
+      canonicalActor = participant
+        ? { participantId: participant.participantId, role: participant.role, nickname: participant.nickname }
+        : { ...actor, role: actor.role === "viewer" ? "viewer" : "guest" };
+    }
+    const intent = commandIntent(command, canonicalActor);
     const existing = this.ctx.storage.sql.exec<CommandRow>("SELECT intent_json, result_json FROM command_results WHERE command_id = ? LIMIT 1", command.commandId).toArray()[0];
     if (existing) {
       if (existing.intent_json !== intent) return protocolError("COMMAND_ID_CONFLICT", "commandId was already used for different intent", latestSeq, command.commandId);
       const original = JSON.parse(existing.result_json) as RoomCommandAck;
       return { ...original, duplicate: true };
     }
-    const metadata = this.metadata();
-    if (!metadata) return protocolError("ROOM_NOT_INITIALIZED", "Room has not been initialized", 0, command.commandId);
     if (command.expectedSeq !== undefined && command.expectedSeq !== metadata.sequence) {
       return protocolError("STALE_SEQUENCE", "Room state changed; apply the latest state and retry", metadata.sequence, command.commandId, true);
     }
-    if (hostActions.has(command.action) && actor.role !== "host" && actor.role !== "cohost") {
+    if (hostActions.has(command.action) && canonicalActor.role !== "host" && canonicalActor.role !== "cohost") {
       return protocolError("FORBIDDEN", "This command requires host authority", metadata.sequence, command.commandId);
     }
     if ((command.action === "room.invite.rotate" || command.action === "room.end" || command.action === "legacy.import") && !allowControlAction) {
       return protocolError("CONTROL_ENDPOINT_REQUIRED", "Use the passkey-confirmed room control endpoint", metadata.sequence, command.commandId);
     }
-    const rateLimit = this.consumeCommandRateLimit(actor, command.action);
+    const rateLimit = this.consumeCommandRateLimit(canonicalActor, command.action);
     if (rateLimit) return protocolError("RATE_LIMITED", "Room activity is moving too quickly", metadata.sequence, command.commandId, true);
     let result: RoomCommandAck | RoomProtocolError;
     try {
-      result = this.ctx.storage.transactionSync(() => this.applyCommand(command, actor, metadata, intent));
+      result = this.ctx.storage.transactionSync(() => this.applyCommand(command, canonicalActor, metadata, intent));
     } catch (error) {
       result = protocolError(
         "COMMAND_REJECTED",

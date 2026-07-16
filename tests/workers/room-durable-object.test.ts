@@ -89,6 +89,10 @@ async function command(
   return response.json<ProtocolResult>();
 }
 
+async function join(stub: DurableObjectStub, actor: Actor, suffix: string): Promise<void> {
+  expect(await command(stub, actor, `command_join_${suffix}`, "participant.join", {})).toMatchObject({ type: "ack" });
+}
+
 async function snapshot(stub: DurableObjectStub) {
   const response = await stub.fetch("https://room/state");
   const body = await response.json<{ snapshot: { seq: number; suggestions: Record<string, unknown>; occurrences: Array<{ occurrenceId: string; recordingId: string; status: string; cosignerIds: string[]; voterIds: string[]; playbackConfirmedAtMs?: number }> } }>();
@@ -98,6 +102,7 @@ async function snapshot(stub: DurableObjectStub) {
 describe("RoomDurableObject serialized authority", () => {
   it("co-signs simultaneous approvals for one recording without creating duplicate occurrences", async () => {
     const stub = await newRoom("simultaneous-approval");
+    await Promise.all([join(stub, guest, "simultaneous_guest_01"), join(stub, otherGuest, "simultaneous_guest_02")]);
     await Promise.all([
       command(stub, guest, "command_stage_guest_01", "suggestion.stage", { suggestionId: "sug_guest_track_01", recordingId: "rec_shared_track_01", title: "Shared track" }),
       command(stub, otherGuest, "command_stage_guest_02", "suggestion.stage", { suggestionId: "sug_guest_track_02", recordingId: "rec_shared_track_01", title: "Shared track" }),
@@ -122,6 +127,7 @@ describe("RoomDurableObject serialized authority", () => {
 
   it("returns the original result for an identical retry and rejects changed intent", async () => {
     const stub = await newRoom("command-idempotency");
+    await join(stub, guest, "idempotency_guest_01");
     const payload = { suggestionId: "sug_idempotency_01", recordingId: "rec_idempotency_01", title: "Retry-safe" };
     const first = await command(stub, guest, "command_idempotent_01", "suggestion.stage", payload);
     const retry = await command(stub, guest, "command_idempotent_01", "suggestion.stage", payload);
@@ -135,6 +141,7 @@ describe("RoomDurableObject serialized authority", () => {
 
   it("accepts only one concurrent duplicate vote and only one concurrent advancement", async () => {
     const stub = await newRoom("duplicate-mutations");
+    await join(stub, guest, "duplicate_guest_01");
     for (const [suffix, recording] of [["01", "rec_queue_track_01"], ["02", "rec_queue_track_02"]] as const) {
       await command(stub, guest, `command_stage_queue_${suffix}`, "suggestion.stage", { suggestionId: `sug_queue_track_${suffix}`, recordingId: recording, title: `Track ${suffix}` });
       await command(stub, host, `command_approve_queue_${suffix}`, "suggestion.approve", { suggestionId: `sug_queue_track_${suffix}` });
@@ -172,6 +179,7 @@ describe("RoomDurableObject serialized authority", () => {
   it("preserves SQLite state through a forced Durable Object restart", async () => {
     const roomName = "eviction-persistence";
     const stub = await newRoom(roomName);
+    await join(stub, guest, "eviction_guest_01");
     const accepted = await command(stub, guest, "command_before_evict_01", "suggestion.stage", {
       suggestionId: "sug_before_evict_01", recordingId: "rec_before_evict_01", title: "Persistent track",
     });
@@ -187,6 +195,7 @@ describe("RoomDurableObject serialized authority", () => {
 
   it("records requested, opened, and host-confirmed handoffs without inferring playback", async () => {
     const stub = await newRoom("handoff-observations");
+    await join(stub, guest, "handoff_guest_01");
     await command(stub, guest, "command_stage_handoff_01", "suggestion.stage", {
       suggestionId: "sug_handoff_track_01", recordingId: "rec_handoff_track_01", title: "Handoff track",
     });
@@ -204,6 +213,34 @@ describe("RoomDurableObject serialized authority", () => {
     expect(forbiddenConfirm).toMatchObject({ type: "error", code: "FORBIDDEN" });
     expect(confirmed).toMatchObject({ type: "ack", events: [{ type: "handoff.host_confirmed" }] });
     expect((await snapshot(stub)).occurrences[0].playbackConfirmedAtMs).toBeUndefined();
+  });
+
+  it("uses canonical participant authority after demotion and leave", async () => {
+    const stub = await newRoom("canonical-http-authority");
+    const staleCohost: Actor = { ...guest, role: "cohost", nickname: "Stale projected name" };
+    await join(stub, guest, "canonical_authority_guest_01");
+    expect(await command(stub, host, "command_promote_canonical_01", "participant.moderate", {
+      participantId: guest.participantId, role: "cohost",
+    })).toMatchObject({ type: "ack" });
+    expect(await command(stub, host, "command_demote_canonical_01", "participant.moderate", {
+      participantId: guest.participantId, role: "guest",
+    })).toMatchObject({ type: "ack" });
+
+    expect(await command(stub, staleCohost, "command_stale_self_promote_01", "participant.moderate", {
+      participantId: guest.participantId, role: "cohost",
+    })).toMatchObject({ type: "error", code: "FORBIDDEN" });
+    expect(await command(stub, staleCohost, "command_leave_canonical_01", "participant.leave", {}))
+      .toMatchObject({ type: "ack" });
+    expect(await command(stub, staleCohost, "command_after_leave_stage_01", "suggestion.stage", {
+      suggestionId: "sug_after_leave_01", recordingId: "rec_after_leave_01", title: "Must not land",
+    })).toMatchObject({ type: "error", code: "FORBIDDEN" });
+
+    // A stale co-host session may rejoin, but only with safe guest authority.
+    expect(await command(stub, staleCohost, "command_rejoin_canonical_01", "participant.join", {}))
+      .toMatchObject({ type: "ack" });
+    expect(await command(stub, staleCohost, "command_rejoined_self_promote_01", "participant.moderate", {
+      participantId: guest.participantId, role: "cohost",
+    })).toMatchObject({ type: "error", code: "FORBIDDEN" });
   });
 
   it("imports the complete verified legacy export into room-local SQLite", async () => {

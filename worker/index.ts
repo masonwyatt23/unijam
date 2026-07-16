@@ -6,6 +6,7 @@ import { RoomDurableObject } from "./room-durable-object.ts";
 import { isExactSameOriginRequest, isExactSameOriginWebSocket, withSecurityHeaders, type SecurityEnvironment } from "../lib/server/security-headers.ts";
 import { apiError } from "../lib/server/api-response.ts";
 import { expiredRoomProjectionDeletion, ROOM_DETAIL_RETENTION_MS } from "../lib/platform/retention.ts";
+import { BoundedBodyError, requestWithBoundedBody } from "../lib/server/bounded-body.ts";
 
 interface Env extends Cloudflare.Env {
   DB: D1Database;
@@ -54,13 +55,18 @@ const worker = {
     if (!isExactSameOriginRequest(request, expectedOrigin)) {
       return withSecurityHeaders(apiError("ORIGIN_FORBIDDEN", "Request origin is not allowed", 403), environment);
     }
+    let routedRequest = request;
     if (url.pathname.startsWith("/api/") && !["GET", "HEAD", "OPTIONS"].includes(request.method.toUpperCase())) {
-      const declaredLength = Number(request.headers.get("Content-Length") ?? 0);
       const maximum = url.pathname === "/api/v1/migration/import" ? 5_250_000
         : url.pathname.endsWith("/commands") ? 65_536
           : 262_144;
-      if (Number.isFinite(declaredLength) && declaredLength > maximum) {
-        return withSecurityHeaders(apiError("PAYLOAD_TOO_LARGE", "Request payload exceeds the allowed size", 413), environment);
+      try {
+        routedRequest = await requestWithBoundedBody(request, maximum);
+      } catch (error) {
+        if (error instanceof BoundedBodyError) {
+          return withSecurityHeaders(apiError(error.code, error.message, error.status), environment);
+        }
+        return withSecurityHeaders(apiError("INVALID_BODY", "Request body could not be read", 400), environment);
       }
     }
 
@@ -77,7 +83,7 @@ const worker = {
     }
 
     try {
-      return withSecurityHeaders(await handler.fetch(request, env, ctx), environment);
+      return withSecurityHeaders(await handler.fetch(routedRequest, env, ctx), environment);
     } catch {
       return withSecurityHeaders(apiError("INTERNAL_ERROR", "The request could not be completed", 500, true), environment);
     }

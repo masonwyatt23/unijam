@@ -2,6 +2,8 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "unijam-connectors",
   "main": "./connectors/index.ts",
+  "workers_dev": false,
+  "preview_urls": false,
   "compatibility_date": "2026-07-15",
   "compatibility_flags": ["nodejs_compat"],
   "triggers": { "crons": ["17 * * * *"] },
@@ -32,6 +34,8 @@
   "env": {
     "production": {
       "name": "unijam-connectors-production",
+      "workers_dev": false,
+      "preview_urls": false,
       "analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "unijam_connectors_production" }],
       "vars": {
         "PUBLIC_APP_ORIGIN": "https://unijam.ashlr.ai",
@@ -60,6 +64,8 @@
     },
     "staging": {
       "name": "unijam-connectors-staging",
+      "workers_dev": false,
+      "preview_urls": false,
       "analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "unijam_connectors_staging" }],
       "vars": {
         "PUBLIC_APP_ORIGIN": "https://staging.unijam.ashlr.ai",
@@ -72,8 +78,7 @@
       "d1_databases": [{
         "binding": "CONNECTOR_DB",
         "database_name": "unijam-connectors-staging",
-        // Provision before deployment and replace this non-routable sentinel.
-        "database_id": "00000000-0000-4000-8000-000000000012",
+        "database_id": "e50c03b1-859a-47fd-b57c-48acfce9beed",
         "migrations_dir": "connectors/migrations"
       }],
       "queues": {

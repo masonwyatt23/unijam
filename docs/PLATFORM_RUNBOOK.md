@@ -10,6 +10,9 @@ D1 database, Durable Object namespace, projection queue, and dead-letter queue.
 `wrangler.jsonc` contains non-routable D1 sentinel IDs. Provision both databases
 and replace those IDs before the first deployment. Provider secrets belong only
 on the connector Worker; the web Worker must never receive them.
+The connector has `workers_dev=false` and `preview_urls=false` in every
+environment and receives HTTP only through service bindings. Dashboard changes
+must never re-enable either public route.
 
 ## Provisioning order
 
@@ -31,9 +34,13 @@ on the connector Worker; the web Worker must never receive them.
    environment and add `--env` only at deploy time. Exercise passkey creation,
    guest fragment exchange, HTTP commands, WebSocket reconnect, and projection
    lag in staging before production.
-4. In the DNS provider for `ashlr.ai`, add only the NS delegation records supplied
-   by Cloudflare for the `unijam` child zone. Do not change the apex or unrelated
-   Vercel records. Add the staging delegation separately if it uses its own zone.
+4. Select the DNS architecture in `docs/PILOT_RELEASE.md`. A delegated
+   `unijam.ashlr.ai` child zone requires Cloudflare Enterprise. Without that
+   entitlement, use the owner-approved full-zone migration: reproduce every
+   existing record in Cloudflare, keep all Vercel destinations hosted on
+   Vercel, verify parity and DNSSEC, and only then change registrar
+   nameservers. Never delegate `staging` separately or improvise a
+   `workers.dev`/external-rewrite substitute.
 5. Keep `ENABLE_LEGACY_ROOM_API=false`. A migration operator may temporarily set
    it to `true` only with a Wrangler secret named `LEGACY_MIGRATION_SECRET`; every
    compatibility request must also carry that value in

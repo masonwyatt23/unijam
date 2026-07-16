@@ -17,8 +17,8 @@ async function connect(request: Request, context: Context): Promise<Response> {
         accountId: host.account_id, connectionId, origin,
       });
       if (request.method === "GET" && response.ok) {
-        const result = await response.clone().json() as { data?: { authorizationUrl?: string } };
-        if (result.data?.authorizationUrl?.startsWith("https://accounts.spotify.com/")) return Response.redirect(result.data.authorizationUrl, 303);
+        const result = await response.clone().json() as { data?: { authorizeUrl?: string } };
+        if (result.data?.authorizeUrl?.startsWith("https://accounts.spotify.com/")) return Response.redirect(result.data.authorizeUrl, 303);
       }
       return response;
     }

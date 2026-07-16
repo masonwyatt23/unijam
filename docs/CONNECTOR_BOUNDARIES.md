@@ -1,6 +1,6 @@
 # UniJam connector boundaries
 
-Verified against the public Spotify and Apple Music documentation on 2026-07-11.
+Verified against the public Spotify and Apple Music documentation on 2026-07-15.
 
 ## Product contract
 
@@ -51,6 +51,15 @@ Sources: Spotify playlist [create](https://developer.spotify.com/documentation/w
   Publishing adapters expose private-playlist creation, playlist reads, and
   append operations. Provider-specific wire payloads do not cross the adapter
   boundary.
+- Spotify development-mode compatibility follows the February 2026 contract:
+  search requests are capped at 10 results, playlist contents use the current
+  `/items` endpoints, and playlist summaries read `items.total` rather than the
+  retired `tracks.total` field. OAuth requests only private-playlist access and
+  `user-read-private`, which is required to compare the current user with a
+  candidate playlist owner during fail-closed operator recovery.
+- The short-lived Apple developer token exposed to MusicKit on the Web carries
+  an exact `origin` claim for the active UniJam environment. Connector-only
+  developer tokens are generated separately and never exposed to the browser.
 - Disconnect deletes the encrypted envelope and cancels pending work for that
   destination. The other destination state and the room remain unchanged.
 

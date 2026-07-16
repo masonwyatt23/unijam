@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 const repositoryRoot = new URL("../", import.meta.url);
@@ -42,22 +43,26 @@ test("pilot preflight emits a redacted, machine-readable offline report", () => 
     cwd: repositoryRoot,
     encoding: "utf8",
   });
-  assert.notEqual(result.status, 0, "sentinel D1 IDs must keep preflight blocked");
   const report = JSON.parse(result.stdout);
   assert.equal(report.environment, "staging");
-  assert.equal(report.ready, false);
   assert.equal(report.remote.checked, false);
-  assert.equal(report.issues.some((entry) => entry.code === "CONFIG_D1_SENTINEL"), true);
   assert.equal(report.issues.some((entry) => entry.code === "REMOTE_SKIPPED"), true);
   assert.doesNotMatch(result.stdout, /CONNECTOR_SERVICE_CREDENTIAL|PRIVATE_KEY_JWK.*[=:]/);
+});
+
+test("pilot preflight lets Wrangler derive environment-qualified Worker names", () => {
+  const source = readFileSync(new URL("../scripts/pilot-preflight.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /"secret", "list"[^\n]+"--name"/);
+  assert.doesNotMatch(source, /"deployments", "list"[^\n]+"--name"/);
+  assert.doesNotMatch(source, /\$\{workerName\}/);
+  assert.match(source, /\$\{expectedWorkerName\} has no readable deployment/);
 });
 
 test("operator recovery validates staging without reading credentials or echoing identifiers", () => {
   const result = spawnSync(process.execPath, [
     "scripts/recover-publish-operation.mjs",
     "--env", "staging",
-    "--endpoint", "https://unijam-connectors-staging.account.workers.dev/v1/operator/publish/recover-playlist",
-    "--workers-subdomain", "account",
+    "--endpoint", "https://operator-staging.unijam.ashlr.ai/v1/operator/publish/recover-playlist",
     "--operation-id", "publish:spotify:ROOM1234:r4:account",
     "--marker", "unijam:v1:create_playlist:0123456789abcdef",
     "--playlist-id", "3cEYpjA9oz9GiPac4AsH4n",
@@ -72,8 +77,7 @@ test("operator recovery refuses production before reading credentials", () => {
   const result = spawnSync(process.execPath, [
     "scripts/recover-publish-operation.mjs",
     "--env", "production",
-    "--endpoint", "https://unijam-connectors-production.account.workers.dev/v1/operator/publish/recover-playlist",
-    "--workers-subdomain", "account",
+    "--endpoint", "https://operator.unijam.ashlr.ai/v1/operator/publish/recover-playlist",
     "--operation-id", "publish:spotify:ROOM1234:r4:account",
     "--marker", "unijam:v1:create_playlist:0123456789abcdef",
     "--playlist-id", "3cEYpjA9oz9GiPac4AsH4n",
@@ -81,4 +85,25 @@ test("operator recovery refuses production before reading credentials", () => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Production recovery requires/);
   assert.doesNotMatch(result.stderr, /UNIJAM_CONNECTOR.*SECRET/);
+});
+
+test("connector deployment and recovery refuse public workers.dev ingress", () => {
+  const connector = JSON.parse(readFileSync(new URL("../wrangler.connectors.jsonc", import.meta.url), "utf8").replace(/^\s*\/\/.*$/gm, ""));
+  assert.equal(connector.workers_dev, false);
+  assert.equal(connector.preview_urls, false);
+  for (const environment of ["staging", "production"]) {
+    assert.equal(connector.env[environment].workers_dev, false);
+    assert.equal(connector.env[environment].preview_urls, false);
+  }
+  const result = spawnSync(process.execPath, [
+    "scripts/recover-publish-operation.mjs",
+    "--env", "staging",
+    "--endpoint", "https://unijam-connectors-staging.account.workers.dev/v1/operator/publish/recover-playlist",
+    "--operation-id", "publish:spotify:ROOM1234:r4:account",
+    "--marker", "unijam:v1:create_playlist:0123456789abcdef",
+    "--playlist-id", "3cEYpjA9oz9GiPac4AsH4n",
+    "--dry-run",
+  ], { cwd: repositoryRoot, encoding: "utf8", env: {} });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Cloudflare Access operator ingress/);
 });

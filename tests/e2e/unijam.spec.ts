@@ -32,7 +32,7 @@ const snapshot = {
   updatedAtMs: 1_700_000_000_000,
 };
 
-async function mockRoom(page: Page, role: "host" | "guest" = "host", roomSnapshot: unknown = snapshot) {
+async function mockRoom(page: Page, role: "host" | "cohost" | "guest" = "host", roomSnapshot: unknown = snapshot) {
   await page.routeWebSocket("**/api/v1/rooms/ROOM1234/websocket", (socket) => {
     socket.onMessage((message) => {
       try {
@@ -54,7 +54,7 @@ async function mockRoom(page: Page, role: "host" | "guest" = "host", roomSnapsho
           actor: {
             participantId: `${role}_12345678`,
             role,
-            nickname: role === "host" ? "Room Host" : "Room Guest",
+            nickname: role === "host" ? "Room Host" : role === "cohost" ? "Room Co-host" : "Room Guest",
           },
         },
         error: null,
@@ -110,7 +110,8 @@ test("a resolved guest contribution stages the canonical recording", async ({ pa
         explicit: false,
         version: "original",
         provider: "spotify",
-        providerRecordingId: "spotify123",
+        providerRecordingId: "4uLU6hMCjMI75M1A2tKUQC",
+        providerUrl: "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC",
         evidence: ["provider_id"],
       },
       error: null,
@@ -127,14 +128,47 @@ test("a resolved guest contribution stages the canonical recording", async ({ pa
   });
 
   await gotoReady(page, "/room/ROOM1234");
-  await page.getByLabel(/song link, title, or artist/i).fill("https://open.spotify.com/track/spotify123");
+  await page.getByLabel(/song link, title, or artist/i).fill("https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC");
   await page.getByRole("button", { name: /resolve and add pick/i }).click();
   await expect(page.getByRole("status")).toContainText("Canonical Pick by Room Artist was added");
+  await expect(page.getByRole("link", { name: "Open Canonical Pick on Spotify" })).toHaveAttribute("href", "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC");
   expect(command).not.toBeNull();
   expect(command!.commandId).toMatch(/^cmd_/);
   expect(command!.action).toBe("suggestion.stage");
   expect(command!.payload).toMatchObject({ recordingId: "rec_canonical123", title: "Canonical Pick", held: false });
   expect(command!.payload.suggestionId).toMatch(/^sug_/);
+});
+
+test("held provider candidates keep official linked attribution", async ({ page }) => {
+  await mockRoom(page, "guest");
+  await page.route("**/api/v1/rooms/ROOM1234/resolve", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      data: {
+        status: "hold",
+        reasons: ["ambiguous_candidates"],
+        candidates: [{
+          candidate: {
+            title: "Candidate Pick",
+            artists: ["Room Artist"],
+            provider: "spotify",
+            providerRecordingId: "4uLU6hMCjMI75M1A2tKUQC",
+            providerUrl: "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC",
+          },
+          score: 0.91,
+        }],
+      },
+      error: null,
+      requestId: "req_hold",
+    }),
+  }));
+
+  await gotoReady(page, "/room/ROOM1234");
+  await page.getByLabel(/song link, title, or artist/i).fill("Candidate Pick — Room Artist");
+  await page.getByRole("button", { name: /resolve and add pick/i }).click();
+  await expect(page.getByRole("link", { name: "Open a held candidate on Spotify" })).toHaveAttribute("href", "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC");
+  await expect(page.getByRole("link", { name: /Candidate Pick/ })).toHaveAttribute("href", "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC");
 });
 
 test("host advances a confirmed occurrence by occurrence ID", async ({ page }) => {
@@ -179,6 +213,82 @@ test("host advances a confirmed occurrence by occurrence ID", async ({ page }) =
   await page.getByRole("button", { name: /^advance/i }).click();
   await expect(page.getByRole("status")).toContainText("Confirmed Pick moved to Played");
   expect(command).toEqual(expect.objectContaining({ action: "queue.advance", payload: { occurrenceId: "occ_now12345" } }));
+});
+
+test("a participant can remove their existing vote by occurrence ID", async ({ page }) => {
+  const votedSnapshot = {
+    ...snapshot,
+    occurrences: [{
+      occurrenceId: "occ_now12345",
+      recordingId: "rec_now12345",
+      suggestionId: "sug_now12345",
+      title: "Voted Pick",
+      status: "now",
+      position: 0,
+      cosignerIds: [],
+      voterIds: ["guest_12345678"],
+    }],
+  };
+  await mockRoom(page, "guest", votedSnapshot);
+  let command: { action: string; payload: { occurrenceId: string; vote: boolean } } | null = null;
+  await page.route("**/api/v1/rooms/ROOM1234/commands", (route) => {
+    command = route.request().postDataJSON() as typeof command;
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { type: "ack", seq: 5 }, error: null, requestId: "req_vote" }),
+    });
+  });
+
+  await gotoReady(page, "/room/ROOM1234");
+  const removeVote = page.getByRole("button", { name: "Remove vote from Voted Pick" });
+  await expect(removeVote).toHaveAttribute("aria-pressed", "true");
+  await removeVote.click();
+  await expect(page.getByRole("status")).toContainText("Vote removed for Voted Pick");
+  expect(command).toEqual(expect.objectContaining({ action: "queue.vote", payload: { occurrenceId: "occ_now12345", vote: false } }));
+});
+
+test("host readiness, lock, and room ending controls complete without dead ends", async ({ page }) => {
+  await mockRoom(page, "host");
+  const actions: Array<{ action: string; payload: Record<string, unknown> }> = [];
+  await page.route("**/api/v1/rooms/ROOM1234/commands", (route) => {
+    actions.push(route.request().postDataJSON() as { action: string; payload: Record<string, unknown> });
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { type: "ack", seq: 5 }, error: null, requestId: "req_control" }),
+    });
+  });
+  let ended = false;
+  await page.route("**/api/v1/rooms/ROOM1234/end", (route) => {
+    ended = true;
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { roomId: "ROOM1234", ended: true }, error: null, requestId: "req_end" }),
+    });
+  });
+
+  await gotoReady(page, "/room/ROOM1234");
+  await page.getByRole("button", { name: "Ready for the cue" }).click();
+  await expect(page.getByRole("status")).toContainText("no longer marked ready");
+  await page.getByRole("button", { name: "Lock room" }).click();
+  await expect(page.getByRole("status")).toContainText("locked to new guests");
+  await page.getByRole("button", { name: "End room" }).click();
+  await expect(page.getByText(/close every guest session/i)).toBeVisible();
+  await page.getByRole("button", { name: "End room now" }).click();
+  await expect(page.getByRole("status")).toContainText("recap is now final");
+  expect(actions).toEqual([
+    expect.objectContaining({ action: "participant.ready", payload: { ready: false } }),
+    expect.objectContaining({ action: "room.rules.update", payload: { rules: { locked: true } } }),
+  ]);
+  expect(ended).toBe(true);
+});
+
+test("co-host recap does not lead to owner-only publishing", async ({ page }) => {
+  await mockRoom(page, "cohost");
+  await gotoReady(page, "/room/ROOM1234/recap");
+  await expect(page.getByRole("link", { name: /review publishing/i })).toHaveCount(0);
 });
 
 test("room creation works by keyboard and reflows at 320px", async ({ page }) => {

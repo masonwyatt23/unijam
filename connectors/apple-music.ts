@@ -251,12 +251,31 @@ export async function createAppleDeveloperToken(input: {
   readonly privateKeyJwk: JsonWebKey;
   readonly nowMs: number;
   readonly lifetimeSeconds?: number;
+  /** Restricts a browser-exposed token to one exact MusicKit web origin. */
+  readonly origin?: string;
 }): Promise<string> {
   const lifetime = input.lifetimeSeconds ?? 900;
   if (!Number.isInteger(lifetime) || lifetime < 60 || lifetime > 3_600) throw new Error("Apple developer token lifetime must be 60-3600 seconds");
   const issuedAt = Math.floor(input.nowMs / 1_000);
   const header = encodeBase64Url(new TextEncoder().encode(JSON.stringify({ alg: "ES256", kid: input.keyId, typ: "JWT" })));
-  const claims = encodeBase64Url(new TextEncoder().encode(JSON.stringify({ iss: input.teamId, iat: issuedAt, exp: issuedAt + lifetime })));
+  let origin: string | undefined;
+  if (input.origin !== undefined) {
+    const url = new URL(input.origin);
+    if (
+      url.toString() !== `${url.origin}/` ||
+      url.protocol !== "https:" ||
+      (url.hostname !== "unijam.ashlr.ai" && url.hostname !== "staging.unijam.ashlr.ai")
+    ) {
+      throw new Error("Apple developer token origin must be an exact UniJam HTTPS origin");
+    }
+    origin = url.origin;
+  }
+  const claims = encodeBase64Url(new TextEncoder().encode(JSON.stringify({
+    iss: input.teamId,
+    iat: issuedAt,
+    exp: issuedAt + lifetime,
+    ...(origin ? { origin: [origin] } : {}),
+  })));
   const signingInput = `${header}.${claims}`;
   const key = await crypto.subtle.importKey("jwk", input.privateKeyJwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
   const signature = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, asArrayBuffer(new TextEncoder().encode(signingInput)));

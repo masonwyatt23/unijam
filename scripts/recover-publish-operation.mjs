@@ -7,7 +7,6 @@ const valueAfter = (flag) => {
 };
 const environment = valueAfter("--env");
 const endpointValue = valueAfter("--endpoint");
-const workersSubdomain = valueAfter("--workers-subdomain");
 const operationId = valueAfter("--operation-id");
 const expectedRecoveryMarker = valueAfter("--marker");
 const destinationPlaylistId = valueAfter("--playlist-id");
@@ -23,15 +22,16 @@ if (environment === "production" && valueAfter("--production-confirmation") !== 
   fail("Production recovery requires --production-confirmation I_UNDERSTAND_THIS_RESUMES_A_PROVIDER_MUTATION");
 }
 if (!endpointValue) fail("--endpoint is required");
-if (!workersSubdomain || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(workersSubdomain)) fail("--workers-subdomain is invalid");
 let endpoint;
 try { endpoint = new URL(endpointValue); } catch { fail("--endpoint must be an HTTPS URL"); }
-const expectedWorker = `unijam-connectors-${environment}`;
+const expectedHostname = environment === "production"
+  ? "operator.unijam.ashlr.ai"
+  : "operator-staging.unijam.ashlr.ai";
 if (
   endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.port || endpoint.search || endpoint.hash ||
   endpoint.pathname !== "/v1/operator/publish/recover-playlist" ||
-  endpoint.hostname !== `${expectedWorker}.${workersSubdomain}.workers.dev`
-) fail(`--endpoint must be the exact ${expectedWorker} workers.dev operator recovery URL`);
+  endpoint.hostname !== expectedHostname
+) fail(`--endpoint must be the exact Cloudflare Access operator ingress at ${expectedHostname}`);
 if (!operationId || !/^[A-Za-z0-9._:%-]{8,255}$/.test(operationId)) fail("--operation-id is invalid");
 if (!expectedRecoveryMarker || !/^unijam:v1:create_playlist:[a-f0-9]{16}$/.test(expectedRecoveryMarker)) fail("--marker is invalid");
 if (!destinationPlaylistId || !/^[A-Za-z0-9._:-]{2,255}$/.test(destinationPlaylistId)) fail("--playlist-id is invalid");
@@ -41,17 +41,21 @@ if (dryRun) {
   process.exit(0);
 }
 
-const serviceToken = process.env.UNIJAM_CONNECTOR_SERVICE_TOKEN;
 const operatorToken = process.env.UNIJAM_CONNECTOR_OPERATOR_SECRET;
-if (!serviceToken || !operatorToken) fail("Set UNIJAM_CONNECTOR_SERVICE_TOKEN and UNIJAM_CONNECTOR_OPERATOR_SECRET in the operator shell");
+const accessClientId = process.env.UNIJAM_ACCESS_CLIENT_ID;
+const accessClientSecret = process.env.UNIJAM_ACCESS_CLIENT_SECRET;
+if (!operatorToken || !accessClientId || !accessClientSecret) {
+  fail("Set UNIJAM_CONNECTOR_OPERATOR_SECRET, UNIJAM_ACCESS_CLIENT_ID, and UNIJAM_ACCESS_CLIENT_SECRET in the operator shell");
+}
 
 let response;
 try {
   response = await fetch(endpoint, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${serviceToken}`,
       "X-UniJam-Operator-Authorization": `Bearer ${operatorToken}`,
+      "CF-Access-Client-Id": accessClientId,
+      "CF-Access-Client-Secret": accessClientSecret,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ operationId, expectedRecoveryMarker, destinationPlaylistId }),

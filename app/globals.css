@@ -263,6 +263,7 @@ select { height: 48px; cursor: pointer; }
 .track-duration { color: var(--ink-soft); }
 .hold-note { display: flex; align-items: center; gap: 5px; margin-top: 6px; color: var(--hold); font-weight: 700; }
 .cosign { min-width: 50px; min-height: 44px; display: flex; align-items: center; justify-content: center; gap: 5px; border: 1px solid var(--line); border-radius: 3px; background: white; cursor: pointer; }
+.cosign.is-active { border-color: var(--cue); background: var(--cue-soft); color: var(--cue-dark); }
 .played-check { color: var(--done); }
 .setlist-empty { min-height: 260px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 30px; color: var(--ink-soft); text-align: center; }
 .setlist-empty h3 { margin: 16px 0 5px; color: var(--ink); font: 600 1.8rem var(--display); text-transform: uppercase; }
@@ -273,7 +274,7 @@ select { height: 48px; cursor: pointer; }
 .setlist-control-actions { display: flex !important; flex-direction: row !important; flex-wrap: wrap; justify-content: flex-end; gap: 8px !important; }
 .setlist-feedback { padding: 10px 30px; border-bottom: 1px solid var(--line); margin: 0; background: var(--paper-blue); color: var(--cue-dark); font-weight: 700; }
 .room-side { display: grid; gap: 16px; }
-.contribute-card, .room-summary, .guest-boundary, .handoff-card { padding: 25px; border: 1px solid var(--line); border-radius: 6px; background: white; }
+.contribute-card, .room-summary, .room-control-panel, .guest-boundary, .handoff-card { padding: 25px; border: 1px solid var(--line); border-radius: 6px; background: white; }
 .contribute-card h2 { margin-bottom: 8px; font: 600 2rem var(--display); text-transform: uppercase; }
 .contribute-card > p:not(.eyebrow) { color: var(--ink-soft); line-height: 1.45; }
 .contribute-card form { display: grid; gap: 9px; }
@@ -285,12 +286,23 @@ select { height: 48px; cursor: pointer; }
 .resolution-candidates li { padding: 9px 11px; border-left: 3px solid var(--hold); background: var(--hold-soft); }
 .resolution-candidates strong, .resolution-candidates span { display: block; }
 .resolution-candidates span { margin-top: 2px; color: var(--ink-soft); font-size: .875rem; }
+.resolution-candidates a { min-height: 44px; display: inline-flex; align-items: center; color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+.resolution-attribution { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; color: var(--ink-soft); font-size: .875rem; }
+.resolution-attribution .provider-brand { justify-content: flex-start; min-height: 44px; padding-inline: 0; }
 .room-summary { display: grid; gap: 18px; }
 .room-summary > div { display: flex; align-items: center; gap: 12px; }
 .room-summary > div svg { color: var(--cue-dark); }
 .room-summary span { display: flex; flex-direction: column; }
 .room-summary small { color: var(--ink-soft); }
 .room-summary > a { min-height: 44px; display: flex; align-items: center; justify-content: space-between; padding-top: 14px; border-top: 1px solid var(--line); color: var(--hold); font-weight: 700; text-decoration: none; }
+.room-control-panel { display: grid; gap: 17px; }
+.room-control-panel > div:not(:first-child) { padding-top: 17px; border-top: 1px solid var(--line); }
+.room-control-panel .eyebrow { margin-bottom: 8px; }
+.room-control-panel .button { width: 100%; }
+.room-end-confirm > p { margin: 0 0 12px; color: var(--ink-soft); line-height: 1.4; }
+.room-end-confirm > div { display: grid; gap: 8px; }
+.room-control-feedback { margin: 0 !important; }
+.room-control-feedback a { min-height: 44px; display: flex; align-items: center; margin-top: 8px; color: var(--cue-dark); text-decoration: underline; text-underline-offset: 3px; }
 .invite-confirm, .invite-result { width: min(100%,620px); padding: 16px; border: 1px solid var(--hold); border-radius: 4px; background: var(--hold-soft); }
 .invite-confirm > p, .invite-result > p { margin: 0 0 10px; }
 .invite-confirm > div { display: flex; flex-wrap: wrap; gap: 8px; }

@@ -8,17 +8,27 @@ verification below all pass.
 
 ## Current release status — 2026-07-15
 
-The repository is not currently deployable to Cloudflare. This is expected and
-enforced:
+Production is not currently deployable to Cloudflare. Staging resources have
+been provisioned but staging traffic is not yet active:
 
-- `wrangler.jsonc` and `wrangler.connectors.jsonc` still contain four
-  non-routable D1 sentinel IDs. `npm run validate:release-config` reports them;
-  either strict deploy validator exits nonzero until they are replaced.
-- The current automation session is not authenticated to Cloudflare, so zones,
-  D1 databases, Queues, DLQs, Worker services, custom domains, and nameservers
-  have not been created or verified.
-- Cloudflare has not supplied nameservers for a `unijam.ashlr.ai` child zone.
-  No Vercel DNS record has been changed.
+- The two isolated staging D1 databases and four staging Queues/DLQs exist in
+  the verified Cloudflare account. Their checked-in migrations were applied on
+  2026-07-15 and both databases reported zero pending migrations afterward.
+  `npm run validate:deploy:staging` passes with no warnings.
+- `unijam-web-staging` and `unijam-connectors-staging` have not been deployed,
+  and their required staging secrets have not been installed. Cloudflare
+  rejected the first connector deployment with API code `10089`; Analytics
+  Engine was then enabled, but the deployment was not retried because security
+  and DNS gates were still open. The staging origin remains unreachable.
+- `wrangler.jsonc` and `wrangler.connectors.jsonc` retain two non-routable
+  production D1 sentinel IDs. `npm run validate:release-config` reports them and
+  strict production validation exits nonzero until they are replaced.
+- Cloudflare authentication is available for the verified operator account,
+  but no production resources, child zone, custom domains, or nameservers have
+  been created or verified.
+- Cloudflare Free/Pro onboarding rejected `unijam.ashlr.ai` as a standalone
+  zone. Incoming child-zone delegation is an Enterprise-only Cloudflare
+  feature. No Vercel DNS record or `ashlr.ai` nameserver has been changed.
 - Production and staging connector secrets, Spotify app registrations, Apple
   Music identifiers/keys, Music User Tokens, and pilot account IDs are absent.
 - Spotify extended-quota approval remains the public-launch gate. The pilot is
@@ -89,17 +99,20 @@ Before touching DNS, export or screenshot all Vercel-managed `ashlr.ai` records
 and record the apex resolution:
 
 ```bash
-npx vercel dns list ashlr.ai --scope Evero
+npx vercel dns list ashlr.ai --scope evero
 dig +short NS ashlr.ai
 dig +short A ashlr.ai
 dig +short AAAA ashlr.ai
 ```
 
 The release operator must confirm that the current apex, email, verification,
-and unrelated subdomain records remain represented in the evidence. The only
-permitted Vercel DNS mutation is adding NS records at the `unijam` label.
+and unrelated subdomain records remain represented in the evidence. DNS
+authority must remain unchanged until the owner explicitly selects either
+Enterprise child-zone delegation or the reviewed full-zone migration. A
+full-zone migration must preserve every Vercel destination and unrelated DNS
+record exactly; it changes authoritative nameservers, not the hosting provider.
 
-## 2. Create the Cloudflare child zone and resources
+## 2. Select DNS architecture and create resources
 
 Authenticate the operator and confirm the intended Cloudflare account before
 creating anything:
@@ -109,11 +122,21 @@ npx wrangler login
 npx wrangler whoami
 ```
 
-Create a Cloudflare zone whose exact zone name is `unijam.ashlr.ai`. Do not add
-or transfer the `ashlr.ai` apex zone. `staging.unijam.ashlr.ai` is a hostname
-inside this one delegated child zone; it does not need a second delegation.
-Record both nameservers assigned by Cloudflare, but do not add them at Vercel
-yet.
+Choose exactly one reviewed DNS path before creating a zone:
+
+- With Cloudflare Enterprise, create the child zone whose exact name is
+  `unijam.ashlr.ai`. `staging.unijam.ashlr.ai` is a hostname inside that child
+  zone and does not need a second delegation. Record the assigned nameservers,
+  but do not add them at Vercel yet.
+- Without Enterprise, the recommended path is a planned full-zone migration of
+  `ashlr.ai` to Cloudflare while leaving the apex and unrelated applications
+  hosted on Vercel. Export and independently inventory every current record,
+  import it into a pending Cloudflare zone, compare authoritative answers, and
+  obtain explicit owner approval before changing registrar nameservers.
+
+Do not work around this gate with a CNAME to `workers.dev`, a public connector
+route, or a Vercel external rewrite; those paths do not preserve the required
+custom-domain, WebSocket, cookie, Origin, and WebAuthn boundaries.
 
 Create the four isolated D1 databases:
 
@@ -170,6 +193,15 @@ Generate a separate operator-only credential per environment and install it
 only on the connector Worker as `CONNECTOR_OPERATOR_SECRET`. Never install or
 expose this credential on the web Worker; it gates the manual ambiguous-create
 recovery route in addition to the connector service credential.
+
+The connector Worker must remain private: `workers_dev=false` and
+`preview_urls=false` are release invariants. Before running an ambiguous-create
+recovery drill, provision a separate `unijam-operator-ingress-ENV` Worker on
+`operator-staging.unijam.ashlr.ai` or `operator.unijam.ashlr.ai`. Protect it
+with Cloudflare Access, validate the Access JWT in the ingress Worker, store the
+matching connector service credential only on that ingress, and forward the
+request through a service binding. This ingress and its Access policy are an
+external release gate; never make the connector public to bypass the gate.
 
 Install the following on `unijam-connectors-staging`, then install independent
 production values on `unijam-connectors-production`:
@@ -286,16 +318,20 @@ that the private JWK never crosses into the web Worker or client bundle.
 Provider disconnect testing is mandatory: it must delete encrypted tokens,
 cancel outstanding work, and prevent a queued job from regaining credentials.
 
-## 7. Delegate only the child zone
+## 7. Activate the approved DNS architecture
 
-Proceed only after staging works through a temporary Cloudflare hostname or
-operator-controlled resolution and production Workers/custom domains are
-healthy. In the Vercel DNS controls for `ashlr.ai`, add the two Cloudflare-
-assigned NS records at the exact host label `unijam`.
+Proceed only after staging works through operator-controlled resolution and the
+production Workers/custom domains are healthy.
 
-Do not change the `ashlr.ai` nameservers. Do not replace, delete, import, or
-recreate the apex zone. Do not add NS records at `@`. Do not separately delegate
-`staging`; Cloudflare already controls it inside the delegated child zone.
+For an Enterprise child zone, add the two Cloudflare-assigned NS records at the
+exact Vercel DNS label `unijam`. Do not change the `ashlr.ai` nameservers or
+delegate `staging` separately.
+
+For the approved full-zone path, require exact record parity, review registrar
+DNSSEC/DS state, retain the Vercel export and prior nameservers as the rollback
+package, and then change the registrar delegation to the Cloudflare-assigned
+nameservers. Keep Vercel-hosted destinations DNS-only until each application is
+independently verified; do not proxy unrelated services as part of this launch.
 
 Immediately verify:
 
@@ -307,9 +343,12 @@ curl --fail --silent --show-error --include https://unijam.ashlr.ai/
 curl --fail --silent --show-error --include https://staging.unijam.ashlr.ai/
 ```
 
-The child lookup must return exactly Cloudflare's assigned nameservers. The apex
-NS and all unrelated `ashlr.ai` resolution must match the preflight evidence.
-Check from at least two public resolvers before inviting pilot users.
+For the child-zone path, the child lookup must return exactly Cloudflare's
+assigned nameservers while the apex NS remains unchanged. For the full-zone
+path, the apex must return Cloudflare's assigned nameservers while the apex,
+email, redirects, and every unrelated hostname still resolve to the recorded
+destinations. Check from at least two public resolvers before inviting pilot
+users.
 
 ## 8. Passkey and migration activation
 
@@ -370,16 +409,17 @@ timeout), disconnect, kill-switch, and room-independence verification.
 If an operation reports `PLAYLIST_CREATION_OUTCOME_UNKNOWN`, ordinary retries
 must remain blocked. Inspect the provider account, identify the exact empty
 playlist created by the timed-out request, and record the persisted recovery
-marker. Export the two staging connector credentials only in the operator shell
-as `UNIJAM_CONNECTOR_SERVICE_TOKEN` and
-`UNIJAM_CONNECTOR_OPERATOR_SECRET`, then run a dry validation before sending
-anything:
+marker. Only after the Access-protected, JWT-validating, service-bound operator
+ingress has passed its deployment review, export its Access service-token pair
+as `UNIJAM_ACCESS_CLIENT_ID` and `UNIJAM_ACCESS_CLIENT_SECRET`, plus the
+operator credential as `UNIJAM_CONNECTOR_OPERATOR_SECRET`. The shared
+web-to-connector service credential remains on Workers and never enters the
+operator shell. Run a dry validation before sending anything:
 
 ```bash
 npm run recover:publish -- \
   --env staging \
-  --endpoint https://unijam-connectors-staging.ACCOUNT.workers.dev/v1/operator/publish/recover-playlist \
-  --workers-subdomain ACCOUNT \
+  --endpoint https://operator-staging.unijam.ashlr.ai/v1/operator/publish/recover-playlist \
   --operation-id OPERATION_ID \
   --marker RECOVERY_MARKER \
   --playlist-id PROVIDER_PLAYLIST_ID \
@@ -394,7 +434,8 @@ It stores only hashed destination and operator-credential evidence, then queues
 reconciliation. The script never prints the operation, marker, playlist
 ID, or credentials. Production additionally requires
 `--production-confirmation I_UNDERSTAND_THIS_RESUMES_A_PROVIDER_MUTATION`.
-Unset both shell credentials immediately after the drill.
+Unset all three shell credentials immediately after the drill. Any
+`workers.dev` connector URL is invalid and the recovery tool rejects it.
 
 Promote one flag at a time to production and observe a controlled cohort before
 opening the next. A failure in one provider must never block room commands,
