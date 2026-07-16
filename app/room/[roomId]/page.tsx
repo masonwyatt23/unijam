@@ -8,10 +8,10 @@ import { CopyButton, ErrorPanel, LivingSetlist, LoadingPanel, ProductShell, Prov
 
 type Provider = "spotify" | "apple-music";
 type ApiEnvelope<T> = { data: T | null; error: { code: string; message: string; retryable?: boolean } | null };
-type HeldCandidate = { candidate?: { title?: string; artists?: string[]; provider?: "spotify" | "apple_music"; providerUrl?: string }; score?: number };
+type HeldCandidate = { resolutionId?: string; candidate?: { title?: string; artists?: string[]; provider?: "spotify" | "apple_music"; providerUrl?: string }; score?: number };
 type Resolution =
   | { status: "matched"; resolutionId: string; recordingId: string; title: string; artists: string[]; album: string | null; explicit: boolean | null; version: string; provider: Provider; providerRecordingId: string; providerUrl: string; evidence: string[] }
-  | { status: "hold"; reasons: string[]; candidates: HeldCandidate[] }
+  | { status: "hold"; reasons: string[]; candidates: HeldCandidate[]; sourceAttribution?: { provider: "spotify"; title: string; providerUrl: string } }
   | { status: "no_match" };
 
 const holdLabels: Record<string, string> = {
@@ -22,6 +22,7 @@ const holdLabels: Record<string, string> = {
   edition_conflict: "The release editions conflict",
   storefront_unknown: "US availability could not be confirmed",
   storefront_unavailable: "The recording is not available in the US",
+  source_metadata_incomplete: "Spotify supplies only a title for this cross-service link, so choose the exact Apple Music recording",
 };
 
 function InviteControl({ roomId }: { roomId: string }) {
@@ -60,11 +61,49 @@ function ContributionForm({ roomId, canContribute, onStaged }: { roomId: string;
   const [message, setMessage] = useState("");
   const [heldCandidates, setHeldCandidates] = useState<HeldCandidate[]>([]);
   const [attribution, setAttribution] = useState<{ provider: Provider; title: string; url: string } | null>(null);
+  const [sourceAttribution, setSourceAttribution] = useState<{ provider: "spotify"; title: string; url: string } | null>(null);
+
+  async function stageResolution(match: { resolutionId: string; title: string; artists: string[]; provider: Provider; providerUrl: string }) {
+    const commandResponse = await fetch(`/api/v1/rooms/${encodeURIComponent(roomId)}/commands`, {
+      method: "POST", credentials: "include", headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        commandId: `cmd_${crypto.randomUUID()}`,
+        action: "suggestion.stage",
+        payload: { suggestionId: `sug_${crypto.randomUUID()}`, resolutionId: match.resolutionId },
+      }),
+    });
+    const commandBody = await commandResponse.json() as ApiEnvelope<unknown>;
+    if (!commandResponse.ok || commandBody.error) throw new Error(commandBody.error?.message ?? "The room did not accept this pick.");
+    setInput("");
+    setStatus("success");
+    setMessage(`${match.title} by ${match.artists.join(", ")} was added to the room.`);
+    setAttribution({ provider: match.provider, title: match.title, url: match.providerUrl });
+    setHeldCandidates([]);
+    setSourceAttribution(null);
+    onStaged();
+  }
+
+  async function selectHeld(candidate: HeldCandidate) {
+    if (!candidate.resolutionId || !candidate.candidate?.title || !candidate.candidate.providerUrl || !candidate.candidate.provider) return;
+    setStatus("working"); setMessage("");
+    try {
+      await stageResolution({
+        resolutionId: candidate.resolutionId,
+        title: candidate.candidate.title,
+        artists: candidate.candidate.artists ?? [],
+        provider: candidate.candidate.provider === "apple_music" ? "apple-music" : "spotify",
+        providerUrl: candidate.candidate.providerUrl,
+      });
+    } catch (cause) {
+      setStatus("error");
+      setMessage(cause instanceof Error ? cause.message : "This recording could not be added.");
+    }
+  }
 
   async function contribute(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!canContribute) return;
-    setStatus("working"); setMessage(""); setHeldCandidates([]); setAttribution(null);
+    setStatus("working"); setMessage(""); setHeldCandidates([]); setAttribution(null); setSourceAttribution(null);
     try {
       const resolutionResponse = await fetch(`/api/v1/rooms/${encodeURIComponent(roomId)}/resolve`, {
         method: "POST", credentials: "include", headers: { "content-type": "application/json" },
@@ -88,24 +127,13 @@ function ContributionForm({ roomId, canContribute, onStaged }: { roomId: string;
         setStatus("hold");
         setMessage(resolutionBody.data.reasons.map((reason) => holdLabels[reason] ?? reason.replaceAll("_", " ")).join(". ") + ". Try a direct link or a more specific version.");
         setHeldCandidates(resolutionBody.data.candidates.slice(0, 3));
+        if (resolutionBody.data.sourceAttribution) {
+          setSourceAttribution({ provider: "spotify", title: resolutionBody.data.sourceAttribution.title, url: resolutionBody.data.sourceAttribution.providerUrl });
+        }
         return;
       }
       const match = resolutionBody.data;
-      const commandResponse = await fetch(`/api/v1/rooms/${encodeURIComponent(roomId)}/commands`, {
-        method: "POST", credentials: "include", headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          commandId: `cmd_${crypto.randomUUID()}`,
-          action: "suggestion.stage",
-          payload: { suggestionId: `sug_${crypto.randomUUID()}`, resolutionId: match.resolutionId },
-        }),
-      });
-      const commandBody = await commandResponse.json() as ApiEnvelope<unknown>;
-      if (!commandResponse.ok || commandBody.error) throw new Error(commandBody.error?.message ?? "The room did not accept this pick.");
-      setInput("");
-      setStatus("success");
-      setMessage(`${match.title} by ${match.artists.join(", ")} was added to the room.`);
-      setAttribution({ provider: match.provider, title: match.title, url: match.providerUrl });
-      onStaged();
+      await stageResolution(match);
     } catch (cause) {
       setStatus("error");
       setMessage(cause instanceof Error ? cause.message : "This contribution could not be added.");
@@ -113,7 +141,7 @@ function ContributionForm({ roomId, canContribute, onStaged }: { roomId: string;
   }
 
   const heldSource = heldCandidates.find(({ candidate }) => candidate?.provider && candidate.providerUrl)?.candidate;
-  return <section className="contribute-card"><p className="eyebrow">ADD A SONG</p><h2>Resolve a recording</h2><p>Paste a Spotify or Apple Music link, or search by title and artist. UniJam stages only a deterministic US match.</p><form onSubmit={(event) => void contribute(event)}><label className="field" htmlFor="song-input"><span>Song link, title, or artist</span><input id="song-input" value={input} onChange={(event) => setInput(event.target.value)} disabled={!canContribute || status === "working"} placeholder="Track link or title — artist" required /></label><label className="field" htmlFor="provider-select"><span>Search plain text with</span><select id="provider-select" value={provider} onChange={(event) => setProvider(event.target.value as Provider)} disabled={!canContribute || status === "working"}><option value="spotify">Spotify</option><option value="apple-music">Apple Music</option></select><small>Direct links select their provider automatically.</small></label><button className="button button-primary" disabled={!canContribute || status === "working" || !input.trim()}>{status === "working" ? "Resolving…" : "Resolve and add pick"}</button></form>{message && <p className={status === "success" ? "inline-success" : status === "hold" || status === "no-match" || status === "unsupported" ? "inline-hold" : "inline-error"} role={status === "error" ? "alert" : "status"}>{message}</p>}{attribution ? <div className="resolution-attribution">{attribution.provider === "spotify" ? <ProviderBrand provider="spotify" background="light" purpose="attribution" href={attribution.url} label={`Open ${attribution.title} on Spotify`} /> : <ProviderBrand provider="apple-music" variant="listen-badge" background="light" purpose="attribution" href={attribution.url} label={`Listen to ${attribution.title} on Apple Music`} />}</div> : null}{heldSource ? <div className="resolution-attribution"><span>Candidate recordings from</span>{heldSource.provider === "spotify" ? <ProviderBrand provider="spotify" background="light" purpose="attribution" href={heldSource.providerUrl!} label="Open a held candidate on Spotify" /> : <ProviderBrand provider="apple-music" variant="listen-badge" background="light" purpose="attribution" href={heldSource.providerUrl!} label="Listen to a held candidate on Apple Music" />}</div> : null}{heldCandidates.length > 0 && <ul className="resolution-candidates" aria-label="Held candidate recordings">{heldCandidates.map(({ candidate, score }, index) => <li key={`${candidate?.title ?? "candidate"}-${index}`}>{candidate?.providerUrl ? <a href={candidate.providerUrl} target="_blank" rel="noreferrer"><strong>{candidate.title ?? "Unknown recording"}</strong><span className="sr-only"> (opens in a new tab)</span></a> : <strong>{candidate?.title ?? "Unknown recording"}</strong>}<span>{candidate?.artists?.join(", ") ?? "Artist unavailable"}{typeof score === "number" ? ` · ${Math.round(score * 100)}% metadata score` : ""}</span></li>)}</ul>}<small>{canContribute ? "Ambiguous or unavailable recordings remain out of the queue." : "This room is read-only for your current role or lifecycle."}</small></section>;
+  return <section className="contribute-card"><p className="eyebrow">ADD A SONG</p><h2>Resolve a recording</h2><p>Paste a Spotify or Apple Music link, or search by title and artist. UniJam stages only a deterministic US match.</p><form onSubmit={(event) => void contribute(event)}><label className="field" htmlFor="song-input"><span>Song link, title, or artist</span><input id="song-input" value={input} onChange={(event) => setInput(event.target.value)} disabled={!canContribute || status === "working"} placeholder="Artist — track title" required /></label><label className="field" htmlFor="provider-select"><span>Resolve into</span><select id="provider-select" value={provider} onChange={(event) => setProvider(event.target.value as Provider)} disabled={!canContribute || status === "working"}><option value="spotify">Spotify</option><option value="apple-music">Apple Music</option></select><small>A link from the other service is resolved into this destination without borrowing another host&apos;s account.</small></label><button className="button button-primary" disabled={!canContribute || status === "working" || !input.trim()}>{status === "working" ? "Resolving…" : "Resolve and add pick"}</button></form>{message && <p className={status === "success" ? "inline-success" : status === "hold" || status === "no-match" || status === "unsupported" ? "inline-hold" : "inline-error"} role={status === "error" ? "alert" : "status"}>{message}</p>}{sourceAttribution ? <div className="resolution-attribution"><span>Original shared link</span><ProviderBrand provider="spotify" background="light" purpose="attribution" href={sourceAttribution.url} label={`Open ${sourceAttribution.title} on Spotify`} /></div> : null}{attribution ? <div className="resolution-attribution">{attribution.provider === "spotify" ? <ProviderBrand provider="spotify" background="light" purpose="attribution" href={attribution.url} label={`Open ${attribution.title} on Spotify`} /> : <ProviderBrand provider="apple-music" variant="listen-badge" background="light" purpose="attribution" href={attribution.url} label={`Listen to ${attribution.title} on Apple Music`} />}</div> : null}{heldSource ? <div className="resolution-attribution"><span>Candidate recordings from</span>{heldSource.provider === "spotify" ? <ProviderBrand provider="spotify" background="light" purpose="attribution" href={heldSource.providerUrl!} label="Open a held candidate on Spotify" /> : <ProviderBrand provider="apple-music" variant="listen-badge" background="light" purpose="attribution" href={heldSource.providerUrl!} label="Listen to a held candidate on Apple Music" />}</div> : null}{heldCandidates.length > 0 && <ul className="resolution-candidates" aria-label="Held candidate recordings">{heldCandidates.map((entry, index) => <li key={`${entry.candidate?.title ?? "candidate"}-${index}`}>{entry.candidate?.providerUrl ? <a href={entry.candidate.providerUrl} target="_blank" rel="noreferrer"><strong>{entry.candidate.title ?? "Unknown recording"}</strong><span className="sr-only"> (opens in a new tab)</span></a> : <strong>{entry.candidate?.title ?? "Unknown recording"}</strong>}<span>{entry.candidate?.artists?.join(", ") ?? "Artist unavailable"}{typeof entry.score === "number" ? ` · ${Math.round(entry.score * 100)}% metadata score` : ""}</span>{entry.resolutionId ? <button className="button button-quiet" type="button" disabled={status === "working"} onClick={() => void selectHeld(entry)}>Add this recording</button> : null}</li>)}</ul>}<small>{canContribute ? "Ambiguous or unavailable recordings remain out of the queue." : "This room is read-only for your current role or lifecycle."}</small></section>;
 }
 
 function RoomControls({ roomId, seq, role, ready, locked, onRefresh }: { roomId: string; seq: number; role: "host" | "cohost" | "guest"; ready: boolean | null; locked: boolean; onRefresh: () => void }) {

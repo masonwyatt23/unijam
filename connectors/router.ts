@@ -19,7 +19,7 @@ import {
   startSpotifyAuthorization,
 } from "./oauth.ts";
 import { D1ConnectorStore, sha256Base64Url } from "./storage.ts";
-import { SpotifyAdapter } from "./spotify.ts";
+import { SpotifyAdapter, spotifyOEmbedMetadata } from "./spotify.ts";
 import type { ConnectorEnv, ConnectorStore } from "./types.ts";
 import { BoundedBodyError, readBoundedJson } from "../lib/server/bounded-body.ts";
 
@@ -120,6 +120,12 @@ function allowlisted(env: ConnectorEnv, accountId: string, provider: MusicProvid
   }
 }
 
+function allowlistedForAnyProvider(env: ConnectorEnv, accountId: string): void {
+  if (!isAllowlisted(env, accountId, "spotify") && !isAllowlisted(env, accountId, "apple_music")) {
+    throw new HttpError(403, "PILOT_NOT_ALLOWED", "This host is not in a provider pilot");
+  }
+}
+
 export function providerEnabled(env: ConnectorEnv, provider: MusicProvider, publishing = false): boolean {
   const enabled = provider === "spotify" ? env.SPOTIFY_ENABLED === "true" : env.APPLE_MUSIC_ENABLED === "true";
   if (!publishing) return enabled;
@@ -185,6 +191,25 @@ async function adapterFor(input: {
     nowMs: input.now(),
   });
   return new AppleMusicAdapter({ developerToken, musicUserToken: tokens.accessToken, fetcher: input.fetcher, now: input.now });
+}
+
+async function catalogAdapterFor(input: {
+  readonly env: ConnectorEnv;
+  readonly store: ConnectorStore;
+  readonly provider: MusicProvider;
+  readonly accountId: string;
+  readonly connectionId: string;
+  readonly fetcher?: typeof fetch;
+  readonly now: () => number;
+}): Promise<ProviderAdapter> {
+  if (input.provider === "spotify") return adapterFor(input);
+  const developerToken = await createAppleDeveloperToken({
+    teamId: input.env.APPLE_TEAM_ID,
+    keyId: input.env.APPLE_KEY_ID,
+    privateKeyJwk: applePrivateJwk(input.env),
+    nowMs: input.now(),
+  });
+  return new AppleMusicAdapter({ developerToken, fetcher: input.fetcher, now: input.now });
 }
 
 function assertCallback(body: Record<string, unknown>, origin: string): void {
@@ -361,7 +386,7 @@ export async function handleConnectorRequest(
       const accountId = requiredString(body, "accountId");
       const connectionId = requiredString(body, "connectionId");
       allowlisted(env, accountId, provider);
-      const adapter = await adapterFor({ env, store, provider, accountId, connectionId, fetcher: dependencies.fetcher, now });
+      const adapter = await catalogAdapterFor({ env, store, provider, accountId, connectionId, fetcher: dependencies.fetcher, now });
       const context = { requestId, provider, credentialRef: connectionId, storefront: "US" as const };
       const mode = requiredString(body, "mode");
       if (mode === "recording_id") {
@@ -382,6 +407,29 @@ export async function handleConnectorRequest(
         return response(requestId, await adapter.search(context, catalogQuery));
       }
       throw new HttpError(400, "INVALID_MODE", "Unknown catalog query mode");
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/catalog/source") {
+      const body = await readObject(request);
+      const provider = providerValue(body.provider);
+      const accountId = requiredString(body, "accountId");
+      const providerRecordingId = requiredString(body, "providerRecordingId");
+      allowlistedForAnyProvider(env, accountId);
+      if (provider === "spotify") {
+        return response(requestId, await spotifyOEmbedMetadata(providerRecordingId, { fetcher: dependencies.fetcher, now }));
+      }
+      requireProviderEnabled(env, "apple_music");
+      const developerToken = await createAppleDeveloperToken({
+        teamId: env.APPLE_TEAM_ID,
+        keyId: env.APPLE_KEY_ID,
+        privateKeyJwk: applePrivateJwk(env),
+        nowMs: now(),
+      });
+      const adapter = new AppleMusicAdapter({ developerToken, fetcher: dependencies.fetcher, now });
+      return response(requestId, await adapter.getRecording(
+        { requestId, provider: "apple_music", credentialRef: "catalog-only", storefront: "US" },
+        providerRecordingId,
+      ));
     }
 
     if (request.method === "POST" && url.pathname === "/v1/publish/preview") {

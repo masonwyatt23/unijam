@@ -93,6 +93,19 @@ Start with deterministic identifiers and neutral metadata:
   duration difference over five seconds, explicit mismatch, version or deluxe
   edition mismatch, unknown availability, US unavailability, or close runner-up
   produces a review hold.
+- Apple catalog lookup and search use a short-lived developer token only; they
+  never require or load a host's Music User Token. Personalized Apple library
+  and publishing calls still require that host's encrypted connection.
+- For an Apple Music link resolved into Spotify, the connector reads complete
+  Apple catalog metadata and searches only through the room owner's Spotify
+  connection. For a Spotify link resolved into Apple Music, UniJam uses only
+  Spotify's documented [oEmbed API](https://developer.spotify.com/documentation/embeds/reference/oembed).
+  oEmbed exposes a title but not artist, ISRC, duration, or version, so every
+  resulting Apple candidate remains held until the submitting participant
+  explicitly chooses one through a short-lived, participant-bound resolution
+  grant. Title-only metadata can never auto-stage a recording.
+- Cross-provider catalog resolution never grants publishing authority. A room
+  can publish only with its owner's independently connected provider token.
 
 Do not send Spotify content, metadata, artwork, audio features, or playlist contents into an ML or AI model. Spotify's [Developer Policy](https://developer.spotify.com/policy) prohibits using Spotify Content to train or otherwise ingest into AI/ML models. Any learned matcher must use separately licensed neutral data and user corrections.
 

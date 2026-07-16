@@ -7,6 +7,7 @@ import {
   normalizeCatalogText,
   parseConnectorCandidate,
   parseConnectorEnvelope,
+  parseSpotifyOEmbedSource,
   resolutionRequestForCandidate,
   stableRecordingIdentity,
 } from "@/lib/server/catalog-resolution";
@@ -73,6 +74,57 @@ async function persistMatch(db: D1Database, candidate: CatalogCandidate, method:
   return identity;
 }
 
+type RoomAccess = NonNullable<Awaited<ReturnType<typeof authenticateRoomActor>>>;
+
+async function connectorData(runtime: ConnectorProxyEnv, path: string, body: Record<string, unknown>): Promise<unknown | Response> {
+  const connector = await connectorJsonRequest(runtime, path, body);
+  if (!connector.ok) return connectorFailure(connector.status);
+  const envelope = parseConnectorEnvelope(await connector.json());
+  if (!envelope || envelope.error) return apiError("PROVIDER_UNAVAILABLE", "This music service returned an invalid result", 502, true);
+  return envelope.data;
+}
+
+async function registerCandidateGrant(input: {
+  readonly db: D1Database;
+  readonly roomEnv: RoomAuthorityEnv;
+  readonly roomId: string;
+  readonly access: RoomAccess;
+  readonly candidate: CatalogCandidate;
+  readonly method: "provider_id" | "metadata";
+  readonly evidence: readonly string[];
+}): Promise<Response | {
+  readonly resolutionId: string;
+  readonly recordingId: string;
+  readonly providerUrl: string;
+}> {
+  const identity = await persistMatch(input.db, input.candidate, input.method, input.evidence);
+  const resolutionId = `res_${crypto.randomUUID()}`;
+  const registrationHeaders = actorHeaders(input.access.actor, input.roomId);
+  registrationHeaders.set("Content-Type", "application/json");
+  registrationHeaders.set("X-UniJam-Resolution-Authority", "true");
+  const registration = await roomStub(input.roomEnv, input.roomId).fetch(new Request("https://room.internal/internal/resolutions", {
+    method: "POST",
+    headers: registrationHeaders,
+    body: JSON.stringify({
+      resolutionId,
+      recordingId: identity.recordingId,
+      title: input.candidate.title,
+      matchId: identity.matchId,
+      provider: input.candidate.provider,
+      providerRecordingId: input.candidate.providerRecordingId,
+      method: input.method,
+      explicit: input.candidate.explicit ?? null,
+      evidence: input.evidence,
+    }),
+  }));
+  if (!registration.ok) return apiError("RESOLUTION_AUTHORITY_FAILED", "The resolved recording could not be bound to this room", 503, true);
+  return {
+    resolutionId,
+    recordingId: identity.recordingId,
+    providerUrl: createProviderHandoffLinks(input.candidate.provider, input.candidate.providerRecordingId).universalUrl,
+  };
+}
+
 export async function POST(request: Request, context: Context): Promise<Response> {
   if (!env.DB || !env.ROOM_OBJECTS || !env.CONNECTORS) return apiError("RESOLUTION_UNAVAILABLE", "Catalog resolution is unavailable", 503, true);
   try {
@@ -85,30 +137,138 @@ export async function POST(request: Request, context: Context): Promise<Response
     if (intent.kind === "unsupported") {
       return apiError("UNSUPPORTED_SOURCE", "Use a Spotify link, Apple Music link, or plain track text", 422);
     }
-    const provider = intent.kind === "provider_recording" ? intent.provider : requestedProvider(body.provider);
-    if (!provider) return apiError("PROVIDER_REQUIRED", "Choose Spotify or Apple Music for text search", 400);
+    const requestedDestination = requestedProvider(body.provider);
+    const provider = requestedDestination ?? (intent.kind === "provider_recording" ? intent.provider : null);
+    if (!provider) return apiError("PROVIDER_REQUIRED", "Choose Spotify or Apple Music for this recording", 400);
     const publicProvider = provider === "apple_music" ? "apple-music" : provider;
-    const queryBody: Record<string, unknown> = {
-      accountId: access.registry.owner_account_id,
-      connectionId: `${publicProvider}:${access.registry.owner_account_id}`,
-      provider,
-      ...(intent.kind === "provider_recording"
-        ? { mode: "recording_id", providerRecordingId: intent.providerRecordingId }
-        : { mode: "search", query: { title: intent.title ?? intent.query, artists: intent.artists, limit: 10 } }),
-    };
-    const connector = await connectorJsonRequest(env as ConnectorProxyEnv, "/v1/catalog/query", queryBody);
-    if (!connector.ok) return connectorFailure(connector.status);
-    const envelope = parseConnectorEnvelope(await connector.json());
-    if (!envelope || envelope.error) return apiError("PROVIDER_UNAVAILABLE", "This music service returned an invalid result", 502, true);
-    const rawCandidates = intent.kind === "provider_recording" ? [envelope.data] : Array.isArray(envelope.data) ? envelope.data : [];
+    const accountId = access.registry.owner_account_id;
+    const runtime = env as ConnectorProxyEnv;
+    const crossProvider = intent.kind === "provider_recording" && intent.provider !== provider;
+    let rawCandidateData: unknown;
+    let resolutionRequest: ResolutionRequest;
+    const method: "provider_id" | "metadata" = intent.kind === "provider_recording" && !crossProvider ? "provider_id" : "metadata";
+    let mandatorySelection = false;
+    let sourceAttribution: { provider: "spotify"; title: string; providerUrl: string } | undefined;
+    let crossEvidence: string[] = [];
+
+    if (crossProvider && intent.kind === "provider_recording") {
+      const sourceData = await connectorData(runtime, "/v1/catalog/source", {
+        accountId,
+        provider: intent.provider,
+        providerRecordingId: intent.providerRecordingId,
+      });
+      if (sourceData instanceof Response) return sourceData;
+      if (intent.provider === "spotify") {
+        const source = parseSpotifyOEmbedSource(sourceData, intent.providerRecordingId);
+        if (!source || provider !== "apple_music") return apiError("PROVIDER_UNAVAILABLE", "Spotify returned invalid link metadata", 502, true);
+        sourceAttribution = {
+          provider: "spotify",
+          title: source.title,
+          providerUrl: createProviderHandoffLinks("spotify", source.providerRecordingId).universalUrl,
+        };
+        mandatorySelection = true;
+        crossEvidence = ["spotify_oembed_title", "explicit_user_selection_required"];
+        resolutionRequest = { provider, storefront: "US", title: source.title, artists: [] };
+        rawCandidateData = await connectorData(runtime, "/v1/catalog/query", {
+          accountId,
+          connectionId: `${publicProvider}:${accountId}`,
+          provider,
+          mode: "search",
+          query: { title: source.title, artists: [], limit: 10 },
+        });
+      } else {
+        const source = parseConnectorCandidate(sourceData, "apple_music");
+        if (!source || provider !== "spotify") return apiError("PROVIDER_UNAVAILABLE", "Apple Music returned invalid catalog metadata", 502, true);
+        crossEvidence = ["apple_music_source_metadata"];
+        resolutionRequest = {
+          provider,
+          storefront: "US",
+          title: source.title,
+          artists: source.artists,
+          ...(source.album ? { album: source.album } : {}),
+          ...(source.durationMs === undefined ? {} : { durationMs: source.durationMs }),
+          ...(source.isrc ? { isrc: source.isrc } : {}),
+          ...(source.explicit === undefined ? {} : { explicit: source.explicit }),
+          ...(source.version ? { version: source.version } : {}),
+          ...(source.edition ? { edition: source.edition } : {}),
+        };
+        rawCandidateData = source.isrc
+          ? await connectorData(runtime, "/v1/catalog/query", {
+              accountId,
+              connectionId: `${publicProvider}:${accountId}`,
+              provider,
+              mode: "isrc",
+              isrc: source.isrc,
+            })
+          : [];
+        if (!(rawCandidateData instanceof Response) && (!Array.isArray(rawCandidateData) || rawCandidateData.length === 0)) {
+          rawCandidateData = await connectorData(runtime, "/v1/catalog/query", {
+            accountId,
+            connectionId: `${publicProvider}:${accountId}`,
+            provider,
+            mode: "search",
+            query: { title: source.title, artists: source.artists, album: source.album, limit: 10 },
+          });
+        }
+      }
+    } else {
+      rawCandidateData = await connectorData(runtime, "/v1/catalog/query", {
+        accountId,
+        connectionId: `${publicProvider}:${accountId}`,
+        provider,
+        ...(intent.kind === "provider_recording"
+          ? { mode: "recording_id", providerRecordingId: intent.providerRecordingId }
+          : { mode: "search", query: { title: intent.title ?? intent.query, artists: intent.artists, limit: 10 } }),
+      });
+      resolutionRequest = intent.kind === "provider_recording"
+        ? { provider, providerRecordingId: intent.providerRecordingId, storefront: "US", title: "", artists: [] }
+        : { provider, storefront: "US", title: intent.title ?? intent.query, artists: intent.artists };
+    }
+
+    if (rawCandidateData instanceof Response) return rawCandidateData;
+    const rawCandidates = intent.kind === "provider_recording" && !crossProvider
+      ? [rawCandidateData]
+      : Array.isArray(rawCandidateData) ? rawCandidateData : [];
     const candidates = rawCandidates.flatMap((value) => {
       const parsed = parseConnectorCandidate(value, provider);
       return parsed ? [parsed] : [];
     });
-    const resolutionRequest: ResolutionRequest = intent.kind === "provider_recording" && candidates[0]
-      ? resolutionRequestForCandidate(candidates[0])
-      : { provider, storefront: "US", title: intent.kind === "text_search" ? intent.title ?? intent.query : "", artists: intent.kind === "text_search" ? intent.artists : [] };
+    if (intent.kind === "provider_recording" && !crossProvider && candidates[0]) {
+      resolutionRequest = resolutionRequestForCandidate(candidates[0]);
+    }
     const resolution = resolveUsCatalogRecording(resolutionRequest, candidates);
+    if (mandatorySelection) {
+      if (resolution.status === "no_match") return apiResponse({ ...resolution, sourceAttribution });
+      const ranked = resolution.status === "hold"
+        ? resolution.candidates
+        : [resolution.match, ...resolution.alternatives];
+      const selections = [];
+      for (const entry of ranked.slice(0, 3)) {
+        const evidence = [...new Set([...entry.evidence, ...crossEvidence])];
+        const grant = await registerCandidateGrant({
+          db: env.DB,
+          roomEnv: env as RoomAuthorityEnv,
+          roomId,
+          access,
+          candidate: entry.candidate,
+          method: "metadata",
+          evidence,
+        });
+        if (grant instanceof Response) return grant;
+        selections.push({
+          ...entry,
+          resolutionId: grant.resolutionId,
+          candidate: { ...entry.candidate, providerUrl: grant.providerUrl },
+        });
+      }
+      return apiResponse({
+        status: "hold",
+        storefront: "US",
+        reasons: ["source_metadata_incomplete"],
+        candidates: selections,
+        sourceAttribution,
+      });
+    }
     if (resolution.status === "hold") {
       return apiResponse({
         ...resolution,
@@ -123,34 +283,14 @@ export async function POST(request: Request, context: Context): Promise<Response
     }
     if (resolution.status === "no_match") return apiResponse(resolution);
     const candidate = resolution.match.candidate;
-    const providerUrl = createProviderHandoffLinks(candidate.provider, candidate.providerRecordingId).universalUrl;
-    const method = intent.kind === "provider_recording" ? "provider_id" : "metadata";
-    const identity = await persistMatch(env.DB, candidate, method, resolution.match.evidence);
-    const resolutionId = `res_${crypto.randomUUID()}`;
-    const registrationHeaders = actorHeaders(access.actor, roomId);
-    registrationHeaders.set("Content-Type", "application/json");
-    registrationHeaders.set("X-UniJam-Resolution-Authority", "true");
-    const registration = await roomStub(env as RoomAuthorityEnv, roomId).fetch(new Request("https://room.internal/internal/resolutions", {
-      method: "POST",
-      headers: registrationHeaders,
-      body: JSON.stringify({
-        resolutionId,
-        recordingId: identity.recordingId,
-        title: candidate.title,
-        matchId: identity.matchId,
-        provider: candidate.provider,
-        providerRecordingId: candidate.providerRecordingId,
-        method,
-        explicit: candidate.explicit ?? null,
-        evidence: resolution.match.evidence,
-      }),
-    }));
-    if (!registration.ok) return apiError("RESOLUTION_AUTHORITY_FAILED", "The resolved recording could not be bound to this room", 503, true);
+    const evidence = [...new Set([...resolution.match.evidence, ...crossEvidence])];
+    const grant = await registerCandidateGrant({ db: env.DB, roomEnv: env as RoomAuthorityEnv, roomId, access, candidate, method, evidence });
+    if (grant instanceof Response) return grant;
     return apiResponse({
       status: "matched",
       storefront: "US",
-      resolutionId,
-      recordingId: identity.recordingId,
+      resolutionId: grant.resolutionId,
+      recordingId: grant.recordingId,
       title: candidate.title,
       artists: candidate.artists,
       album: candidate.album ?? null,
@@ -158,8 +298,8 @@ export async function POST(request: Request, context: Context): Promise<Response
       version: candidate.version ?? "unknown",
       provider: candidate.provider === "apple_music" ? "apple-music" : candidate.provider,
       providerRecordingId: candidate.providerRecordingId,
-      providerUrl,
-      evidence: resolution.match.evidence,
+      providerUrl: grant.providerUrl,
+      evidence,
     });
   } catch {
     return apiError("RESOLUTION_FAILED", "The contribution could not be resolved", 400);

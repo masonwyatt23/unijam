@@ -16,6 +16,13 @@ import { inferEdition, inferVersion, isRecord, numberValue, stringValue } from "
 const API = "https://api.spotify.com/v1";
 const SPOTIFY_ID = /^[0-9A-Za-z]{22}$/;
 
+export interface SpotifyOEmbedMetadata {
+  readonly provider: "spotify";
+  readonly providerRecordingId: string;
+  readonly title: string;
+  readonly metadataComplete: false;
+}
+
 export interface SpotifyAdapterOptions {
   readonly accessToken: string;
   readonly fetcher?: typeof fetch;
@@ -79,6 +86,43 @@ function spotifyCandidate(value: unknown): CatalogCandidate | null {
     edition: inferEdition(album),
     ...(storefronts === undefined ? {} : { storefronts }),
   };
+}
+
+/**
+ * Reads only Spotify's documented oEmbed link-preview contract. oEmbed does not
+ * expose artist, ISRC, duration, or version, so callers must never auto-match
+ * its title alone.
+ */
+export async function spotifyOEmbedMetadata(
+  providerRecordingId: string,
+  options: { readonly fetcher?: typeof fetch; readonly now?: () => number } = {},
+): Promise<SpotifyOEmbedMetadata> {
+  if (!SPOTIFY_ID.test(providerRecordingId)) throw new Error("invalid Spotify recording ID");
+  const trackUrl = `https://open.spotify.com/track/${providerRecordingId}`;
+  const body = await providerJson(
+    `https://open.spotify.com/oembed?${new URLSearchParams({ url: trackUrl })}`,
+    {},
+    { provider: "spotify", fetcher: options.fetcher, now: options.now },
+    objectResponse,
+  );
+  const title = stringValue(body.title)?.trim();
+  const iframeUrl = stringValue(body.iframe_url) ?? (() => {
+    const html = stringValue(body.html);
+    const match = html?.match(/\bsrc=["']([^"']+)["']/i);
+    return match?.[1];
+  })();
+  let iframe: URL;
+  try { iframe = new URL(iframeUrl ?? ""); }
+  catch { throw invalidProviderResponse("spotify"); }
+  if (
+    !title || title.length > 500 || body.provider_name !== "Spotify" ||
+    body.provider_url !== "https://spotify.com" || body.type !== "rich" ||
+    iframe.protocol !== "https:" || iframe.hostname !== "open.spotify.com" ||
+    iframe.pathname !== `/embed/track/${providerRecordingId}`
+  ) {
+    throw invalidProviderResponse("spotify");
+  }
+  return { provider: "spotify", providerRecordingId, title, metadataComplete: false };
 }
 
 export class SpotifyAdapter implements ProviderAdapter {

@@ -10,7 +10,7 @@ import { exchangeSpotifyAuthorizationCode, spotifyCallbackUrl, startSpotifyAutho
 import { processPublishJob } from "./queue.ts";
 import { handleConnectorRequest } from "./router.ts";
 import { encodeBase64Url } from "./storage.ts";
-import { SpotifyAdapter } from "./spotify.ts";
+import { SpotifyAdapter, spotifyOEmbedMetadata } from "./spotify.ts";
 import type { ConnectorEnv, ConnectorStore, OAuthAttempt, PublishJobRecord, StoredConnection, StoredPublishPreview } from "./types.ts";
 
 class MemoryStore implements ConnectorStore {
@@ -278,6 +278,33 @@ test("Spotify adapter uses current private-playlist and playlist-item contracts"
   assert.equal(read.ownershipVerified, true);
   await adapter.search(context, { title: "Fixture", artists: ["Artist"], limit: 50 });
   assert.equal(new URL(requests[4].url).searchParams.get("limit"), "10");
+});
+
+test("Spotify oEmbed source metadata is title-only and rejects spoofed embeds", async () => {
+  const id = "4uLU6hMCjMI75M1A2tKUQC";
+  const metadata = await spotifyOEmbedMetadata(id, { fetcher: async () => Response.json({
+    provider_name: "Spotify",
+    provider_url: "https://spotify.com",
+    type: "rich",
+    title: "Never Gonna Give You Up",
+    iframe_url: `https://open.spotify.com/embed/track/${id}?utm_source=oembed`,
+  }) });
+  assert.deepEqual(metadata, {
+    provider: "spotify",
+    providerRecordingId: id,
+    title: "Never Gonna Give You Up",
+    metadataComplete: false,
+  });
+  await assert.rejects(
+    spotifyOEmbedMetadata(id, { fetcher: async () => Response.json({
+      provider_name: "Spotify",
+      provider_url: "https://spotify.com",
+      type: "rich",
+      title: "Spoofed",
+      iframe_url: `https://evil.test/embed/track/${id}`,
+    }) }),
+    /invalid response/i,
+  );
 });
 
 test("provider failures map auth, Retry-After, 5xx writes, and malformed bodies safely", async () => {
@@ -666,6 +693,59 @@ test("provider pilot allowlists are independent while status remains available f
   );
   assert.equal(denied.status, 403);
   assert.equal((await denied.json() as { error: { code: string } }).error.code, "PILOT_NOT_ALLOWED");
+});
+
+test("Apple catalog reads need no Music User Token while cross-provider sources stay scoped", async () => {
+  const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const privateJwk = await crypto.subtle.exportKey("jwk", key.privateKey);
+  const store = new MemoryStore();
+  const headers = { Authorization: "Bearer internal-fixture-secret", "Content-Type": "application/json" };
+  const mixed = env({
+    APPLE_PRIVATE_KEY_JWK: JSON.stringify(privateJwk),
+    SPOTIFY_PILOT_ACCOUNT_ALLOWLIST: "spotify-host",
+    APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST: "apple-host",
+  });
+  const appleSong = {
+    data: [{
+      id: "203709340",
+      type: "songs",
+      attributes: { name: "Fixture Song", artistName: "Fixture Artist", isrc: "USFIX2600001", durationInMillis: 180_000 },
+    }],
+  };
+  const catalog = await handleConnectorRequest(new Request("https://connector/v1/catalog/query", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ accountId: "apple-host", connectionId: "apple-music:apple-host", provider: "apple_music", mode: "recording_id", providerRecordingId: "203709340" }),
+  }), mixed, { store, fetcher: async () => Response.json(appleSong), now: () => 2_000 });
+  assert.equal(catalog.status, 200);
+  assert.equal((await catalog.json() as { data: { title: string } }).data.title, "Fixture Song");
+  assert.equal(await store.getConnection("apple-host", "apple-music:apple-host", "apple_music"), null);
+
+  const appleSourceForSpotifyHost = await handleConnectorRequest(new Request("https://connector/v1/catalog/source", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ accountId: "spotify-host", provider: "apple_music", providerRecordingId: "203709340" }),
+  }), mixed, { store, fetcher: async () => Response.json(appleSong), now: () => 2_000 });
+  assert.equal(appleSourceForSpotifyHost.status, 200);
+  assert.equal((await appleSourceForSpotifyHost.json() as { data: { isrc: string } }).data.isrc, "USFIX2600001");
+
+  const spotifySourceForAppleHost = await handleConnectorRequest(new Request("https://connector/v1/catalog/source", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ accountId: "apple-host", provider: "spotify", providerRecordingId: "4uLU6hMCjMI75M1A2tKUQC" }),
+  }), mixed, { store, fetcher: async () => Response.json({
+    provider_name: "Spotify", provider_url: "https://spotify.com", type: "rich", title: "Fixture Song",
+    iframe_url: "https://open.spotify.com/embed/track/4uLU6hMCjMI75M1A2tKUQC",
+  }), now: () => 2_000 });
+  assert.equal(spotifySourceForAppleHost.status, 200);
+  assert.equal((await spotifySourceForAppleHost.json() as { data: { metadataComplete: boolean } }).data.metadataComplete, false);
+
+  const outsider = await handleConnectorRequest(new Request("https://connector/v1/catalog/source", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ accountId: "outsider", provider: "spotify", providerRecordingId: "4uLU6hMCjMI75M1A2tKUQC" }),
+  }), mixed, { store });
+  assert.equal(outsider.status, 403);
 });
 
 test("disconnect fences an OAuth callback that already consumed its one-time state", async () => {

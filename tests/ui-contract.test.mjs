@@ -126,7 +126,10 @@ test("Spotify connect consumes the connector PKCE authorization URL contract", a
 });
 
 test("live contributions resolve before staging a canonical suggestion", async () => {
-  const room = await read("app/room/[roomId]/page.tsx");
+  const [room, resolver] = await Promise.all([
+    read("app/room/[roomId]/page.tsx"),
+    read("app/api/v1/rooms/[roomId]/resolve/route.ts"),
+  ]);
   assert.match(room, /\/resolve/);
   assert.match(room, /status === "hold"/);
   assert.match(room, /status === "no_match"/);
@@ -134,6 +137,12 @@ test("live contributions resolve before staging a canonical suggestion", async (
   assert.match(room, /suggestionId: `sug_\$\{crypto\.randomUUID\(\)\}`/);
   assert.match(room, /action: "suggestion\.stage"/);
   assert.match(room, /resolutionId: match\.resolutionId/);
+  assert.match(room, /Add this recording/);
+  assert.match(room, /source_metadata_incomplete/);
+  assert.match(resolver, /mandatorySelection = true/);
+  assert.match(resolver, /spotify_oembed_title/);
+  assert.match(resolver, /explicit_user_selection_required/);
+  assert.doesNotMatch(resolver, /embedding|analytics|machine learning|\bML\b/);
   assert.doesNotMatch(room, /payload: \{ suggestionId:[^\n]+recordingId:/);
   assert.doesNotMatch(room, /synthetic recording IDs|Catalog resolution unavailable/);
 });

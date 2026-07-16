@@ -114,7 +114,14 @@ Run this first in staging with synthetic/non-sensitive track choices:
 4. Approve, vote, reorder, mark ready, perform native handoff, and explicitly
    confirm playback. Never infer playback from an opened link.
 5. End the room and verify the recap.
-6. Publish independently to new private Apple Music and Spotify playlists.
+6. Publish from two independently hosted rooms: Mason publishes his room to a
+   new private Apple Music playlist, and a Spotify cofounder publishes their
+   own room to a new private Spotify playlist. Publishing is always scoped to
+   the room owner's encrypted provider connection. Cross-provider catalog
+   resolution does not borrow another cofounder's token, and Mason cannot
+   publish to Spotify unless he separately joins the Spotify pilot and connects
+   his own Spotify account. If one host explicitly connects both services,
+   dual-destination publishing may instead be tested from that one room.
    Confirm one provider's injected failure does not alter the other result and
    a retry creates no duplicate playlist items.
 7. Disconnect both providers. Confirm encrypted tokens, pending previews, OAuth

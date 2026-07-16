@@ -63,6 +63,7 @@ must never forward client-asserted authority fields directly.
 | `DELETE /v1/connections/{spotify\|apple-music}` | `{ accountId, connectionId }` |
 | `POST /v1/accounts/purge` | `{ accountId }` |
 | `POST /v1/catalog/query` | `{ accountId, connectionId, provider, mode, ... }` |
+| `POST /v1/catalog/source` | `{ accountId, provider, providerRecordingId }` |
 | `POST /v1/publish/preview` | `{ accountId, connectionId, roomId, roomRevision, provider, playlistName, playlistDescription?, items }` |
 | `POST /v1/publish/confirm` | `{ accountId, previewId, payloadFingerprint, confirmedAtMs }` |
 | `POST /v1/publish/operation` | `{ accountId, operationId }` |
@@ -80,6 +81,13 @@ Operation status includes `destinationUrl` only when the provider returned a
 validated official HTTPS URL. Spotify create responses normally provide one;
 Apple Music private library-playlist responses do not guarantee a share URL,
 so callers must support `null` and must never construct an Apple Music slug.
+
+Apple Music catalog reads use only the short-lived developer token and do not
+load or require a Music User Token. Personalized Apple library and playlist
+operations still require the encrypted host connection. Source metadata for a
+Spotify link uses only Spotify's documented oEmbed endpoint. Its title-only
+response is explicitly incomplete and may seed Apple Music candidates, but it
+can never authorize an automatic cross-provider match.
 
 Operator recovery additionally requires
 `X-UniJam-Operator-Authorization: Bearer <CONNECTOR_OPERATOR_SECRET>`. The

@@ -55,6 +55,23 @@ export function parseConnectorEnvelope(value: unknown): ConnectorEnvelope | null
   return envelope ? envelope as ConnectorEnvelope : null;
 }
 
+export function parseSpotifyOEmbedSource(value: unknown, expectedRecordingId: string): {
+  readonly provider: "spotify";
+  readonly providerRecordingId: string;
+  readonly title: string;
+  readonly metadataComplete: false;
+} | null {
+  const source = record(value);
+  if (
+    !source || source.provider !== "spotify" || source.providerRecordingId !== expectedRecordingId ||
+    source.metadataComplete !== false || typeof source.title !== "string"
+  ) return null;
+  const title = source.title.trim();
+  return title && title.length <= 500
+    ? { provider: "spotify", providerRecordingId: expectedRecordingId, title, metadataComplete: false }
+    : null;
+}
+
 export function resolutionRequestForCandidate(candidate: CatalogCandidate): ResolutionRequest {
   return {
     provider: candidate.provider,
