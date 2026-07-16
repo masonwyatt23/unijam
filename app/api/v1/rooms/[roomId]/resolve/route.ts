@@ -12,6 +12,7 @@ import {
   stableRecordingIdentity,
   titleOnlyReviewCandidates,
 } from "@/lib/server/catalog-resolution";
+import { catalogPrincipalForRoom } from "@/lib/server/catalog-principal";
 import { connectorJsonRequest, type ConnectorProxyEnv } from "@/lib/server/connector-proxy";
 import { actorHeaders, authenticateRoomActor, normalizeV1RoomId, roomStub, type RoomAuthorityEnv } from "@/lib/server/room-authority";
 import { createProviderHandoffLinks } from "@/lib/providers/handoff";
@@ -153,7 +154,20 @@ export async function POST(request: Request, context: Context): Promise<Response
     const provider = requestedDestination ?? (intent.kind === "provider_recording" ? intent.provider : null);
     if (!provider) return apiError("PROVIDER_REQUIRED", "Choose Spotify or Apple Music for this recording", 400);
     const publicProvider = provider === "apple_music" ? "apple-music" : provider;
-    const accountId = access.registry.owner_account_id;
+    const catalogPrincipal = catalogPrincipalForRoom(access, provider);
+    if (!catalogPrincipal) {
+      return apiError(
+        "LISTENER_CONNECTION_REQUIRED",
+        "Create or sign in to your UniJam account, then connect Spotify to add Spotify tracks",
+        409,
+      );
+    }
+    const accountId = catalogPrincipal.kind === "account" ? catalogPrincipal.accountId : null;
+    const catalogPath = catalogPrincipal.kind === "public" ? "/v1/catalog/public-query" : "/v1/catalog/query";
+    const catalogIdentity = accountId === null ? {} : {
+      accountId,
+      connectionId: `${publicProvider}:${accountId}`,
+    };
     const runtime = env as ConnectorProxyEnv;
     const crossProvider = intent.kind === "provider_recording" && intent.provider !== provider;
     let rawCandidateData: unknown;
@@ -165,7 +179,6 @@ export async function POST(request: Request, context: Context): Promise<Response
 
     if (crossProvider && intent.kind === "provider_recording") {
       const sourceData = await connectorData(runtime, "/v1/catalog/source", {
-        accountId,
         provider: intent.provider,
         providerRecordingId: intent.providerRecordingId,
       });
@@ -181,9 +194,8 @@ export async function POST(request: Request, context: Context): Promise<Response
         mandatorySelection = true;
         crossEvidence = ["spotify_oembed_title", "explicit_user_selection_required"];
         resolutionRequest = { provider, storefront: "US", title: source.title, artists: [] };
-        rawCandidateData = await connectorData(runtime, "/v1/catalog/query", {
-          accountId,
-          connectionId: `${publicProvider}:${accountId}`,
+        rawCandidateData = await connectorData(runtime, catalogPath, {
+          ...catalogIdentity,
           provider,
           mode: "search",
           query: { title: source.title, artists: [], limit: 10 },
@@ -205,18 +217,16 @@ export async function POST(request: Request, context: Context): Promise<Response
           ...(source.edition ? { edition: source.edition } : {}),
         };
         rawCandidateData = source.isrc
-          ? await connectorData(runtime, "/v1/catalog/query", {
-              accountId,
-              connectionId: `${publicProvider}:${accountId}`,
+          ? await connectorData(runtime, catalogPath, {
+              ...catalogIdentity,
               provider,
               mode: "isrc",
               isrc: source.isrc,
             })
           : [];
         if (!(rawCandidateData instanceof Response) && (!Array.isArray(rawCandidateData) || rawCandidateData.length === 0)) {
-          rawCandidateData = await connectorData(runtime, "/v1/catalog/query", {
-            accountId,
-            connectionId: `${publicProvider}:${accountId}`,
+          rawCandidateData = await connectorData(runtime, catalogPath, {
+            ...catalogIdentity,
             provider,
             mode: "search",
             query: { title: source.title, artists: source.artists, album: source.album, limit: 10 },
@@ -224,9 +234,8 @@ export async function POST(request: Request, context: Context): Promise<Response
         }
       }
     } else {
-      rawCandidateData = await connectorData(runtime, "/v1/catalog/query", {
-        accountId,
-        connectionId: `${publicProvider}:${accountId}`,
+      rawCandidateData = await connectorData(runtime, catalogPath, {
+        ...catalogIdentity,
         provider,
         ...(intent.kind === "provider_recording"
           ? { mode: "recording_id", providerRecordingId: intent.providerRecordingId }
