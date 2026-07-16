@@ -3,9 +3,7 @@ import type { RegistrationResponseJSON } from "@simplewebauthn/server";
 
 import { apiError, apiResponse } from "@/lib/server/api-response";
 import { consumeAuthRateLimit, requestIp } from "@/lib/server/auth-rate-limit";
-import { createHostSession } from "@/lib/server/host-session";
-import { finishRegistration } from "@/lib/server/passkeys";
-import { createRecoveryCodes } from "@/lib/server/recovery-codes";
+import { finishBootstrapRegistration } from "@/lib/server/passkeys";
 
 export async function POST(request: Request): Promise<Response> {
   try {
@@ -20,10 +18,14 @@ export async function POST(request: Request): Promise<Response> {
         !await consumeAuthRateLimit(env.DB, `registration-verify:account:${body.accountId}`, 10)) {
       return apiError("RATE_LIMITED", "Enrollment cannot be completed right now", 429, true);
     }
-    const result = await finishRegistration(env.DB, env, { accountId: body.accountId, displayName, response: body.response });
-    const recoveryCodes = await createRecoveryCodes(env.DB, result.accountId);
-    const session = await createHostSession(env.DB, result.accountId);
-    return apiResponse({ ...result, recoveryCodes }, { status: 201, headers: { "Set-Cookie": session.cookie } });
+    const result = await finishBootstrapRegistration(
+      env.DB,
+      env,
+      { accountId: body.accountId, displayName, response: body.response },
+      "pilot",
+    );
+    const { sessionCookie, ...data } = result;
+    return apiResponse(data, { status: 201, headers: { "Set-Cookie": sessionCookie } });
   } catch (error) {
     void error;
     return apiError("REGISTRATION_VERIFICATION_FAILED", "Passkey registration could not be completed", 400);

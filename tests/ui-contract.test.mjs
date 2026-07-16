@@ -76,6 +76,33 @@ test("pilot enrollment uses a real passkey ceremony and shows recovery codes onc
   assert.doesNotMatch(signIn, /(?:localStorage|sessionStorage).*recovery/i);
 });
 
+test("public membership is passkey-first, provider-optional, and isolated from pilot invites", async () => {
+  const [signIn, passkeys, publicOptions, publicVerify, pilotVerify, returnTo] = await Promise.all([
+    read("app/host/sign-in/page.tsx"),
+    read("lib/server/passkeys.ts"),
+    read("app/api/v1/auth/passkeys/public-registration/options/route.ts"),
+    read("app/api/v1/auth/passkeys/public-registration/verify/route.ts"),
+    read("app/api/v1/auth/passkeys/registration/verify/route.ts"),
+    read("lib/host-return-to.ts"),
+  ]);
+  assert.match(signIn, /Create free account/);
+  assert.match(signIn, /public-registration\/options/);
+  assert.match(signIn, /public-registration\/verify/);
+  assert.match(signIn, /without connecting a music service/);
+  assert.match(signIn, /I have a pilot invite/);
+  assert.match(passkeys, /"public_registration"/);
+  assert.match(passkeys, /mode === "pilot" \? "registration" : "public_registration"/);
+  assert.match(passkeys, /\[\.\.\.recovery\.statements, session\.statement\]/);
+  assert.match(publicOptions, /public-registration-options:ip/);
+  assert.match(publicOptions, /readBoundedJson/);
+  assert.match(publicVerify, /public-registration-verify:account/);
+  assert.match(publicVerify, /finishBootstrapRegistration/);
+  assert.match(publicVerify, /"public"/);
+  assert.match(pilotVerify, /"pilot"/);
+  assert.match(returnTo, /HOST_DESTINATION\.test/);
+  assert.doesNotMatch(`${publicOptions}\n${publicVerify}`, /enrollmentCode|provider_connections|SPOTIFY|APPLE_MUSIC/);
+});
+
 test("a recovery session can enroll an additional passkey without bypassing gates", async () => {
   const host = await read("app/host/page.tsx");
   assert.match(host, /host\.data\.recoveryEnrollmentAvailable/);

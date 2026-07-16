@@ -21,22 +21,32 @@ export function passkeyVerifiedAt(method: "passkey" | "recovery", now: number): 
   return method === "passkey" ? now : null;
 }
 
-export async function createHostSession(
+export async function prepareHostSession(
   db: D1Database,
   accountId: string,
   method: "passkey" | "recovery" = "passkey",
-): Promise<{ token: string; cookie: string }> {
+  now = Date.now(),
+): Promise<{ token: string; cookie: string; statement: D1PreparedStatement }> {
   const token = randomToken();
-  const now = Date.now();
-  await db.prepare(
+  const statement = db.prepare(
     `INSERT INTO host_sessions
      (session_id, token_hash, account_id, authenticated_at_ms, passkey_verified_at_ms, expires_at_ms, created_at_ms, last_seen_at_ms, recovery_enrollment_expires_at_ms)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
     crypto.randomUUID(), await hashOpaqueToken(token), accountId, now, passkeyVerifiedAt(method, now),
     now + SESSION_TTL_SECONDS * 1_000, now, now, method === "recovery" ? now + RECOVERY_ENROLLMENT_MS : null,
-  ).run();
-  return { token, cookie: sessionCookie(HOST_SESSION_COOKIE, token, SESSION_TTL_SECONDS) };
+  );
+  return { token, cookie: sessionCookie(HOST_SESSION_COOKIE, token, SESSION_TTL_SECONDS), statement };
+}
+
+export async function createHostSession(
+  db: D1Database,
+  accountId: string,
+  method: "passkey" | "recovery" = "passkey",
+): Promise<{ token: string; cookie: string }> {
+  const prepared = await prepareHostSession(db, accountId, method);
+  await prepared.statement.run();
+  return { token: prepared.token, cookie: prepared.cookie };
 }
 
 export async function authenticateHost(

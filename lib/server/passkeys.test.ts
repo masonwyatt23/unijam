@@ -1,13 +1,43 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { assertCounterAdvanced, normalizeEnrollmentCode, registrationAccountId } from "./passkeys.ts";
+import { safeHostReturnTo } from "../host-return-to.ts";
+import { assertCounterAdvanced, normalizeEnrollmentCode, publicRegistrationOptions, registrationAccountId } from "./passkeys.ts";
 
 test("bootstrap registration cannot select an existing account", () => {
   const victimAccountId = "victim-account";
   const assigned = registrationAccountId("registration", victimAccountId);
   assert.notEqual(assigned, victimAccountId);
   assert.match(assigned, /^[0-9a-f-]{36}$/);
+});
+
+test("public membership creates a fresh server-owned account identity", () => {
+  const victimAccountId = "victim-account";
+  const assigned = registrationAccountId("public_registration", victimAccountId);
+  assert.notEqual(assigned, victimAccountId);
+  assert.match(assigned, /^[0-9a-f-]{36}$/);
+});
+
+test("public membership persists a ceremony kind distinct from pilot enrollment", async () => {
+  const writes: Array<{ sql: string; values: unknown[] }> = [];
+  const db = {
+    prepare(sql: string) {
+      return {
+        bind(...values: unknown[]) {
+          return { run: async () => { writes.push({ sql, values }); } };
+        },
+      };
+    },
+  } as unknown as D1Database;
+  const result = await publicRegistrationOptions(db, {
+    APP_ENV: "development",
+    APP_ORIGIN: "http://localhost:3000",
+    WEBAUTHN_RP_ID: "localhost",
+  }, { userName: "listener@example.test", displayName: "Listener" });
+  assert.match(result.accountId, /^[0-9a-f-]{36}$/);
+  const challengeInsert = writes.find(({ sql }) => sql.includes("INSERT INTO passkey_challenges"));
+  assert.equal(challengeInsert?.values[2], "public_registration");
+  assert.equal(challengeInsert?.values[4], null);
 });
 
 test("additional credential registration requires server-derived authentication", () => {
@@ -25,4 +55,14 @@ test("pilot host enrollment requires a nontrivial server-issued code", () => {
   assert.throws(() => normalizeEnrollmentCode(""), /unavailable/);
   assert.throws(() => normalizeEnrollmentCode("public"), /unavailable/);
   assert.equal(normalizeEnrollmentCode(" pilot-abcd-1234 "), "PILOT-ABCD-1234");
+});
+
+test("post-authentication redirects stay on known UniJam host routes", () => {
+  assert.equal(safeHostReturnTo("/rooms/new"), "/rooms/new");
+  assert.equal(safeHostReturnTo("/room/ROOM1234/publish"), "/room/ROOM1234/publish");
+  assert.equal(safeHostReturnTo("/room/ROOM1234/handoff/spotify"), "/room/ROOM1234/handoff/spotify");
+  assert.equal(safeHostReturnTo("/connections/apple-music"), "/connections/apple-music");
+  for (const unsafe of ["https://evil.example", "//evil.example", "/join/ROOM1234", "/host?next=//evil.example", "/room/../../admin"]) {
+    assert.equal(safeHostReturnTo(unsafe), "/host");
+  }
 });

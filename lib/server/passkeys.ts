@@ -10,6 +10,8 @@ import type {
   RegistrationResponseJSON,
 } from "@simplewebauthn/server";
 
+import { prepareHostSession } from "./host-session.ts";
+import { prepareRecoveryCodes } from "./recovery-codes.ts";
 import { hashOpaqueToken } from "./secure-token.ts";
 
 const CHALLENGE_TTL_MS = 5 * 60_000;
@@ -56,10 +58,10 @@ export function passkeyConfig(env: PasskeyRuntimeConfig): { origin: string; rpId
 }
 
 export function registrationAccountId(
-  ceremony: "registration" | "additional_registration",
+  ceremony: "registration" | "public_registration" | "additional_registration",
   authenticatedAccountId?: string,
 ): string {
-  if (ceremony === "registration") return crypto.randomUUID();
+  if (ceremony === "registration" || ceremony === "public_registration") return crypto.randomUUID();
   if (!authenticatedAccountId) throw new Error("A recent authenticated passkey session is required");
   return authenticatedAccountId;
 }
@@ -79,7 +81,7 @@ export function normalizeEnrollmentCode(value: string): string {
 async function saveChallenge(
   db: D1Database,
   challenge: string,
-  kind: "registration" | "additional_registration" | "authentication",
+  kind: "registration" | "public_registration" | "additional_registration" | "authentication",
   accountId: string | null,
   enrollmentCodeHash: string | null = null,
   now = Date.now(),
@@ -96,7 +98,7 @@ type StoredChallenge = { challenge_hash: string; account_id: string | null; enro
 async function loadChallenge(
   db: D1Database,
   challenge: string,
-  kind: "registration" | "additional_registration" | "authentication",
+  kind: "registration" | "public_registration" | "additional_registration" | "authentication",
 ): Promise<StoredChallenge | null> {
   const now = Date.now();
   const challengeHash = await hashOpaqueToken(challenge);
@@ -150,6 +152,29 @@ export async function registrationOptions(
   return { accountId, options };
 }
 
+export async function publicRegistrationOptions(
+  db: D1Database,
+  env: PasskeyRuntimeConfig,
+  input: { userName: string; displayName: string },
+) {
+  const accountId = registrationAccountId("public_registration");
+  const { rpId } = passkeyConfig(env);
+  const options = await generateRegistrationOptions({
+    rpName: "UniJam",
+    rpID: rpId,
+    userID: new TextEncoder().encode(accountId),
+    userName: input.userName,
+    userDisplayName: input.displayName,
+    timeout: CHALLENGE_TTL_MS,
+    attestationType: "none",
+    authenticatorSelection: { residentKey: "required", requireResidentKey: true, userVerification: "required" },
+  });
+  // This distinct kind prevents a pilot invite ceremony from being replayed
+  // against public membership (or vice versa).
+  await saveChallenge(db, options.challenge, "public_registration", accountId);
+  return { accountId, options };
+}
+
 export async function additionalRegistrationOptions(
   db: D1Database,
   env: PasskeyRuntimeConfig,
@@ -179,8 +204,9 @@ export async function finishRegistration(
   db: D1Database,
   env: PasskeyRuntimeConfig,
   input: { accountId: string; displayName: string; response: RegistrationResponseJSON },
-  ceremony: "registration" | "additional_registration" = "registration",
+  ceremony: "registration" | "public_registration" | "additional_registration" = "registration",
   recoverySessionId?: string,
+  completionStatements: D1PreparedStatement[] = [],
 ): Promise<{ accountId: string; credentialId: string }> {
   const challenge = input.response.response.clientDataJSON;
   const clientData = JSON.parse(new TextDecoder().decode(base64ToBytes(challenge))) as { challenge?: string };
@@ -252,6 +278,10 @@ export async function finishRegistration(
          SELECT 1 FROM host_enrollment_codes WHERE code_hash = ? AND used_by_account_id = ? AND used_at_ms = ?
        )`,
     ).bind(input.accountId, input.displayName, now, now, stored.enrollment_code_hash, input.accountId, now));
+  } else if (ceremony === "public_registration") {
+    statements.splice(1, 0, db.prepare(
+      "INSERT INTO accounts (account_id, display_name, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?)",
+    ).bind(input.accountId, input.displayName, now, now));
   } else {
     const account = await db.prepare("SELECT account_id FROM accounts WHERE account_id = ? AND deleted_at_ms IS NULL LIMIT 1")
       .bind(input.accountId).first<{ account_id: string }>();
@@ -264,11 +294,32 @@ export async function finishRegistration(
       ).bind(now, recoverySessionId, input.accountId, now));
     }
   }
+  statements.push(...completionStatements);
   const results = await db.batch(statements);
   if (results.some((result) => (result.meta.changes ?? 0) !== 1)) {
     throw new Error(recoverySessionId ? "Recovery enrollment grant is invalid or already used" : "Passkey registration changed concurrently");
   }
   return { accountId: input.accountId, credentialId: info.credential.id };
+}
+
+export async function finishBootstrapRegistration(
+  db: D1Database,
+  env: PasskeyRuntimeConfig,
+  input: { accountId: string; displayName: string; response: RegistrationResponseJSON },
+  mode: "pilot" | "public",
+): Promise<{ accountId: string; credentialId: string; recoveryCodes: string[]; sessionCookie: string }> {
+  const now = Date.now();
+  const recovery = await prepareRecoveryCodes(db, input.accountId, now);
+  const session = await prepareHostSession(db, input.accountId, "passkey", now);
+  const result = await finishRegistration(
+    db,
+    env,
+    input,
+    mode === "pilot" ? "registration" : "public_registration",
+    undefined,
+    [...recovery.statements, session.statement],
+  );
+  return { ...result, recoveryCodes: recovery.codes, sessionCookie: session.cookie };
 }
 
 export async function authenticationOptions(db: D1Database, env: PasskeyRuntimeConfig) {

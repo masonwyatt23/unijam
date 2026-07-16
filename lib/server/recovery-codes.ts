@@ -3,16 +3,25 @@ import { hashOpaqueToken, randomToken, timingSafeEqual } from "./secure-token.ts
 export const RECOVERY_CODE_LOOKUP_SQL =
   "SELECT recovery_code_id, account_id, code_hash FROM recovery_codes WHERE code_hash = ? AND used_at_ms IS NULL LIMIT 1";
 
-export async function createRecoveryCodes(db: D1Database, accountId: string): Promise<string[]> {
-  const now = Date.now();
+export async function prepareRecoveryCodes(
+  db: D1Database,
+  accountId: string,
+  now = Date.now(),
+): Promise<{ codes: string[]; statements: D1PreparedStatement[] }> {
   const codes = Array.from({ length: 10 }, () => {
     const raw = randomToken(9).toUpperCase().replace(/[^A-Z0-9]/g, "").padEnd(12, "X").slice(0, 12);
     return `${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8)}`;
   });
-  await db.batch(await Promise.all(codes.map(async (code) => db.prepare(
+  const statements = await Promise.all(codes.map(async (code) => db.prepare(
     "INSERT INTO recovery_codes (recovery_code_id, account_id, code_hash, created_at_ms) VALUES (?, ?, ?, ?)",
-  ).bind(crypto.randomUUID(), accountId, await hashOpaqueToken(code), now))));
-  return codes;
+  ).bind(crypto.randomUUID(), accountId, await hashOpaqueToken(code), now)));
+  return { codes, statements };
+}
+
+export async function createRecoveryCodes(db: D1Database, accountId: string): Promise<string[]> {
+  const prepared = await prepareRecoveryCodes(db, accountId);
+  await db.batch(prepared.statements);
+  return prepared.codes;
 }
 
 export async function consumeRecoveryCode(db: D1Database, code: string): Promise<string | null> {
