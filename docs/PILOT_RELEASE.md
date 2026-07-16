@@ -24,13 +24,18 @@ been provisioned but staging traffic is not yet active:
   production D1 sentinel IDs. `npm run validate:release-config` reports them and
   strict production validation exits nonzero until they are replaced.
 - Cloudflare authentication is available for the verified operator account. A
-  Free-plan `ashlr.ai` full zone has been created in pending state, but it is
-  not authoritative and contains no accepted import yet. No custom domain or
-  public nameserver has been activated.
+  Free-plan `ashlr.ai` full zone has been created in pending state and the
+  reviewed 43-record DNS-only inventory has been imported. Both assigned
+  nameservers (`elisabeth.ns.cloudflare.com` and `tanner.ns.cloudflare.com`)
+  passed direct record parity checks, including mail, verification, wildcard,
+  Railway, DKIM, and the delegated Vercel ACME challenge records. The flattened
+  apex returned the exact live landing-page content from every observed target.
+  Public authority is still Vercel; no registrar nameserver, custom domain, or
+  public route has been activated.
 - Cloudflare Free/Pro onboarding rejected `unijam.ashlr.ai` as a standalone
   zone, because incoming child-zone delegation is Enterprise-only. The owner
-  approved the full-zone migration, but no Vercel DNS record or `ashlr.ai`
-  registrar nameserver has been changed.
+  approved the full-zone migration and its pending-zone parity gate now passes,
+  but no Vercel DNS record or `ashlr.ai` registrar nameserver has been changed.
 - Production and staging connector secrets, Spotify app registrations, Apple
   Music identifiers/keys, Music User Tokens, and pilot account IDs are absent.
 - Spotify extended-quota approval remains the public-launch gate. The pilot is
