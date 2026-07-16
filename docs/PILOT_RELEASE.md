@@ -23,12 +23,14 @@ been provisioned but staging traffic is not yet active:
 - `wrangler.jsonc` and `wrangler.connectors.jsonc` retain two non-routable
   production D1 sentinel IDs. `npm run validate:release-config` reports them and
   strict production validation exits nonzero until they are replaced.
-- Cloudflare authentication is available for the verified operator account,
-  but no production resources, child zone, custom domains, or nameservers have
-  been created or verified.
+- Cloudflare authentication is available for the verified operator account. A
+  Free-plan `ashlr.ai` full zone has been created in pending state, but it is
+  not authoritative and contains no accepted import yet. No custom domain or
+  public nameserver has been activated.
 - Cloudflare Free/Pro onboarding rejected `unijam.ashlr.ai` as a standalone
-  zone. Incoming child-zone delegation is an Enterprise-only Cloudflare
-  feature. No Vercel DNS record or `ashlr.ai` nameserver has been changed.
+  zone, because incoming child-zone delegation is Enterprise-only. The owner
+  approved the full-zone migration, but no Vercel DNS record or `ashlr.ai`
+  registrar nameserver has been changed.
 - Production and staging connector secrets, Spotify app registrations, Apple
   Music identifiers/keys, Music User Tokens, and pilot account IDs are absent.
 - Spotify extended-quota approval remains the public-launch gate. The pilot is
