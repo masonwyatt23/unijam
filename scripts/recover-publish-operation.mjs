@@ -41,11 +41,10 @@ if (dryRun) {
   process.exit(0);
 }
 
-const operatorToken = process.env.UNIJAM_CONNECTOR_OPERATOR_SECRET;
 const accessClientId = process.env.UNIJAM_ACCESS_CLIENT_ID;
 const accessClientSecret = process.env.UNIJAM_ACCESS_CLIENT_SECRET;
-if (!operatorToken || !accessClientId || !accessClientSecret) {
-  fail("Set UNIJAM_CONNECTOR_OPERATOR_SECRET, UNIJAM_ACCESS_CLIENT_ID, and UNIJAM_ACCESS_CLIENT_SECRET in the operator shell");
+if (!accessClientId || !accessClientSecret) {
+  fail("Set UNIJAM_ACCESS_CLIENT_ID and UNIJAM_ACCESS_CLIENT_SECRET in the operator shell");
 }
 
 let response;
@@ -53,7 +52,6 @@ try {
   response = await fetch(endpoint, {
     method: "POST",
     headers: {
-      "X-UniJam-Operator-Authorization": `Bearer ${operatorToken}`,
       "CF-Access-Client-Id": accessClientId,
       "CF-Access-Client-Secret": accessClientSecret,
       "Content-Type": "application/json",

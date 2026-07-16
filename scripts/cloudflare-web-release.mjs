@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 
 const [operation, ...argv] = process.argv.slice(2);
 const environment = argv.includes("--env") ? argv[argv.indexOf("--env") + 1] : "";
@@ -36,6 +36,14 @@ function run(command, args, extraEnvironment = {}) {
   });
 }
 
+function releaseCommit() {
+  const status = execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" });
+  if (status.trim() !== "") throw new Error("Web deploy requires a clean worktree so the Worker version can be bound to one commit");
+  const commit = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error("Could not resolve an exact release commit");
+  return commit;
+}
+
 if (!allowSentinels) {
   await run(process.execPath, ["scripts/validate-release-config.mjs", "--env", environment, "--require-provisioned"]);
 }
@@ -51,6 +59,10 @@ if (operation === "dry-run") {
   await run("npx", ["wrangler", "deploy", "--config", "dist/server/wrangler.json", "--dry-run"]);
 }
 if (operation === "deploy") {
-  console.log(`Deploying the already-validated flattened ${environment} artifact. No Wrangler --env override is used.`);
-  await run("npx", ["wrangler", "deploy", "--config", "dist/server/wrangler.json"]);
+  const commit = releaseCommit();
+  console.log(`Deploying the already-validated flattened ${environment} artifact for candidate ${commit}. No Wrangler --env override is used.`);
+  await run("npx", [
+    "wrangler", "deploy", "--config", "dist/server/wrangler.json", "--strict",
+    "--message", `unijam-release:${commit}`,
+  ]);
 }

@@ -495,10 +495,10 @@ must remain blocked. Inspect the provider account, identify the exact empty
 playlist created by the timed-out request, and record the persisted recovery
 marker. Only after the Access-protected, JWT-validating, service-bound operator
 ingress has passed its deployment review, export its Access service-token pair
-as `UNIJAM_ACCESS_CLIENT_ID` and `UNIJAM_ACCESS_CLIENT_SECRET`, plus the
-operator credential as `UNIJAM_CONNECTOR_OPERATOR_SECRET`. The shared
-web-to-connector service credential remains on Workers and never enters the
-operator shell. Run a dry validation before sending anything:
+as `UNIJAM_ACCESS_CLIENT_ID` and `UNIJAM_ACCESS_CLIENT_SECRET`. Both the
+operator credential and shared connector service credential remain secret
+bindings on the ingress Worker and never enter the operator shell. Run a dry
+validation before sending anything:
 
 ```bash
 npm run recover:publish -- \
@@ -518,7 +518,7 @@ It stores only hashed destination and operator-credential evidence, then queues
 reconciliation. The script never prints the operation, marker, playlist
 ID, or credentials. Production additionally requires
 `--production-confirmation I_UNDERSTAND_THIS_RESUMES_A_PROVIDER_MUTATION`.
-Unset all three shell credentials immediately after the drill. Any
+Unset both Access shell credentials immediately after the drill. Any
 `workers.dev` connector URL is invalid and the recovery tool rejects it.
 
 Promote one flag at a time to production and observe a controlled cohort before

@@ -1,0 +1,41 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "unijam-operator-ingress",
+  "main": "./src/index.ts",
+  "workers_dev": false,
+  "preview_urls": false,
+  "compatibility_date": "2026-07-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  "vars": {
+    "ACCESS_TEAM_DOMAIN": "",
+    "ACCESS_AUD": ""
+  },
+  "services": [{ "binding": "CONNECTORS", "service": "unijam-connectors-development" }],
+  "env": {
+    "staging": {
+      "name": "unijam-operator-ingress-staging",
+      "workers_dev": false,
+      "preview_urls": false,
+      "observability": { "enabled": true, "head_sampling_rate": 1 },
+      "routes": [{ "pattern": "operator-staging.unijam.ashlr.ai", "custom_domain": true }],
+      "vars": {
+        "ACCESS_TEAM_DOMAIN": "",
+        "ACCESS_AUD": ""
+      },
+      "services": [{ "binding": "CONNECTORS", "service": "unijam-connectors-staging" }]
+    },
+    "production": {
+      "name": "unijam-operator-ingress-production",
+      "workers_dev": false,
+      "preview_urls": false,
+      "observability": { "enabled": true, "head_sampling_rate": 1 },
+      "routes": [{ "pattern": "operator.unijam.ashlr.ai", "custom_domain": true }],
+      "vars": {
+        "ACCESS_TEAM_DOMAIN": "",
+        "ACCESS_AUD": ""
+      },
+      "services": [{ "binding": "CONNECTORS", "service": "unijam-connectors-production" }]
+    }
+  }
+}
