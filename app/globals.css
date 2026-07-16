@@ -114,6 +114,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .rail-account > svg { margin-left: auto; }
 .rail-account span:not(.avatar) { min-width: 0; display: flex; flex: 1; flex-direction: column; }
 .rail-account small { color: #96a7b0; font-size: .875rem; }
+.rail-account-wrap { position: relative; }
+.rail-account-wrap .rail-account { width: 100%; cursor: pointer; }
+.rail-account-wrap .rail-account:hover { background: rgba(255,255,255,.07); }
+.rail-account-menu { position: absolute; right: 0; bottom: calc(100% + 6px); left: 0; padding: 6px; border: 1px solid #53636b; border-radius: 4px; background: #17242a; box-shadow: 0 12px 30px rgba(0,0,0,.22); }
+.rail-account-menu button { width: 100%; min-height: 44px; display: flex; align-items: center; gap: 9px; padding: 8px 10px; border: 0; border-radius: 3px; background: transparent; color: white; text-align: left; }
+.rail-account-menu button:hover { background: rgba(255,255,255,.08); }
 .avatar { width: 36px; height: 36px; display: grid; flex: 0 0 auto; place-items: center; border-radius: 50%; background: #dbeaff; color: var(--cue-dark); font: 500 .875rem var(--utility); }
 .workspace { min-height: 100vh; margin-left: 248px; padding: clamp(28px,5vw,68px); }
 .mobile-bar { display: none; }
@@ -300,6 +306,9 @@ select { height: 48px; cursor: pointer; }
 .membership-nudge p { margin: 3px 0 7px; color: var(--ink-soft); line-height: 1.4; }
 .membership-nudge a { min-height: 44px; display: inline-flex; align-items: center; color: var(--cue-dark); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
 .membership-nudge .icon-button { width: 44px; height: 44px; color: var(--ink-soft); }
+.provider-resolution-action { grid-template-columns: auto minmax(0,1fr); border-color: #acc8ef; background: var(--cue-soft); }
+.provider-resolution-action > svg { color: var(--cue-dark); }
+.provider-resolution-action .text-button { min-height: 44px; margin: 0; padding: 0; text-decoration: underline; text-underline-offset: 3px; }
 .room-summary { display: grid; gap: 18px; }
 .room-summary > div { display: flex; align-items: center; gap: 12px; }
 .room-summary > div svg { color: var(--cue-dark); }

@@ -159,8 +159,8 @@ export default function PublishPage() {
     window.sessionStorage.removeItem(`unijam:publish-operation:${roomId}`);
   }
 
-  if (room.status === "loading") return <ProductShell roomId={roomId}><LoadingPanel label="Preparing the room summary…" /></ProductShell>;
-  if (room.status === "error" || !room.data) return <ProductShell roomId={roomId}><ErrorPanel title="Publish preview unavailable" message={room.error?.message ?? "Room state could not be loaded."} onRetry={room.refresh} /></ProductShell>;
+  if (room.status === "loading") return <ProductShell guest roomId={roomId}><LoadingPanel label="Preparing the room summary…" /></ProductShell>;
+  if (room.status === "error" || !room.data) return <ProductShell guest roomId={roomId}><ErrorPanel title="Publish preview unavailable" message={room.error?.message ?? "Room state could not be loaded."} onRetry={room.refresh} /></ProductShell>;
   const { actor, snapshot } = room.data;
   if (actor.role !== "host") return <ProductShell guest roomId={roomId} displayName={actor.nickname}><ErrorPanel title="Room owner required" message="Only the passkey-authenticated room owner can confirm publishing." /></ProductShell>;
   const publishable = snapshot.occurrences.filter((item) => !["held", "skipped"].includes(item.status));

@@ -143,6 +143,37 @@ test("a resolved guest contribution stages the canonical recording", async ({ pa
   expect(command!.payload.suggestionId).toMatch(/^sug_/);
 });
 
+test("a guest who chooses Spotify gets a direct account action without borrowing the host connection", async ({ page }) => {
+  await mockRoom(page, "guest");
+  await page.route("**/api/v1/rooms/ROOM1234/resolve", (route) => route.fulfill({
+    status: 409,
+    contentType: "application/json",
+    body: JSON.stringify({
+      data: null,
+      error: {
+        code: "LISTENER_CONNECTION_REQUIRED",
+        message: "Create or sign in to your UniJam account, then connect Spotify to add Spotify tracks",
+        retryable: false,
+      },
+      requestId: "req_listener_connection",
+    }),
+  }));
+
+  await gotoReady(page, "/room/ROOM1234");
+  await page.getByLabel(/song link, title, or artist/i).fill("Room Artist — Canonical Pick");
+  await page.getByRole("button", { name: /find and add song/i }).click();
+  await expect(page.getByRole("alert")).toContainText("Spotify search belongs to your own account");
+  await expect(page.getByRole("link", { name: /sign in or create account/i })).toHaveAttribute("href", "/host/sign-in?returnTo=%2Froom%2FROOM1234");
+  await page.getByLabel(/search in/i).selectOption("apple-music");
+  await expect(page.getByRole("link", { name: /sign in or create account/i })).toHaveCount(0);
+});
+
+test("provider consent returns to the originating room with a visible result", async ({ page }) => {
+  await mockRoom(page, "guest");
+  await gotoReady(page, "/room/ROOM1234?provider=spotify&providerResult=connected");
+  await expect(page.getByRole("status").filter({ hasText: "Spotify connected" })).toContainText("ready for your own catalog and playlist actions");
+});
+
 test("held provider candidates keep official linked attribution", async ({ page }) => {
   await mockRoom(page, "guest");
   await page.route("**/api/v1/rooms/ROOM1234/resolve", (route) => route.fulfill({

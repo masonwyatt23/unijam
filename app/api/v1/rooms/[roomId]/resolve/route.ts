@@ -32,7 +32,7 @@ function requestedProvider(value: unknown): MusicProvider | null {
 
 function connectorFailure(status: number): Response {
   if (status === 401) return apiError("PROVIDER_RECONNECT_REQUIRED", "Reconnect this music service before resolving tracks", 401);
-  if (status === 403) return apiError("PILOT_NOT_ALLOWED", "This host is not enabled for the provider pilot", 403);
+  if (status === 403) return apiError("PILOT_NOT_ALLOWED", "This account is not enabled for the provider pilot", 403);
   if (status === 404) return apiError("PROVIDER_NOT_CONNECTED", "Connect this music service before resolving tracks", 409);
   if (status === 429) return apiError("PROVIDER_RATE_LIMITED", "The music service is rate limited; try again shortly", 429, true);
   return apiError("PROVIDER_UNAVAILABLE", "This music service could not resolve the track", status >= 500 ? 503 : 422, status >= 500);

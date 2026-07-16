@@ -239,6 +239,8 @@ function initials(value: string): string {
 export function ProductShell({ children, guest = false, roomId, displayName, roomLabel }: { children: ReactNode; guest?: boolean; roomId?: string; displayName?: string; roomLabel?: string }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
   useEffect(() => {
     if (!open) return;
@@ -258,12 +260,20 @@ export function ProductShell({ children, guest = false, roomId, displayName, roo
   ], [roomId]);
   const roomName = roomLabel ?? (roomId ? `Room ${roomId}` : "Current room");
   const accountName = guest ? "Guest" : displayName ?? "Host session";
+  async function signOut() {
+    setSigningOut(true);
+    try {
+      await fetch("/api/v1/auth/logout", { method: "POST", credentials: "include" });
+    } finally {
+      window.location.assign("/");
+    }
+  }
   return <div className={`product-shell${guest ? " is-guest" : ""}`}>
     <a href="#main-content" className="skip-link">Skip to main content</a>
     <header className="mobile-bar"><Brand compact /><button ref={menuButtonRef} className="icon-button" onClick={() => setOpen(!open)} aria-expanded={open} aria-controls="app-nav" aria-label={open ? "Close navigation" : "Open navigation"}>{open ? <X /> : <Menu />}</button></header>
     <aside className={`rail${open ? " is-open" : ""}`} id="app-nav"><Brand />
       {guest ? <div className="guest-rail-copy"><span className="utility">GUEST ACCESS</span><strong>{roomName}</strong><p>Your session only opens this room.</p></div> : <nav aria-label="Host workspace">{navItems.map((item) => { const active = pathname === item.href || item.href === "/connections" && pathname.startsWith("/connections/"); const Icon = item.icon; return <Link key={item.href} href={item.href} className={active ? "active" : ""} aria-current={active ? "page" : undefined}><Icon size={19} />{item.label}</Link>; })}</nav>}
-      <div className="rail-bottom">{!guest && roomId && <Link href={`/room/${roomId}`} className="rail-live"><span className="live-dot" /> {roomName} <ArrowRight size={17} /></Link>}<div className="rail-account"><span className="avatar">{guest ? "G" : initials(accountName)}</span><span><strong>{accountName}</strong><small>{guest ? "Room-scoped session" : "Passkey secured"}</small></span><ChevronDown size={16} aria-hidden="true" /></div></div>
+      <div className="rail-bottom">{!guest && roomId && <Link href={`/room/${roomId}`} className="rail-live"><span className="live-dot" /> {roomName} <ArrowRight size={17} /></Link>}{guest ? <div className="rail-account"><span className="avatar">G</span><span><strong>{accountName}</strong><small>Room-scoped session</small></span></div> : <div className="rail-account-wrap"><button className="rail-account" type="button" aria-expanded={accountMenuOpen} aria-controls="account-menu" onClick={() => setAccountMenuOpen((value) => !value)}><span className="avatar">{initials(accountName)}</span><span><strong>{accountName}</strong><small>Passkey secured</small></span><ChevronDown size={16} aria-hidden="true" /></button>{accountMenuOpen ? <div className="rail-account-menu" id="account-menu"><button type="button" disabled={signingOut} onClick={() => void signOut()}><LogOut size={16} /> {signingOut ? "Signing out…" : "Sign out"}</button></div> : null}</div>}</div>
     </aside>
     <main className="workspace" id="main-content">{children}</main>
   </div>;

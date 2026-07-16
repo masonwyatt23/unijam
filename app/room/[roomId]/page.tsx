@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { CircleAlert, Headphones, Lock, LockOpen, LogOut, RefreshCw, Sparkles, Users, X } from "lucide-react";
-import { CopyButton, ErrorPanel, LivingSetlist, LoadingPanel, ProductShell, ProviderBrand, SegmentedControl, StatusBanner, sendRoomCommand, useRoomState } from "@/app/components/product";
+import { CopyButton, ErrorPanel, LivingSetlist, LoadingPanel, ProductShell, ProviderBrand, SegmentedControl, StatusBanner, sendRoomCommand, useCurrentHost, useRoomState } from "@/app/components/product";
+import { providerResultMessage } from "@/lib/provider-return-to";
 
 type Provider = "spotify" | "apple-music";
 type ApiEnvelope<T> = { data: T | null; error: { code: string; message: string; retryable?: boolean } | null };
@@ -13,6 +14,7 @@ type Resolution =
   | { status: "matched"; resolutionId: string; recordingId: string; title: string; artists: string[]; album: string | null; explicit: boolean | null; version: string; provider: Provider; providerRecordingId: string; providerUrl: string; evidence: string[] }
   | { status: "hold"; reasons: string[]; candidates: HeldCandidate[]; sourceAttribution?: { provider: "spotify"; title: string; providerUrl: string } }
   | { status: "no_match" };
+type ResolutionAction = "membership" | "spotify-connection" | "switch-to-apple";
 
 const holdLabels: Record<string, string> = {
   ambiguous_candidates: "We found a few likely versions",
@@ -63,7 +65,7 @@ function InviteControl({ roomId }: { roomId: string }) {
   return <button className="button button-quiet" onClick={() => setConfirming(true)}><RefreshCw size={17} /> Replace invite</button>;
 }
 
-function ContributionForm({ roomId, canContribute, guest, provider, onProviderChange, onStaged }: { roomId: string; canContribute: boolean; guest: boolean; provider: Provider; onProviderChange: (provider: Provider) => void; onStaged: () => void }) {
+function ContributionForm({ roomId, canContribute, offerMembership, provider, onProviderChange, onStaged }: { roomId: string; canContribute: boolean; offerMembership: boolean; provider: Provider; onProviderChange: (provider: Provider) => void; onStaged: () => void }) {
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<"idle" | "working" | "success" | "error" | "hold" | "no-match" | "unsupported">("idle");
   const [message, setMessage] = useState("");
@@ -71,6 +73,7 @@ function ContributionForm({ roomId, canContribute, guest, provider, onProviderCh
   const [attribution, setAttribution] = useState<{ provider: Provider; title: string; url: string } | null>(null);
   const [sourceAttribution, setSourceAttribution] = useState<{ provider: "spotify"; title: string; url: string } | null>(null);
   const [membershipNudge, setMembershipNudge] = useState(false);
+  const [resolutionAction, setResolutionAction] = useState<ResolutionAction | null>(null);
 
   async function stageResolution(match: { resolutionId: string; title: string; artists: string[]; provider: Provider; providerUrl: string }) {
     const commandResponse = await fetch(`/api/v1/rooms/${encodeURIComponent(roomId)}/commands`, {
@@ -87,9 +90,10 @@ function ContributionForm({ roomId, canContribute, guest, provider, onProviderCh
     setStatus("success");
     setMessage(`${match.title} by ${match.artists.join(", ")} was added to the room.`);
     setAttribution({ provider: match.provider, title: match.title, url: match.providerUrl });
+    setResolutionAction(null);
     setHeldCandidates([]);
     setSourceAttribution(null);
-    if (guest) {
+    if (offerMembership) {
       try {
         const key = `unijam.membership-nudge.${roomId}`;
         if (!sessionStorage.getItem(key)) { sessionStorage.setItem(key, "shown"); setMembershipNudge(true); }
@@ -118,7 +122,7 @@ function ContributionForm({ roomId, canContribute, guest, provider, onProviderCh
   async function contribute(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!canContribute) return;
-    setStatus("working"); setMessage(""); setHeldCandidates([]); setAttribution(null); setSourceAttribution(null);
+    setStatus("working"); setMessage(""); setHeldCandidates([]); setAttribution(null); setSourceAttribution(null); setResolutionAction(null);
     try {
       const resolutionResponse = await fetch(`/api/v1/rooms/${encodeURIComponent(roomId)}/resolve`, {
         method: "POST", credentials: "include", headers: { "content-type": "application/json" },
@@ -128,6 +132,24 @@ function ContributionForm({ roomId, canContribute, guest, provider, onProviderCh
       if (resolutionBody.error?.code === "UNSUPPORTED_SOURCE") {
         setStatus("unsupported");
         setMessage("That link is not supported. Use a Spotify or Apple Music link, or enter a song title and artist.");
+        return;
+      }
+      if (resolutionBody.error?.code === "LISTENER_CONNECTION_REQUIRED") {
+        setStatus("error");
+        setMessage("Spotify search belongs to your own account. Create or sign in to UniJam first, then connect Spotify.");
+        setResolutionAction("membership");
+        return;
+      }
+      if (resolutionBody.error?.code === "PROVIDER_NOT_CONNECTED" || resolutionBody.error?.code === "PROVIDER_RECONNECT_REQUIRED") {
+        setStatus("error");
+        setMessage(resolutionBody.error.code === "PROVIDER_RECONNECT_REQUIRED" ? "Spotify needs your permission again before this search." : "Connect your Spotify account before searching its catalog.");
+        setResolutionAction("spotify-connection");
+        return;
+      }
+      if (resolutionBody.error?.code === "PILOT_NOT_ALLOWED") {
+        setStatus("error");
+        setMessage("Spotify has not enabled this account for UniJam's current test cohort. Apple Music catalog picks still work in this room.");
+        setResolutionAction("switch-to-apple");
         return;
       }
       if (!resolutionResponse.ok || resolutionBody.error || !resolutionBody.data) {
@@ -156,7 +178,7 @@ function ContributionForm({ roomId, canContribute, guest, provider, onProviderCh
   }
 
   const heldSource = heldCandidates.find(({ candidate }) => candidate?.provider && candidate.providerUrl)?.candidate;
-  return <section className="contribute-card"><p className="eyebrow">ADD A SONG</p><h2>Put a song in the mix</h2><p>Paste a music link or type the song and artist. We&apos;ll find the right recording before it reaches the queue.</p><form onSubmit={(event) => void contribute(event)}><label className="field" htmlFor="song-input"><span>Song link, title, or artist</span><input id="song-input" value={input} onChange={(event) => setInput(event.target.value)} disabled={!canContribute || status === "working"} placeholder="Artist — song title" required /></label><label className="field" htmlFor="provider-select"><span>Search in</span><select id="provider-select" value={provider} onChange={(event) => onProviderChange(event.target.value as Provider)} disabled={!canContribute || status === "working"}><option value="spotify">Spotify</option><option value="apple-music">Apple Music</option></select><small>You can paste a link from either service. This setting chooses where your queue pick should be found.</small></label><button className="button button-primary" disabled={!canContribute || status === "working" || !input.trim()}>{status === "working" ? "Finding your song…" : "Find and add song"}</button></form>{message && <p className={status === "success" ? "inline-success" : status === "hold" || status === "no-match" || status === "unsupported" ? "inline-hold" : "inline-error"} role={status === "error" ? "alert" : "status"}>{message}</p>}{sourceAttribution ? <div className="resolution-attribution"><span>Original shared link</span><ProviderBrand provider="spotify" background="light" purpose="attribution" href={sourceAttribution.url} label={`Open ${sourceAttribution.title} on Spotify`} /></div> : null}{attribution ? <div className="resolution-attribution">{attribution.provider === "spotify" ? <ProviderBrand provider="spotify" background="light" purpose="attribution" href={attribution.url} label={`Open ${attribution.title} on Spotify`} /> : <ProviderBrand provider="apple-music" variant="listen-badge" background="light" purpose="attribution" href={attribution.url} label={`Listen to ${attribution.title} on Apple Music`} />}</div> : null}{heldSource && !sourceAttribution ? <div className="resolution-attribution"><span>Listen before choosing</span>{heldSource.provider === "spotify" ? <ProviderBrand provider="spotify" background="light" purpose="attribution" href={heldSource.providerUrl!} label="Open a held candidate on Spotify" /> : <ProviderBrand provider="apple-music" variant="listen-badge" background="light" purpose="attribution" href={heldSource.providerUrl!} label="Listen to a held candidate on Apple Music" />}</div> : null}{heldCandidates.length > 0 && <ul className="resolution-candidates" aria-label="Possible recording matches">{heldCandidates.map((entry, index) => <li key={`${entry.candidate?.title ?? "candidate"}-${index}`}><div>{entry.candidate?.providerUrl ? <a href={entry.candidate.providerUrl} target="_blank" rel="noreferrer"><strong>{entry.candidate.title ?? "Unknown recording"}</strong><span className="sr-only"> (opens in a new tab)</span></a> : <strong>{entry.candidate?.title ?? "Unknown recording"}</strong>}<span>{entry.candidate?.artists?.join(", ") ?? "Artist unavailable"}</span></div>{entry.resolutionId ? <button className="button button-quiet" type="button" disabled={status === "working"} onClick={() => void selectHeld(entry)}>Choose this version</button> : null}</li>)}</ul>}{membershipNudge ? <aside className="membership-nudge" aria-labelledby="membership-nudge-title"><Sparkles /><div><strong id="membership-nudge-title">Keep your UniJam identity</strong><p>Your pick is in. An account can remember your name and give you a place to start your own rooms later.</p><Link href={`/host/sign-in?returnTo=${encodeURIComponent(`/room/${roomId}`)}`}>Sign in or create an account</Link></div><button type="button" className="icon-button" aria-label="Dismiss account invitation" onClick={() => setMembershipNudge(false)}><X /></button></aside> : null}<small>{canContribute ? "If we cannot identify one exact recording, nothing is added until you choose." : "This room is read-only for your current role or lifecycle."}</small></section>;
+  return <section className="contribute-card"><p className="eyebrow">ADD A SONG</p><h2>Put a song in the mix</h2><p>Paste a music link or type the song and artist. We&apos;ll find the right recording before it reaches the queue.</p><form onSubmit={(event) => void contribute(event)}><label className="field" htmlFor="song-input"><span>Song link, title, or artist</span><input id="song-input" value={input} onChange={(event) => setInput(event.target.value)} disabled={!canContribute || status === "working"} placeholder="Artist — song title" required /></label><label className="field" htmlFor="provider-select"><span>Search in</span><select id="provider-select" value={provider} onChange={(event) => { onProviderChange(event.target.value as Provider); setResolutionAction(null); }} disabled={!canContribute || status === "working"}><option value="spotify">Spotify</option><option value="apple-music">Apple Music</option></select><small>You can paste a link from either service. This setting chooses where your queue pick should be found.</small></label><button className="button button-primary" disabled={!canContribute || status === "working" || !input.trim()}>{status === "working" ? "Finding your song…" : "Find and add song"}</button></form>{message && <p className={status === "success" ? "inline-success" : status === "hold" || status === "no-match" || status === "unsupported" ? "inline-hold" : "inline-error"} role={status === "error" ? "alert" : "status"}>{message}</p>}{resolutionAction ? <aside className="membership-nudge provider-resolution-action"><Headphones /><div><strong>{resolutionAction === "membership" ? "Bring your Spotify identity" : resolutionAction === "spotify-connection" ? "Connect Spotify privately" : "Keep adding with Apple Music"}</strong><p>{resolutionAction === "membership" ? "Your room place stays guest-scoped; the passkey account only gives your Spotify authorization somewhere private to live." : resolutionAction === "spotify-connection" ? "UniJam stores this authorization for your account only. Other people in the room cannot use it." : "Choose Apple Music above to search the public US catalog without connecting an account."}</p>{resolutionAction === "membership" ? <Link href={`/host/sign-in?returnTo=${encodeURIComponent(`/room/${roomId}`)}`}>Sign in or create account</Link> : resolutionAction === "spotify-connection" ? <Link href={`/connections/spotify?returnTo=${encodeURIComponent(`/room/${roomId}`)}`}>Connect Spotify</Link> : <button type="button" className="text-button" onClick={() => { onProviderChange("apple-music"); setResolutionAction(null); }}>Switch to Apple Music</button>}</div></aside> : null}{sourceAttribution ? <div className="resolution-attribution"><span>Original shared link</span><ProviderBrand provider="spotify" background="light" purpose="attribution" href={sourceAttribution.url} label={`Open ${sourceAttribution.title} on Spotify`} /></div> : null}{attribution ? <div className="resolution-attribution">{attribution.provider === "spotify" ? <ProviderBrand provider="spotify" background="light" purpose="attribution" href={attribution.url} label={`Open ${attribution.title} on Spotify`} /> : <ProviderBrand provider="apple-music" variant="listen-badge" background="light" purpose="attribution" href={attribution.url} label={`Listen to ${attribution.title} on Apple Music`} />}</div> : null}{heldSource && !sourceAttribution ? <div className="resolution-attribution"><span>Listen before choosing</span>{heldSource.provider === "spotify" ? <ProviderBrand provider="spotify" background="light" purpose="attribution" href={heldSource.providerUrl!} label="Open a held candidate on Spotify" /> : <ProviderBrand provider="apple-music" variant="listen-badge" background="light" purpose="attribution" href={heldSource.providerUrl!} label="Listen to a held candidate on Apple Music" />}</div> : null}{heldCandidates.length > 0 && <ul className="resolution-candidates" aria-label="Possible recording matches">{heldCandidates.map((entry, index) => <li key={`${entry.candidate?.title ?? "candidate"}-${index}`}><div>{entry.candidate?.providerUrl ? <a href={entry.candidate.providerUrl} target="_blank" rel="noreferrer"><strong>{entry.candidate.title ?? "Unknown recording"}</strong><span className="sr-only"> (opens in a new tab)</span></a> : <strong>{entry.candidate?.title ?? "Unknown recording"}</strong>}<span>{entry.candidate?.artists?.join(", ") ?? "Artist unavailable"}</span></div>{entry.resolutionId ? <button className="button button-quiet" type="button" disabled={status === "working"} onClick={() => void selectHeld(entry)}>Choose this version</button> : null}</li>)}</ul>}{membershipNudge ? <aside className="membership-nudge" aria-labelledby="membership-nudge-title"><Sparkles /><div><strong id="membership-nudge-title">Keep your UniJam identity</strong><p>Your pick is in. An account can remember your name and give you a place to start your own rooms later.</p><Link href={`/host/sign-in?returnTo=${encodeURIComponent(`/room/${roomId}`)}`}>Sign in or create an account</Link></div><button type="button" className="icon-button" aria-label="Dismiss account invitation" onClick={() => setMembershipNudge(false)}><X /></button></aside> : null}<small>{canContribute ? "If we cannot identify one exact recording, nothing is added until you choose." : "This room is read-only for your current role or lifecycle."}</small></section>;
 }
 
 function RoomControls({ roomId, seq, role, ready, locked, onRefresh }: { roomId: string; seq: number; role: "host" | "cohost" | "guest"; ready: boolean | null; locked: boolean; onRefresh: () => void }) {
@@ -205,7 +227,15 @@ function RoomControls({ roomId, seq, role, ready, locked, onRefresh }: { roomId:
 
 export default function LiveRoomPage() {
   const { roomId } = useParams<{ roomId: string }>();
+  const searchParams = useSearchParams();
   const room = useRoomState(roomId);
+  const account = useCurrentHost();
+  const providerResult = (() => {
+    const provider = searchParams.get("provider");
+    return provider === "spotify" || provider === "apple-music"
+      ? providerResultMessage(provider, searchParams.get("providerResult"))
+      : null;
+  })();
   const [listeningPreference, setListeningPreference] = useState<Provider>(() => {
     if (typeof window === "undefined") return "spotify";
     try {
@@ -221,8 +251,8 @@ export default function LiveRoomPage() {
       sessionStorage.setItem(`unijam.listening-preference.${roomId}`, provider);
     } catch { /* The selection still works for this render when storage is unavailable. */ }
   }
-  if (room.status === "loading") return <ProductShell roomId={roomId}><LoadingPanel /></ProductShell>;
-  if (room.status === "error" || !room.data) return <ProductShell roomId={roomId}><ErrorPanel title="Room state could not be loaded" message={room.error?.message ?? "The room is unavailable."} onRetry={room.refresh} /></ProductShell>;
+  if (room.status === "loading") return <ProductShell guest roomId={roomId}><LoadingPanel /></ProductShell>;
+  if (room.status === "error" || !room.data) return <ProductShell guest roomId={roomId}><ErrorPanel title="Room state could not be loaded" message={room.error?.message ?? "The room is unavailable."} onRetry={room.refresh} /></ProductShell>;
   const { actor, snapshot, transport } = room.data;
   const guest = actor.role === "guest" || actor.role === "viewer";
   const canHost = actor.role === "host" || actor.role === "cohost";
@@ -234,11 +264,12 @@ export default function LiveRoomPage() {
   const transportLabel = transport === "offline" ? "offline · HTTP state retained" : transport === "reconnecting" || transport === "connecting" ? "reconnecting · HTTP fallback" : `canonical · seq ${snapshot.seq}`;
   return <ProductShell guest={guest} roomId={roomId} roomLabel={`Room ${roomId}`} displayName={actor.nickname}><div className="room-topbar"><div><span className="status-pill"><span className="live-dot" /> {snapshot.lifecycle === "active" ? "LIVE ROOM" : "ROOM ENDED"}</span><h1>Room {roomId}</h1><p>{snapshot.rules.approvalMode === "host" ? "Host approval" : "Open queue"} · {snapshot.rules.contributionLimit} picks per guest · {snapshot.rules.explicitContent === "hold" ? "explicit tracks held" : "explicit tracks allowed"}</p></div><div className="room-actions"><span className={`connection-state state-${transport}`} role="status" aria-live="polite"><span />{transportLabel}</span>{actor.role === "host" && snapshot.lifecycle === "active" ? <InviteControl roomId={roomId} /> : null}</div></div>
     {snapshot.lifecycle === "ended" && <StatusBanner tone="warning" title="This room has ended">The setlist is read-only. Open the recap to review played occurrences.</StatusBanner>}
+    {providerResult && <StatusBanner tone={providerResult.tone} title={providerResult.title}>{providerResult.message}</StatusBanner>}
     <ListeningPreference value={listeningPreference} onChange={saveListeningPreference} />
-    <div className="room-layout"><LivingSetlist guest={!canHost} actorId={actor.participantId} snapshot={snapshot} onRefresh={room.refresh} /><aside className="room-side">{now ? <section className="handoff-card"><Headphones /><div><p className="eyebrow">NATIVE HANDOFF</p><h2>{now.title}</h2><p>Open the exact matched recording in one service. UniJam never infers playback.</p></div><div><Link href={`/room/${roomId}/handoff/spotify`}>Spotify</Link><Link href={`/room/${roomId}/handoff/apple-music`}>Apple Music</Link></div></section> : null}<ContributionForm roomId={roomId} canContribute={canContribute} guest={guest} provider={listeningPreference} onProviderChange={saveListeningPreference} onStaged={room.refresh} />
+    <div className="room-layout"><LivingSetlist guest={!canHost} actorId={actor.participantId} snapshot={snapshot} onRefresh={room.refresh} /><aside className="room-side">{now ? <section className="handoff-card"><Headphones /><div><p className="eyebrow">NATIVE HANDOFF</p><h2>{now.title}</h2><p>Open the exact matched recording in one service. UniJam never infers playback.</p></div><div><Link href={`/room/${roomId}/handoff/spotify`}>Spotify</Link><Link href={`/room/${roomId}/handoff/apple-music`}>Apple Music</Link></div></section> : null}<ContributionForm roomId={roomId} canContribute={canContribute} offerMembership={guest && account.status === "error"} provider={listeningPreference} onProviderChange={saveListeningPreference} onStaged={room.refresh} />
       {snapshot.lifecycle === "active" && actor.role !== "viewer" ? <RoomControls roomId={roomId} seq={snapshot.seq} role={actor.role} ready={snapshot.participants[actor.participantId]?.ready ?? null} locked={snapshot.rules.locked} onRefresh={room.refresh} /> : null}
       {canHost && <section className="room-summary"><div><Users /><span><strong>{participants.length} {participants.length === 1 ? "person" : "people"}</strong><small>{ready} ready</small></span></div><div><Lock /><span><strong>{snapshot.rules.locked ? "Room locked" : "Room open"}</strong><small>{snapshot.rules.speakerDuty === "host" ? "Host handles playback" : "Shared speaker duty"}</small></span></div><Link href={`/room/${roomId}/review`}>Review {reviewCount} {reviewCount === 1 ? "pick" : "picks"} <CircleAlert size={17} /></Link></section>}
-      {guest && <section className="guest-boundary"><Lock /><div><strong>Private guest session</strong><p>This secure session cannot open host controls, connections, or publishing.</p></div></section>}
+      {guest && <section className="guest-boundary"><Lock /><div><strong>{account.data ? "Member in a guest role" : "Private guest session"}</strong><p>This session cannot open host controls or publishing. Any provider connection you add to a passkey account remains personal to you.</p></div></section>}
     </aside></div>
   </ProductShell>;
 }

@@ -7,8 +7,8 @@ import { CircleAlert, ErrorPanel, LoadingPanel, PageHeader, ProductShell, Status
 export default function PickReviewPage() {
   const { roomId } = useParams<{ roomId: string }>(); const room = useRoomState(roomId);
   const [status, setStatus] = useState<{ tone: "success" | "danger"; message: string } | null>(null);
-  if (room.status === "loading") return <ProductShell roomId={roomId}><LoadingPanel label="Loading pick review…" /></ProductShell>;
-  if (room.status === "error" || !room.data) return <ProductShell roomId={roomId}><ErrorPanel title="Pick review unavailable" message={room.error?.message ?? "Room state could not be loaded."} onRetry={room.refresh} /></ProductShell>;
+  if (room.status === "loading") return <ProductShell guest roomId={roomId}><LoadingPanel label="Loading pick review…" /></ProductShell>;
+  if (room.status === "error" || !room.data) return <ProductShell guest roomId={roomId}><ErrorPanel title="Pick review unavailable" message={room.error?.message ?? "Room state could not be loaded."} onRetry={room.refresh} /></ProductShell>;
   const { actor, snapshot } = room.data;
   if (actor.role !== "host" && actor.role !== "cohost") return <ProductShell guest roomId={roomId} displayName={actor.nickname}><ErrorPanel title="Host access required" message="Only a room host or co-host can approve or reject picks." /></ProductShell>;
   const suggestions = Object.values(snapshot.suggestions).filter((item) => item.status === "pending" || item.status === "held");

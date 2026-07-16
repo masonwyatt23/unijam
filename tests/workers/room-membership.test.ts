@@ -11,6 +11,7 @@ import {
   accountParticipationDeletionStatements,
   listJoinedRooms,
 } from "../../lib/server/room-membership.ts";
+import { revokeLinkedGuestSession } from "../../lib/server/logout-sessions.ts";
 import { GUEST_SESSION_COOKIE, HOST_SESSION_COOKIE } from "../../lib/server/session-cookie.ts";
 import { hashOpaqueToken } from "../../lib/server/secure-token.ts";
 
@@ -115,6 +116,55 @@ describe.sequential("account-linked room participation", () => {
     expect(row?.account_id).toBeNull();
     expect((await db.prepare("SELECT COUNT(*) AS total FROM room_memberships").first<{ total: number }>())?.total).toBe(0);
     expect((await authenticateRoomActor(runtime(), cookieRequest(session.cookie), roomId))?.session.accountId).toBeNull();
+  });
+
+  it("links the exact guest session when its participant signs in after joining", async () => {
+    const db = database();
+    const session = await exchangeGuestCapability(runtime(), roomId, capability, "Later member");
+    await addAccountSession(db);
+    const guestCookie = session.cookie.split(";", 1)[0];
+    const request = new Request(`https://staging.unijam.ashlr.ai/room/${roomId}`, {
+      headers: { Cookie: `${guestCookie}; ${HOST_SESSION_COOKIE}=host-token-member` },
+    });
+
+    const linked = await authenticateRoomActor(runtime(), request, roomId);
+    expect(linked?.actor).toMatchObject({ participantId: session.actor.participantId, role: "guest" });
+    expect(linked?.session.accountId).toBe("member");
+    expect(await listJoinedRooms(db, "member")).toEqual([
+      expect.objectContaining({ roomId, nickname: "Later member" }),
+    ]);
+  });
+
+  it("never rebinds a guest session that already belongs to another account", async () => {
+    const db = database();
+    const session = await exchangeGuestCapability(runtime(), roomId, capability, "Original member", "member");
+    await addAccountSession(db, "other-member");
+    const guestCookie = session.cookie.split(";", 1)[0];
+    const request = new Request(`https://staging.unijam.ashlr.ai/room/${roomId}`, {
+      headers: { Cookie: `${guestCookie}; ${HOST_SESSION_COOKIE}=host-token-other-member` },
+    });
+
+    const authenticated = await authenticateRoomActor(runtime(), request, roomId);
+    expect(authenticated?.session.accountId).toBe("member");
+    expect(await listJoinedRooms(db, "other-member")).toEqual([]);
+  });
+
+  it("logout revokes only the current account-linked room session", async () => {
+    const db = database();
+    const session = await exchangeGuestCapability(runtime(), roomId, capability, "Member", "member");
+    const guestCookie = session.cookie.split(";", 1)[0];
+    const request = new Request(`https://staging.unijam.ashlr.ai/room/${roomId}`, {
+      headers: { Cookie: guestCookie },
+    });
+
+    await revokeLinkedGuestSession(db, request, "other-member", 2_000);
+    expect((await db.prepare("SELECT revoked_at_ms FROM guest_sessions WHERE session_id = ?")
+      .bind(session.sessionId).first<{ revoked_at_ms: number | null }>())?.revoked_at_ms).toBeNull();
+
+    await revokeLinkedGuestSession(db, request, "member", 3_000);
+    expect((await db.prepare("SELECT revoked_at_ms FROM guest_sessions WHERE session_id = ?")
+      .bind(session.sessionId).first<{ revoked_at_ms: number | null }>())?.revoked_at_ms).toBe(3_000);
+    expect(await authenticateRoomActor(runtime(), request, roomId)).toBeNull();
   });
 
   it("never lets account authentication bypass the invite", async () => {

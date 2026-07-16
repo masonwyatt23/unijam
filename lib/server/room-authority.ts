@@ -56,6 +56,39 @@ export function normalizeV1RoomId(value: string): string {
   return roomId;
 }
 
+async function linkGuestSessionAccount(
+  db: D1Database,
+  guest: GuestRow,
+  accountId: string,
+  now: number,
+): Promise<GuestRow> {
+  if (guest.account_id !== null) return guest;
+  await db.batch([
+    db.prepare(
+      `UPDATE guest_sessions SET account_id = ?
+       WHERE session_id = ? AND account_id IS NULL AND revoked_at_ms IS NULL AND expires_at_ms > ?`,
+    ).bind(accountId, guest.session_id, now),
+    db.prepare(
+      `INSERT INTO room_memberships
+       (membership_id, account_id, room_id, participant_id, nickname, joined_at_ms, last_joined_at_ms)
+       SELECT ?, account_id, room_id, participant_id, nickname, created_at_ms, ?
+       FROM guest_sessions
+       WHERE session_id = ? AND account_id = ? AND revoked_at_ms IS NULL AND expires_at_ms > ?
+       ON CONFLICT(account_id, room_id) DO UPDATE SET
+         participant_id = excluded.participant_id,
+         nickname = excluded.nickname,
+         last_joined_at_ms = excluded.last_joined_at_ms`,
+    ).bind(crypto.randomUUID(), now, guest.session_id, accountId, now),
+  ]);
+  const linked = await db.prepare(
+    `SELECT session_id, participant_id, account_id, nickname, role, invite_epoch, expires_at_ms
+     FROM guest_sessions WHERE session_id = ? LIMIT 1`,
+  ).bind(guest.session_id).first<GuestRow>();
+  // A concurrent sign-in can bind the session only once. Never overwrite or
+  // infer another account if that race was won elsewhere.
+  return linked ?? guest;
+}
+
 export async function createRoomAuthority(
   env: RoomAuthorityEnv,
   ownerAccountId: string,
@@ -107,11 +140,13 @@ export async function authenticateRoomActor(
      WHERE token_hash = ? AND room_id = ? AND revoked_at_ms IS NULL AND expires_at_ms > ? LIMIT 1`,
   ).bind(await hashOpaqueToken(token), roomId, Date.now()).first<GuestRow>();
   if (!guest || guest.invite_epoch !== registry.invite_epoch) return null;
+  const now = Date.now();
+  const linkedGuest = host ? await linkGuestSessionAccount(env.DB, guest, host.account_id, now) : guest;
   await env.DB.prepare("UPDATE guest_sessions SET last_seen_at_ms = ? WHERE session_id = ?")
-    .bind(Date.now(), guest.session_id).run();
+    .bind(now, linkedGuest.session_id).run();
   return {
-    actor: { participantId: guest.participant_id, role: guest.role, nickname: guest.nickname }, registry,
-    session: { kind: "guest", sessionId: guest.session_id, accountId: guest.account_id, expiresAtMs: guest.expires_at_ms, inviteEpoch: guest.invite_epoch },
+    actor: { participantId: linkedGuest.participant_id, role: linkedGuest.role, nickname: linkedGuest.nickname }, registry,
+    session: { kind: "guest", sessionId: linkedGuest.session_id, accountId: linkedGuest.account_id, expiresAtMs: linkedGuest.expires_at_ms, inviteEpoch: linkedGuest.invite_epoch },
   };
 }
 

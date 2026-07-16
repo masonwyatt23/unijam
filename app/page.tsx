@@ -53,7 +53,7 @@ export default function LandingPage() {
       </section>
 
       <section className="principles" aria-label="Product principles">
-        <article><Link2 /><h2>Share one link</h2><p>Friends paste a song link or type a title. No provider account required to contribute.</p></article>
+        <article><Link2 /><h2>Share one link</h2><p>Friends join and vote without accounts. Spotify catalog picks use each listener&apos;s own connected Spotify account; Apple Music catalog search stays account-free.</p></article>
         <article><Users /><h2>Shape one setlist</h2><p>Duplicates become co-signs, not clutter. Ambiguous versions wait for the host to decide.</p></article>
         <article><ShieldCheck /><h2>Stay in control</h2><p>Nothing starts or publishes automatically. Every provider action is separate and reversible.</p></article>
       </section>

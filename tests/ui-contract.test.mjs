@@ -53,7 +53,8 @@ test("guest room shell cannot render host navigation", async () => {
   assert.match(product, /guest \? <div className="guest-rail-copy"/);
   assert.match(product, /Your session only opens this room/);
   assert.match(room, /actor\.role === "guest" \|\| actor\.role === "viewer"/);
-  assert.doesNotMatch(room, /useCurrentHost/);
+  assert.match(room, /room\.status === "loading"[^\n]+<ProductShell guest/);
+  assert.match(room, /room\.status === "error"[^\n]+<ProductShell guest/);
 });
 
 test("guest invite capability is cleared from the URL and retained only for retry", async () => {
@@ -176,6 +177,11 @@ test("live contributions resolve before staging a canonical suggestion", async (
   assert.match(room, /listening-preference/);
   assert.match(room, /localStorage\.setItem\("unijam\.listening-preference"/);
   assert.match(room, /Sign in or create an account/);
+  assert.match(room, /LISTENER_CONNECTION_REQUIRED/);
+  assert.match(room, /PROVIDER_NOT_CONNECTED/);
+  assert.match(room, /Switch to Apple Music/);
+  assert.match(resolver, /catalogPrincipalForRoom/);
+  assert.doesNotMatch(resolver, /const accountId = access\.registry\.owner_account_id/);
   assert.doesNotMatch(room, /metadata score/);
   assert.match(resolver, /mandatorySelection = true/);
   assert.match(resolver, /spotify_oembed_title/);
@@ -245,6 +251,8 @@ test("pilot UI exposes real room, invite, handoff, and publishing operations", a
     read("app/room/[roomId]/handoff/provider-handoff-page.tsx"),
   ]);
   assert.match(host, /fetch\("\/api\/v1\/rooms"/);
+  assert.match(host, /fetch\("\/api\/v1\/rooms\/joined"/);
+  assert.match(host, /use the current invite to rejoin/);
   assert.doesNotMatch(host, /No room list yet|does not expose a host room index/);
   assert.match(room, /invite\/rotate/);
   assert.doesNotMatch(room, /Invite unavailable/);
@@ -256,6 +264,19 @@ test("pilot UI exposes real room, invite, handoff, and publishing operations", a
   assert.match(publish, /action: "retry" \| "cancel"/);
   assert.match(publish, /operations\/\$\{encodeURIComponent\(operationId\)\}\/\$\{action\}/);
   assert.doesNotMatch(publish, /Publishing API not deployed|Publishing unavailable/);
+});
+
+test("account logout also clears linked room authority", async () => {
+  const [shell, logout, helper] = await Promise.all([
+    read("app/components/product.tsx"),
+    read("app/api/v1/auth/logout/route.ts"),
+    read("lib/server/logout-sessions.ts"),
+  ]);
+  assert.match(shell, /Sign out/);
+  assert.match(shell, /\/api\/v1\/auth\/logout/);
+  assert.match(logout, /GUEST_SESSION_COOKIE/);
+  assert.match(logout, /revokeLinkedGuestSession/);
+  assert.match(helper, /account_id = \?/);
 });
 
 test("room controls are retryable across the DO-to-D1 projection boundary", async () => {

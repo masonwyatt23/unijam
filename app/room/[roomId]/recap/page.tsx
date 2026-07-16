@@ -7,8 +7,8 @@ import { ArrowRight, Check, ErrorPanel, LoadingPanel, PageHeader, ProductShell, 
 
 export default function RecapPage() {
   const { roomId } = useParams<{ roomId: string }>(); const room = useRoomState(roomId);
-  if (room.status === "loading") return <ProductShell roomId={roomId}><LoadingPanel label="Building the recap…" /></ProductShell>;
-  if (room.status === "error" || !room.data) return <ProductShell roomId={roomId}><ErrorPanel title="Recap unavailable" message={room.error?.message ?? "Room state could not be loaded."} onRetry={room.refresh} /></ProductShell>;
+  if (room.status === "loading") return <ProductShell guest roomId={roomId}><LoadingPanel label="Building the recap…" /></ProductShell>;
+  if (room.status === "error" || !room.data) return <ProductShell guest roomId={roomId}><ErrorPanel title="Recap unavailable" message={room.error?.message ?? "Room state could not be loaded."} onRetry={room.refresh} /></ProductShell>;
   const { actor, snapshot } = room.data;
   const guest = actor.role === "guest" || actor.role === "viewer";
   // Publishing uses the owner's provider connections and therefore remains an

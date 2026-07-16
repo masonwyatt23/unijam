@@ -76,8 +76,8 @@ export function ProviderHandoffPage({ provider }: { provider: PublicProvider }) 
     catch (cause) { setMessage(cause instanceof Error ? cause.message : "The handoff could not be confirmed."); }
   }
 
-  if (room.status === "loading" || status === "loading") return <ProductShell roomId={roomId}><LoadingPanel label="Preparing a safe handoff…" /></ProductShell>;
-  if (room.status === "error" || !room.data) return <ProductShell roomId={roomId}><ErrorPanel title="Room unavailable" message={room.error?.message ?? "The room could not be loaded."} onRetry={room.refresh} /></ProductShell>;
+  if (room.status === "loading" || status === "loading") return <ProductShell guest roomId={roomId}><LoadingPanel label="Preparing a safe handoff…" /></ProductShell>;
+  if (room.status === "error" || !room.data) return <ProductShell guest roomId={roomId}><ErrorPanel title="Room unavailable" message={room.error?.message ?? "The room could not be loaded."} onRetry={room.refresh} /></ProductShell>;
   const guest = room.data.actor.role === "guest" || room.data.actor.role === "viewer";
   const canConfirm = room.data.actor.role === "host" || room.data.actor.role === "cohost";
   if (status === "error" || !handoff) return <ProductShell guest={guest} roomId={roomId} displayName={room.data.actor.nickname}><div className="handoff-page"><Link href={`/room/${roomId}`} className="back-link"><ArrowLeft size={17} /> Back to room</Link><ErrorPanel title={`${providerName(provider)} handoff unavailable`} message={message} /></div></ProductShell>;
