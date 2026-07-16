@@ -1,4 +1,4 @@
-import type { ProviderAdapter, ProviderCatalogQuery } from "../lib/providers/contracts.ts";
+import type { ProviderAdapter, ProviderCatalogQuery, ProviderRequestContext } from "../lib/providers/contracts.ts";
 import type { MusicProvider } from "../lib/provider-state-engine.ts";
 import {
   cancelPublishOperation,
@@ -120,12 +120,6 @@ function allowlisted(env: ConnectorEnv, accountId: string, provider: MusicProvid
   }
 }
 
-function allowlistedForAnyProvider(env: ConnectorEnv, accountId: string): void {
-  if (!isAllowlisted(env, accountId, "spotify") && !isAllowlisted(env, accountId, "apple_music")) {
-    throw new HttpError(403, "PILOT_NOT_ALLOWED", "This host is not in a provider pilot");
-  }
-}
-
 export function providerEnabled(env: ConnectorEnv, provider: MusicProvider, publishing = false): boolean {
   const enabled = provider === "spotify" ? env.SPOTIFY_ENABLED === "true" : env.APPLE_MUSIC_ENABLED === "true";
   if (!publishing) return enabled;
@@ -210,6 +204,32 @@ async function catalogAdapterFor(input: {
     nowMs: input.now(),
   });
   return new AppleMusicAdapter({ developerToken, fetcher: input.fetcher, now: input.now });
+}
+
+async function runCatalogQuery(
+  adapter: ProviderAdapter,
+  body: Record<string, unknown>,
+  context: ProviderRequestContext,
+): Promise<unknown> {
+  const mode = requiredString(body, "mode");
+  if (mode === "recording_id") {
+    return adapter.getRecording(context, requiredString(body, "providerRecordingId"));
+  }
+  if (mode === "isrc") return adapter.lookupIsrc(context, requiredString(body, "isrc"));
+  if (mode === "search") {
+    const query = body.query;
+    if (!isRecord(query) || !stringValue(query.title) || !Array.isArray(query.artists)) {
+      throw new HttpError(400, "INVALID_BODY", "A structured catalog query is required");
+    }
+    const catalogQuery: ProviderCatalogQuery = {
+      title: String(query.title),
+      artists: query.artists.filter((artist): artist is string => typeof artist === "string"),
+      ...(stringValue(query.album) ? { album: String(query.album) } : {}),
+      limit: typeof query.limit === "number" ? query.limit : 10,
+    };
+    return adapter.search(context, catalogQuery);
+  }
+  throw new HttpError(400, "INVALID_MODE", "Unknown catalog query mode");
 }
 
 function assertCallback(body: Record<string, unknown>, origin: string): void {
@@ -388,33 +408,35 @@ export async function handleConnectorRequest(
       allowlisted(env, accountId, provider);
       const adapter = await catalogAdapterFor({ env, store, provider, accountId, connectionId, fetcher: dependencies.fetcher, now });
       const context = { requestId, provider, credentialRef: connectionId, storefront: "US" as const };
-      const mode = requiredString(body, "mode");
-      if (mode === "recording_id") {
-        return response(requestId, await adapter.getRecording(context, requiredString(body, "providerRecordingId")));
+      return response(requestId, await runCatalogQuery(adapter, body, context));
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/catalog/public-query") {
+      const body = await readObject(request);
+      const provider = providerValue(body.provider);
+      if (provider !== "apple_music") {
+        throw new HttpError(409, "LISTENER_CONNECTION_REQUIRED", "Connect Spotify before searching its catalog");
       }
-      if (mode === "isrc") return response(requestId, await adapter.lookupIsrc(context, requiredString(body, "isrc")));
-      if (mode === "search") {
-        const query = body.query;
-        if (!isRecord(query) || !stringValue(query.title) || !Array.isArray(query.artists)) {
-          throw new HttpError(400, "INVALID_BODY", "A structured catalog query is required");
-        }
-        const catalogQuery: ProviderCatalogQuery = {
-          title: String(query.title),
-          artists: query.artists.filter((artist): artist is string => typeof artist === "string"),
-          ...(stringValue(query.album) ? { album: String(query.album) } : {}),
-          limit: typeof query.limit === "number" ? query.limit : 10,
-        };
-        return response(requestId, await adapter.search(context, catalogQuery));
-      }
-      throw new HttpError(400, "INVALID_MODE", "Unknown catalog query mode");
+      requireProviderEnabled(env, provider);
+      const developerToken = await createAppleDeveloperToken({
+        teamId: env.APPLE_TEAM_ID,
+        keyId: env.APPLE_KEY_ID,
+        privateKeyJwk: applePrivateJwk(env),
+        nowMs: now(),
+      });
+      const adapter = new AppleMusicAdapter({ developerToken, fetcher: dependencies.fetcher, now });
+      return response(requestId, await runCatalogQuery(adapter, body, {
+        requestId,
+        provider,
+        credentialRef: "catalog-only",
+        storefront: "US",
+      }));
     }
 
     if (request.method === "POST" && url.pathname === "/v1/catalog/source") {
       const body = await readObject(request);
       const provider = providerValue(body.provider);
-      const accountId = requiredString(body, "accountId");
       const providerRecordingId = requiredString(body, "providerRecordingId");
-      allowlistedForAnyProvider(env, accountId);
       if (provider === "spotify") {
         return response(requestId, await spotifyOEmbedMetadata(providerRecordingId, { fetcher: dependencies.fetcher, now }));
       }

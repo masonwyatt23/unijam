@@ -754,7 +754,7 @@ test("provider pilot allowlists are independent while status remains available f
   assert.equal((await denied.json() as { error: { code: string } }).error.code, "PILOT_NOT_ALLOWED");
 });
 
-test("Apple catalog reads need no Music User Token while cross-provider sources stay scoped", async () => {
+test("Apple public catalog and provider-link metadata need no listener token", async () => {
   const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
   const privateJwk = await crypto.subtle.exportKey("jwk", key.privateKey);
   const store = new MemoryStore();
@@ -780,10 +780,26 @@ test("Apple catalog reads need no Music User Token while cross-provider sources 
   assert.equal((await catalog.json() as { data: { title: string } }).data.title, "Fixture Song");
   assert.equal(await store.getConnection("apple-host", "apple-music:apple-host", "apple_music"), null);
 
+  const publicCatalog = await handleConnectorRequest(new Request("https://connector/v1/catalog/public-query", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ provider: "apple_music", mode: "recording_id", providerRecordingId: "203709340" }),
+  }), mixed, { store, fetcher: async () => Response.json(appleSong), now: () => 2_000 });
+  assert.equal(publicCatalog.status, 200);
+  assert.equal((await publicCatalog.json() as { data: { title: string } }).data.title, "Fixture Song");
+
+  const spotifyPublicCatalog = await handleConnectorRequest(new Request("https://connector/v1/catalog/public-query", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ provider: "spotify", mode: "recording_id", providerRecordingId: "4uLU6hMCjMI75M1A2tKUQC" }),
+  }), mixed, { store, now: () => 2_000 });
+  assert.equal(spotifyPublicCatalog.status, 409);
+  assert.equal((await spotifyPublicCatalog.json() as { error: { code: string } }).error.code, "LISTENER_CONNECTION_REQUIRED");
+
   const appleSourceForSpotifyHost = await handleConnectorRequest(new Request("https://connector/v1/catalog/source", {
     method: "POST",
     headers,
-    body: JSON.stringify({ accountId: "spotify-host", provider: "apple_music", providerRecordingId: "203709340" }),
+    body: JSON.stringify({ provider: "apple_music", providerRecordingId: "203709340" }),
   }), mixed, { store, fetcher: async () => Response.json(appleSong), now: () => 2_000 });
   assert.equal(appleSourceForSpotifyHost.status, 200);
   assert.equal((await appleSourceForSpotifyHost.json() as { data: { isrc: string } }).data.isrc, "USFIX2600001");
@@ -791,7 +807,7 @@ test("Apple catalog reads need no Music User Token while cross-provider sources 
   const spotifySourceForAppleHost = await handleConnectorRequest(new Request("https://connector/v1/catalog/source", {
     method: "POST",
     headers,
-    body: JSON.stringify({ accountId: "apple-host", provider: "spotify", providerRecordingId: "4uLU6hMCjMI75M1A2tKUQC" }),
+    body: JSON.stringify({ provider: "spotify", providerRecordingId: "4uLU6hMCjMI75M1A2tKUQC" }),
   }), mixed, { store, fetcher: async () => Response.json({
     provider_name: "Spotify", provider_url: "https://spotify.com", type: "rich", title: "Fixture Song",
     iframe_url: "https://open.spotify.com/embed/track/4uLU6hMCjMI75M1A2tKUQC",
@@ -799,12 +815,15 @@ test("Apple catalog reads need no Music User Token while cross-provider sources 
   assert.equal(spotifySourceForAppleHost.status, 200);
   assert.equal((await spotifySourceForAppleHost.json() as { data: { metadataComplete: boolean } }).data.metadataComplete, false);
 
-  const outsider = await handleConnectorRequest(new Request("https://connector/v1/catalog/source", {
+  const publicSpotifySource = await handleConnectorRequest(new Request("https://connector/v1/catalog/source", {
     method: "POST",
     headers,
-    body: JSON.stringify({ accountId: "outsider", provider: "spotify", providerRecordingId: "4uLU6hMCjMI75M1A2tKUQC" }),
-  }), mixed, { store });
-  assert.equal(outsider.status, 403);
+    body: JSON.stringify({ provider: "spotify", providerRecordingId: "4uLU6hMCjMI75M1A2tKUQC" }),
+  }), mixed, { store, fetcher: async () => Response.json({
+    provider_name: "Spotify", provider_url: "https://spotify.com", type: "rich", title: "Fixture Song",
+    iframe_url: "https://open.spotify.com/embed/track/4uLU6hMCjMI75M1A2tKUQC",
+  }), now: () => 2_000 });
+  assert.equal(publicSpotifySource.status, 200);
 });
 
 test("disconnect fences an OAuth callback that already consumed its one-time state", async () => {
