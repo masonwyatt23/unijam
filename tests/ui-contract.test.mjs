@@ -164,14 +164,26 @@ test("live contributions resolve before staging a canonical suggestion", async (
   assert.match(room, /suggestionId: `sug_\$\{crypto\.randomUUID\(\)\}`/);
   assert.match(room, /action: "suggestion\.stage"/);
   assert.match(room, /resolutionId: match\.resolutionId/);
-  assert.match(room, /Add this recording/);
+  assert.match(room, /Choose this version/);
   assert.match(room, /source_metadata_incomplete/);
+  assert.match(room, /listening-preference/);
+  assert.match(room, /localStorage\.setItem\("unijam\.listening-preference"/);
+  assert.match(room, /Sign in or create an account/);
+  assert.doesNotMatch(room, /metadata score/);
   assert.match(resolver, /mandatorySelection = true/);
   assert.match(resolver, /spotify_oembed_title/);
   assert.match(resolver, /explicit_user_selection_required/);
   assert.doesNotMatch(resolver, /embedding|analytics|machine learning|\bML\b/);
   assert.doesNotMatch(room, /payload: \{ suggestionId:[^\n]+recordingId:/);
   assert.doesNotMatch(room, /synthetic recording IDs|Catalog resolution unavailable/);
+});
+
+test("guest entry is name-only and account continuity stays optional", async () => {
+  const join = await read("app/join/[roomId]/page.tsx");
+  assert.match(join, /fetch\("\/api\/v1\/auth\/me"/);
+  assert.match(join, /body\.data\?\.displayName/);
+  assert.match(join, /You do not need an account or a music-service login/);
+  assert.doesNotMatch(join, /Music service preference|What do you listen with/);
 });
 
 test("host setlist controls require confirmation before advance and target occurrence IDs", async () => {

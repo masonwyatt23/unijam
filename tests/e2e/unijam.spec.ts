@@ -130,9 +130,10 @@ test("a resolved guest contribution stages the canonical recording", async ({ pa
 
   await gotoReady(page, "/room/ROOM1234");
   await page.getByLabel(/song link, title, or artist/i).fill("https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC");
-  await page.getByRole("button", { name: /resolve and add pick/i }).click();
+  await page.getByRole("button", { name: /find and add song/i }).click();
   await expect(page.getByRole("status").filter({ hasText: "Canonical Pick by Room Artist was added" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Open Canonical Pick on Spotify" })).toHaveAttribute("href", "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC");
+  await expect(page.getByRole("link", { name: /sign in or create an account/i })).toHaveAttribute("href", "/host/sign-in?returnTo=%2Froom%2FROOM1234");
   expect(command).not.toBeNull();
   expect(command!.commandId).toMatch(/^cmd_/);
   expect(command!.action).toBe("suggestion.stage");
@@ -169,9 +170,11 @@ test("held provider candidates keep official linked attribution", async ({ page 
 
   await gotoReady(page, "/room/ROOM1234");
   await page.getByLabel(/song link, title, or artist/i).fill("Candidate Pick — Room Artist");
-  await page.getByRole("button", { name: /resolve and add pick/i }).click();
+  await page.getByRole("button", { name: /find and add song/i }).click();
   await expect(page.getByRole("link", { name: "Open a held candidate on Spotify" })).toHaveAttribute("href", "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC");
   await expect(page.getByRole("link", { name: /Candidate Pick/ })).toHaveAttribute("href", "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC");
+  await expect(page.getByText(/91% metadata score/i)).toHaveCount(0);
+  await expect(page.getByText(/Listen to the choices and pick the exact recording/i)).toBeVisible();
 });
 
 test("Spotify title-only metadata reaches explicit Apple Music selection and stages only the selected grant", async ({ page }) => {
@@ -216,13 +219,14 @@ test("Spotify title-only metadata reaches explicit Apple Music selection and sta
   });
 
   await gotoReady(page, "/room/ROOM1234");
-  await page.getByLabel(/resolve into/i).selectOption("apple-music");
+  await page.getByLabel(/search in/i).selectOption("apple-music");
   await page.getByLabel(/song link, title, or artist/i).fill("https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC");
-  await page.getByRole("button", { name: /resolve and add pick/i }).click();
+  await page.getByRole("button", { name: /find and add song/i }).click();
   await expect(page.getByRole("link", { name: /open never gonna give you up on spotify/i })).toHaveAttribute("href", "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC");
-  await expect(page.getByRole("button", { name: /add this recording/i })).toBeVisible();
+  await expect(page.locator(".provider-brand")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: /choose this version/i })).toBeVisible();
   expect(command).toBeNull();
-  await page.getByRole("button", { name: /add this recording/i }).click();
+  await page.getByRole("button", { name: /choose this version/i }).click();
   await expect(page.getByRole("status").filter({ hasText: /was added to the room/i })).toBeVisible();
   expect(command).toEqual(expect.objectContaining({ action: "suggestion.stage", payload: expect.objectContaining({ resolutionId: "res_manual_apple_01" }) }));
 });
@@ -439,6 +443,55 @@ test("a failed join keeps the cleared capability available for one retry", async
   await page.getByRole("button", { name: /join room/i }).click();
   await expect(page).toHaveURL(/\/room\/ROOM1234$/);
   expect(capabilities).toEqual(["secret-capability", "secret-capability"]);
+});
+
+test("a signed-in invitee gets a one-tap name-prefilled join", async ({ page }) => {
+  let joinedNickname = "";
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ data: { accountId: "account_12345678", displayName: "Mason", recentPasskey: true, recoveryEnrollmentAvailable: false }, error: null, requestId: "req_me" }),
+  }));
+  await page.route("**/api/v1/rooms/ROOM1234/join", (route) => {
+    joinedNickname = (route.request().postDataJSON() as { nickname: string }).nickname;
+    return route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { role: "guest" }, error: null, requestId: "req_joined" }),
+    });
+  });
+  await mockRoom(page, "guest");
+
+  await gotoReady(page, "/join/ROOM1234#cap=secret-capability");
+  const name = page.getByRole("textbox", { name: /your name in the room/i });
+  await expect(name).toHaveValue("Mason");
+  await expect(page.getByText(/what do you listen with/i)).toHaveCount(0);
+  await page.getByRole("button", { name: /join room/i }).click();
+  await expect(page).toHaveURL(/\/room\/ROOM1234$/);
+  expect(joinedNickname).toBe("Mason");
+});
+
+test("listening preference is local, explicit, and drives the next catalog search", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("unijam.listening-preference", "apple-music"));
+  await mockRoom(page, "guest");
+  let requestedProvider = "";
+  await page.route("**/api/v1/rooms/ROOM1234/resolve", (route) => {
+    requestedProvider = (route.request().postDataJSON() as { provider: string }).provider;
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { status: "no_match" }, error: null, requestId: "req_no_match" }),
+    });
+  });
+
+  await gotoReady(page, "/room/ROOM1234");
+  await expect(page.getByRole("radio", { name: "Apple Music" })).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByText(/does not sign you in or connect a music account/i)).toBeVisible();
+  await expect(page.getByLabel(/search in/i)).toHaveValue("apple-music");
+  await page.getByLabel(/song link, title, or artist/i).fill("Massive Attack — Teardrop");
+  await page.getByRole("button", { name: /find and add song/i }).click();
+  await expect(page.getByText(/No reliable US recording matched/i)).toBeVisible();
+  expect(requestedProvider).toBe("apple-music");
 });
 
 test("host workspace lists active rooms and ended recaps from the registry", async ({ page }) => {
