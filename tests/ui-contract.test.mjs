@@ -15,7 +15,22 @@ test("provider artwork is centralized and official", async () => {
   ].map(read));
   assert.match(product, /Full_Logo_Black_RGB\.svg/);
   assert.match(product, /marketing\.services\.apple\/api\/storage\/images/);
+  assert.match(product, /url\.hostname === "open\.spotify\.com"/);
+  assert.match(product, /url\.hostname === "music\.apple\.com"/);
+  assert.match(product, /if \(href && !isApprovedProviderLink\(props\.provider, href\)\) return null/);
   assert.doesNotMatch(allUi.join("\n"), /≋|PlatformMark|\bApple\b(?! Music)/);
+});
+
+test("provider artwork preserves official digital size and clear-space rules", async () => {
+  const css = await read("app/globals.css");
+  const assets = await read("THIRD_PARTY_ASSETS.md");
+  assert.match(css, /\.provider-brand \{[^}]*padding: 14px/);
+  assert.match(css, /\.provider-brand img \{ width: 96px/);
+  assert.match(css, /\.provider-compact img \{ width: 70px/);
+  assert.match(css, /\.provider-isolation \.provider-brand \{ padding: 18px/);
+  assert.doesNotMatch(css, /\.resolution-attribution \.provider-brand \{[^}]*padding-inline: 0/);
+  assert.match(assets, /Spotify logo exclusion zone/);
+  assert.match(assets, /one-tenth of the rendered badge height/);
 });
 
 test("guest room shell cannot render host navigation", async () => {

@@ -288,7 +288,7 @@ select { height: 48px; cursor: pointer; }
 .resolution-candidates span { margin-top: 2px; color: var(--ink-soft); font-size: .875rem; }
 .resolution-candidates a { min-height: 44px; display: inline-flex; align-items: center; color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
 .resolution-attribution { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; color: var(--ink-soft); font-size: .875rem; }
-.resolution-attribution .provider-brand { justify-content: flex-start; min-height: 44px; padding-inline: 0; }
+.resolution-attribution .provider-brand { justify-content: flex-start; min-height: 44px; }
 .room-summary { display: grid; gap: 18px; }
 .room-summary > div { display: flex; align-items: center; gap: 12px; }
 .room-summary > div svg { color: var(--cue-dark); }
@@ -330,9 +330,9 @@ select { height: 48px; cursor: pointer; }
 .handoff-note { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 18px 0 0; color: var(--ink-soft); font-size: .875rem; }
 
 /* Provider marks and resolution */
-.provider-brand { min-width: 70px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; padding: 4px; text-decoration: none; }
+.provider-brand { min-width: 70px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; padding: 14px; text-decoration: none; }
 .provider-brand img { width: 96px; height: auto; object-fit: contain; }
-.provider-compact { min-width: 70px; padding: 8px; }
+.provider-compact { min-width: 70px; padding: 10px; }
 .provider-compact img { width: 70px; }
 .provider-apple-music img { min-width: 111px; }
 .review-card { overflow: hidden; }
@@ -367,6 +367,7 @@ select { height: 48px; cursor: pointer; }
 .connection-card { overflow: hidden; border: 1px solid var(--line); border-radius: 6px; background: white; }
 .provider-isolation { min-height: 160px; display: grid; place-items: center; }
 .provider-spotify-bg { background: #191414; }
+.provider-isolation .provider-brand { padding: 18px; }
 .provider-spotify-bg .provider-brand img { width: 126px; }
 .provider-apple-bg { background: #f0f2f4; }
 .neutral-provider { display: inline-flex; align-items: center; gap: 12px; font: 600 1.8rem var(--display); text-transform: uppercase; }
@@ -483,7 +484,7 @@ select { height: 48px; cursor: pointer; }
   .queue-group { grid-template-columns: 63px minmax(0,1fr); }
   .queue-label strong { display: none; }
   .track-row { grid-template-columns: 28px minmax(110px,1fr) auto; gap: 8px; padding: 8px 0; }
-  .track-row .provider-brand { grid-column: 2; justify-content: flex-start; width: max-content; min-height: 32px; padding: 0; }
+  .track-row .provider-brand { grid-column: 2; justify-content: flex-start; width: max-content; }
   .track-duration { display: none; }
   .cosign, .played-check { grid-column: 3; grid-row: 1 / span 2; }
   .setlist-controls, .publish-confirm, .publish-operation { align-items: stretch; flex-direction: column; }

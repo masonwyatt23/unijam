@@ -179,23 +179,47 @@ export function ProductFooter() {
   return <footer className="product-footer"><Brand compact /><p>Music belongs to the moment, not the platform.</p><p className="legal">Apple and Apple Music are trademarks of Apple Inc., registered in the U.S. and other countries. Spotify is a trademark of Spotify AB.</p></footer>;
 }
 
-type SpotifyBrand = { provider: "spotify"; variant?: "full-logo"; background: "light" | "dark"; label?: string } & (
-  { purpose: "connect"; href?: never } |
-  { purpose: "attribution" | "handoff" | "published"; href: string }
+type SpotifyBrand = { provider: "spotify"; variant?: "full-logo"; background: "light" | "dark" } & (
+  { purpose: "connect"; href?: never; label?: "Spotify" } |
+  { purpose: "attribution" | "handoff" | "published"; href: string; label: `Open ${string} on Spotify` }
 );
-type AppleMusicBrand = { provider: "apple-music"; variant: "listen-badge"; background: "light" | "dark"; purpose: "attribution" | "handoff" | "published"; href: string; label?: string };
+type AppleMusicBrand = {
+  provider: "apple-music";
+  variant: "listen-badge";
+  background: "light" | "dark";
+  purpose: "attribution" | "handoff" | "published";
+  href: string;
+  label: `Listen to ${string} on Apple Music` | `Open ${string} on Apple Music`;
+};
 export type ProviderBrandProps = (SpotifyBrand | AppleMusicBrand) & { compact?: boolean };
 const spotifyAssets = { light: "/brand/spotify/Full_Logo_Black_RGB.svg", dark: "/brand/spotify/Full_Logo_White_RGB.svg" } as const;
 const appleListenBadge = "https://marketing.services.apple/api/storage/images/6408fd8630506600073b0d7e/en-us-large@1x.png";
 
+function isApprovedProviderLink(provider: ProviderBrandProps["provider"], href: string): boolean {
+  try {
+    const url = new URL(href);
+    if (url.protocol !== "https:" || url.username || url.password || url.port || url.hash) return false;
+    if (provider === "spotify") {
+      return url.hostname === "open.spotify.com" && /^\/(?:track|playlist)\/[0-9A-Za-z]+\/?$/.test(url.pathname);
+    }
+    return url.hostname === "music.apple.com" && /^\/us\/(?:song|album|playlist)\//.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
 export function ProviderBrand(props: ProviderBrandProps) {
+  const href = props.purpose === "connect" ? undefined : props.href;
+  // A provider response can never turn an official mark into an open redirect
+  // or imply that non-provider content is supplied by Spotify or Apple Music.
+  if (href && !isApprovedProviderLink(props.provider, href)) return null;
   const image = props.provider === "spotify" ? spotifyAssets[props.background] : appleListenBadge;
   const alt = props.label ?? (props.provider === "spotify" ? "Spotify" : "Listen on Apple Music");
   const className = `provider-brand provider-${props.provider}${props.compact ? " provider-compact" : ""}`;
   // Official provider artwork is rendered without an optimization transform.
   // eslint-disable-next-line @next/next/no-img-element
-  const content = <img src={image} alt={alt} width={props.provider === "spotify" ? 96 : 111} height={props.provider === "spotify" ? 40 : 33} />;
-  return props.href ? <a className={className} href={props.href} target="_blank" rel="noreferrer">{content}<span className="sr-only"> (opens in a new tab)</span></a> : <span className={className}>{content}</span>;
+  const content = <img src={image} alt={alt} width={props.provider === "spotify" ? 96 : 111} height={props.provider === "spotify" ? 40 : 33} referrerPolicy="strict-origin" />;
+  return href ? <a className={className} href={href} target="_blank" rel="noreferrer">{content}<span className="sr-only"> (opens in a new tab)</span></a> : <span className={className}>{content}</span>;
 }
 
 function initials(value: string): string {

@@ -12,7 +12,7 @@ The files and remote assets below are trademarks of their respective owners. The
   - `public/brand/spotify/Full_Logo_Black_RGB.svg` — SHA-256 `895e187fe85d90228f4972ece378e9e9a8e6fb995ca59f8037ba1f37727bb611`
   - `public/brand/spotify/Full_Logo_White_RGB.svg` — SHA-256 `20ee3e587eb0891cccc595e617620a1943f1554e7291218e9158d3522457a3a9`
 - Permitted UniJam contexts: isolated connection panel, Spotify-derived recording attribution that links to Spotify, native handoff link, and published Spotify playlist link.
-- UI rules: use the full logo at no less than 70 CSS pixels wide; use black on light backgrounds and white on dark backgrounds; preserve the required clear space; never pair it decoratively with another provider mark.
+- UI rules: use the full logo at no less than 70 CSS pixels wide; use black on light backgrounds and white on dark backgrounds; preserve the Spotify logo exclusion zone of half the icon height; never pair it decoratively with another provider mark. `ProviderBrand` reserves 14 CSS pixels around the standard 96-pixel logo, 10 pixels around the 70-pixel compact logo, and 18 pixels around the 126-pixel isolated connection logo. It fails closed unless linked artwork points to an HTTPS `open.spotify.com` track or playlist.
 
 ## Apple Music
 
@@ -22,7 +22,7 @@ The files and remote assets below are trademarks of their respective owners. The
 - SHA-256: `09fec5baab2e9e90e570ef2b6913d88f3d2bdd26bd523172c5d3f4fdfdbddc1c`
 - Variant: English “Listen on Apple Music” badge, 222×65 RGBA PNG.
 - Permitted UniJam contexts: links to resolved Apple Music content and published Apple Music playlists only. Connection selectors use neutral UniJam artwork and the full text “Apple Music.”
-- UI rules: the badge is loaded directly from Apple's official host so it remains unmodified; minimum digital height is 30 pixels; use only one badge in a communication and preserve its built-in border and clear space.
+- UI rules: the badge is loaded directly from Apple's official host so it remains unmodified; minimum digital height is 30 pixels; use only one badge in a communication and preserve its built-in border and clear space of at least one-tenth of the rendered badge height. `ProviderBrand` renders it at 33 CSS pixels or larger, reserves additional wrapper clear space, and fails closed unless the link points to HTTPS US Apple Music content on `music.apple.com`.
 
 ## Compliance ownership
 
