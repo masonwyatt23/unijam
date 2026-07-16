@@ -10,7 +10,7 @@ type Provider = "spotify" | "apple-music";
 type ApiEnvelope<T> = { data: T | null; error: { code: string; message: string; retryable?: boolean } | null };
 type HeldCandidate = { candidate?: { title?: string; artists?: string[]; provider?: "spotify" | "apple_music"; providerUrl?: string }; score?: number };
 type Resolution =
-  | { status: "matched"; recordingId: string; title: string; artists: string[]; album: string | null; explicit: boolean | null; version: string; provider: Provider; providerRecordingId: string; providerUrl: string; evidence: string[] }
+  | { status: "matched"; resolutionId: string; recordingId: string; title: string; artists: string[]; album: string | null; explicit: boolean | null; version: string; provider: Provider; providerRecordingId: string; providerUrl: string; evidence: string[] }
   | { status: "hold"; reasons: string[]; candidates: HeldCandidate[] }
   | { status: "no_match" };
 
@@ -91,7 +91,7 @@ function ContributionForm({ roomId, canContribute, onStaged }: { roomId: string;
         body: JSON.stringify({
           commandId: `cmd_${crypto.randomUUID()}`,
           action: "suggestion.stage",
-          payload: { suggestionId: `sug_${crypto.randomUUID()}`, recordingId: match.recordingId, title: match.title, held: false },
+          payload: { suggestionId: `sug_${crypto.randomUUID()}`, resolutionId: match.resolutionId },
         }),
       });
       const commandBody = await commandResponse.json() as ApiEnvelope<unknown>;

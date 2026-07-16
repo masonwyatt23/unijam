@@ -88,7 +88,8 @@ test("live contributions resolve before staging a canonical suggestion", async (
   assert.match(room, /commandId: `cmd_\$\{crypto\.randomUUID\(\)\}`/);
   assert.match(room, /suggestionId: `sug_\$\{crypto\.randomUUID\(\)\}`/);
   assert.match(room, /action: "suggestion\.stage"/);
-  assert.match(room, /recordingId: match\.recordingId/);
+  assert.match(room, /resolutionId: match\.resolutionId/);
+  assert.doesNotMatch(room, /payload: \{ suggestionId:[^\n]+recordingId:/);
   assert.doesNotMatch(room, /synthetic recording IDs|Catalog resolution unavailable/);
 });
 

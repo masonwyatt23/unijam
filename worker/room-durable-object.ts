@@ -31,7 +31,29 @@ type Suggestion = {
   title: string;
   submittedBy: string;
   status: "pending" | "approved" | "held" | "rejected";
+  resolutionId?: string;
+  provenance?: ResolutionProvenance;
   occurrenceId?: string;
+};
+
+type ResolutionProvenance = {
+  matchId: string;
+  provider: "spotify" | "apple_music";
+  providerRecordingId: string;
+  storefront: "US";
+  method: "provider_id" | "metadata";
+  evidence: string[];
+};
+
+type ResolutionGrantRow = {
+  resolution_id: string;
+  recording_id: string;
+  title: string;
+  participant_id: string;
+  explicit: number | null;
+  provenance_json: string;
+  expires_at_ms: number;
+  consumed_suggestion_id: string | null;
 };
 
 type Occurrence = {
@@ -279,7 +301,9 @@ function hydrateLegacyActiveState(current: RoomSnapshot, exportValue: Record<str
   if (importedOccurrences.length > 0) {
     snapshot.occurrences = importedOccurrences.sort((left, right) => left.position - right.position);
   }
-  snapshot.participants = {};
+  snapshot.participants = Object.fromEntries(
+    Object.entries(snapshot.participants).filter(([, participant]) => participant.role === "host"),
+  );
   return { snapshot, rulesHydrated, occurrenceCount: importedOccurrences.length };
 }
 
@@ -293,6 +317,8 @@ export class RoomDurableObject extends DurableObject<RoomEnv> {
       CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY, event_id TEXT UNIQUE NOT NULL, command_id TEXT NOT NULL, event_type TEXT NOT NULL, actor_id TEXT NOT NULL, payload_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS events_command_idx ON events(command_id);
       CREATE TABLE IF NOT EXISTS suggestions (suggestion_id TEXT PRIMARY KEY, recording_id TEXT NOT NULL, submitter_id TEXT NOT NULL, status TEXT NOT NULL, occurrence_id TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS resolution_grants (resolution_id TEXT PRIMARY KEY, recording_id TEXT NOT NULL, title TEXT NOT NULL, participant_id TEXT NOT NULL, explicit INTEGER, provenance_json TEXT NOT NULL, expires_at_ms INTEGER NOT NULL, consumed_suggestion_id TEXT, created_at_ms INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS resolution_grants_participant_expiry_idx ON resolution_grants(participant_id, expires_at_ms);
       CREATE TABLE IF NOT EXISTS occurrences (occurrence_id TEXT PRIMARY KEY, recording_id TEXT NOT NULL, suggestion_id TEXT NOT NULL, status TEXT NOT NULL, position INTEGER NOT NULL, playback_confirmed_at_ms INTEGER, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
       CREATE UNIQUE INDEX IF NOT EXISTS occurrences_active_recording_idx ON occurrences(recording_id) WHERE status IN ('now','staged','held');
       CREATE TABLE IF NOT EXISTS votes (occurrence_id TEXT NOT NULL, participant_id TEXT NOT NULL, created_at_ms INTEGER NOT NULL, PRIMARY KEY(occurrence_id, participant_id));
@@ -309,6 +335,7 @@ export class RoomDurableObject extends DurableObject<RoomEnv> {
     const url = new URL(request.url);
     const actor = this.actorFromRequest(request);
     if (url.pathname === "/internal/initialize" && request.method === "POST") return this.initialize(request, actor);
+    if (url.pathname === "/internal/resolutions" && request.method === "POST") return this.registerResolution(request, actor);
     if (url.pathname === "/internal/legacy-import" && request.method === "POST") return this.importLegacyExport(request, actor);
     if (url.pathname === "/state" && request.method === "GET") return this.stateResponse(url);
     if (url.pathname === "/commands" && request.method === "POST") {
@@ -356,9 +383,98 @@ export class RoomDurableObject extends DurableObject<RoomEnv> {
     const existing = this.metadata();
     if (existing) return Response.json(JSON.parse(existing.snapshot_json));
     const now = Date.now();
-    const snapshot: RoomSnapshot = { roomId, seq: 0, inviteEpoch: 1, lifecycle: "active", rules: defaultRules, participants: {}, suggestions: {}, occurrences: [], updatedAtMs: now };
-    this.ctx.storage.sql.exec("INSERT INTO metadata (room_id, sequence, min_retained_seq, snapshot_json, updated_at_ms) VALUES (?, 0, 0, ?, ?)", roomId, JSON.stringify(snapshot), now);
+    const snapshot: RoomSnapshot = {
+      roomId,
+      seq: 0,
+      inviteEpoch: 1,
+      lifecycle: "active",
+      rules: defaultRules,
+      participants: { [actor.participantId]: { ...actor, ready: false } },
+      suggestions: {},
+      occurrences: [],
+      updatedAtMs: now,
+    };
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec("INSERT INTO metadata (room_id, sequence, min_retained_seq, snapshot_json, updated_at_ms) VALUES (?, 0, 0, ?, ?)", roomId, JSON.stringify(snapshot), now);
+      this.ctx.storage.sql.exec(
+        "INSERT INTO participants (participant_id, role, nickname, ready, joined_at_ms, last_seen_at_ms) VALUES (?, 'host', ?, 0, ?, ?)",
+        actor.participantId,
+        actor.nickname,
+        now,
+        now,
+      );
+    });
     return Response.json(snapshot, { status: 201 });
+  }
+
+  private async registerResolution(request: Request, actor: RoomActor | null): Promise<Response> {
+    const metadata = this.metadata();
+    if (!metadata) return Response.json(protocolError("ROOM_NOT_INITIALIZED", "Room has not been initialized", 0), { status: 404 });
+    if (!actor || request.headers.get("X-UniJam-Resolution-Authority") !== "true") {
+      return Response.json(protocolError("FORBIDDEN", "Only the catalog resolver can register a recording", metadata.sequence), { status: 403 });
+    }
+    const snapshot = JSON.parse(metadata.snapshot_json) as RoomSnapshot;
+    const participant = snapshot.participants[actor.participantId];
+    if (!participant || snapshot.lifecycle !== "active") {
+      return Response.json(protocolError("FORBIDDEN", "The resolver participant is not active in this room", metadata.sequence), { status: 403 });
+    }
+    let body: unknown;
+    try { body = await readBoundedJson(request, 16_384); }
+    catch { return Response.json(protocolError("INVALID_RESOLUTION", "Resolved recording provenance is invalid", metadata.sequence), { status: 400 }); }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return Response.json(protocolError("INVALID_RESOLUTION", "Resolved recording provenance is invalid", metadata.sequence), { status: 400 });
+    }
+    const input = body as Record<string, unknown>;
+    try {
+      const resolutionId = requiredId(input, "resolutionId", "res_");
+      const recordingId = requiredId(input, "recordingId", "rec_");
+      const title = requiredText(input, "title");
+      const matchId = requiredId(input, "matchId", "match_");
+      const provider = input.provider;
+      const method = input.method;
+      const providerRecordingId = requiredText(input, "providerRecordingId", 200);
+      const explicit = input.explicit;
+      const rawEvidence = input.evidence;
+      if ((provider !== "spotify" && provider !== "apple_music") || (method !== "provider_id" && method !== "metadata") ||
+        (explicit !== null && typeof explicit !== "boolean") || !Array.isArray(rawEvidence) || rawEvidence.length === 0 || rawEvidence.length > 16) {
+        throw new Error("Resolved recording provenance is malformed");
+      }
+      const evidence = rawEvidence.map((entry) => {
+        if (typeof entry !== "string" || !entry.trim() || entry.trim().length > 120) throw new Error("Resolution evidence is malformed");
+        return entry.trim();
+      });
+      const provenance: ResolutionProvenance = { matchId, provider, providerRecordingId, storefront: "US", method, evidence };
+      const provenanceJson = JSON.stringify(provenance);
+      const existing = this.ctx.storage.sql.exec<ResolutionGrantRow>(
+        "SELECT resolution_id, recording_id, title, participant_id, explicit, provenance_json, expires_at_ms, consumed_suggestion_id FROM resolution_grants WHERE resolution_id = ? LIMIT 1",
+        resolutionId,
+      ).toArray()[0];
+      if (existing) {
+        const same = existing.recording_id === recordingId && existing.title === title && existing.participant_id === actor.participantId &&
+          existing.explicit === (explicit === null ? null : explicit ? 1 : 0) && existing.provenance_json === provenanceJson;
+        if (!same) return Response.json(protocolError("RESOLUTION_ID_CONFLICT", "resolutionId was already registered with different provenance", metadata.sequence), { status: 409 });
+        return Response.json({ resolutionId, duplicate: true, expiresAtMs: existing.expires_at_ms });
+      }
+      const now = Date.now();
+      const expiresAtMs = now + 15 * 60_000;
+      this.ctx.storage.sql.exec("DELETE FROM resolution_grants WHERE expires_at_ms <= ? AND consumed_suggestion_id IS NULL", now);
+      this.ctx.storage.sql.exec(
+        `INSERT INTO resolution_grants
+         (resolution_id, recording_id, title, participant_id, explicit, provenance_json, expires_at_ms, consumed_suggestion_id, created_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        resolutionId,
+        recordingId,
+        title,
+        actor.participantId,
+        explicit === null ? null : explicit ? 1 : 0,
+        provenanceJson,
+        expiresAtMs,
+        now,
+      );
+      return Response.json({ resolutionId, duplicate: false, expiresAtMs }, { status: 201 });
+    } catch {
+      return Response.json(protocolError("INVALID_RESOLUTION", "Resolved recording provenance is invalid", metadata.sequence), { status: 400 });
+    }
   }
 
   private async importLegacyExport(request: Request, actor: RoomActor | null): Promise<Response> {
@@ -611,15 +727,30 @@ export class RoomDurableObject extends DurableObject<RoomEnv> {
       }
       case "suggestion.stage": {
         const suggestionId = requiredId(command.payload, "suggestionId", "sug_");
-        const recordingId = requiredId(command.payload, "recordingId", "rec_");
-        const title = requiredText(command.payload, "title");
+        const resolutionId = requiredId(command.payload, "resolutionId", "res_");
+        if ("recordingId" in command.payload || "title" in command.payload || "held" in command.payload) {
+          throw new RoomCommandRejection("Canonical recording fields must come from the catalog resolver");
+        }
         if (snapshot.suggestions[suggestionId]) throw new Error("suggestionId already exists");
+        const resolution = this.ctx.storage.sql.exec<ResolutionGrantRow>(
+          "SELECT resolution_id, recording_id, title, participant_id, explicit, provenance_json, expires_at_ms, consumed_suggestion_id FROM resolution_grants WHERE resolution_id = ? LIMIT 1",
+          resolutionId,
+        ).toArray()[0];
+        if (!resolution || resolution.participant_id !== actor.participantId || resolution.expires_at_ms <= now || resolution.consumed_suggestion_id) {
+          throw new RoomCommandRejection("Use a current recording resolved for this participant");
+        }
+        const recordingId = resolution.recording_id;
+        const title = resolution.title;
+        const provenance = JSON.parse(resolution.provenance_json) as ResolutionProvenance;
         const used = Object.values(snapshot.suggestions).filter((suggestion) => suggestion.submittedBy === actor.participantId && suggestion.status !== "rejected").length;
         if (actor.role === "guest" && used >= snapshot.rules.contributionLimit) throw new Error("Contribution limit reached");
-        const status = command.payload.held === true ? "held" : snapshot.rules.approvalMode === "open" ? "approved" : "pending";
-        snapshot.suggestions[suggestionId] = { suggestionId, recordingId, title, submittedBy: actor.participantId, status };
+        const status = resolution.explicit === 1 && snapshot.rules.explicitContent === "hold"
+          ? "held"
+          : snapshot.rules.approvalMode === "open" ? "approved" : "pending";
+        snapshot.suggestions[suggestionId] = { suggestionId, recordingId, title, submittedBy: actor.participantId, status, resolutionId, provenance };
+        this.ctx.storage.sql.exec("UPDATE resolution_grants SET consumed_suggestion_id = ? WHERE resolution_id = ? AND consumed_suggestion_id IS NULL", suggestionId, resolutionId);
         this.ctx.storage.sql.exec("INSERT INTO suggestions (suggestion_id, recording_id, submitter_id, status, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?)", suggestionId, recordingId, actor.participantId, status, now, now);
-        emit(status === "held" ? "suggestion.held" : "suggestion.staged", { suggestionId, recordingId, title, status });
+        emit(status === "held" ? "suggestion.held" : "suggestion.staged", { suggestionId, recordingId, title, status, resolutionId, provenance });
         if (status === "approved") this.approveSuggestion(snapshot, snapshot.suggestions[suggestionId], actor, now, emit);
         break;
       }

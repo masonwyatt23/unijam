@@ -93,19 +93,144 @@ async function join(stub: DurableObjectStub, actor: Actor, suffix: string): Prom
   expect(await command(stub, actor, `command_join_${suffix}`, "participant.join", {})).toMatchObject({ type: "ack" });
 }
 
+async function registerResolution(
+  stub: DurableObjectStub,
+  actor: Actor,
+  resolutionId: string,
+  recordingId: string,
+  title: string,
+  explicit: boolean | null = false,
+): Promise<void> {
+  const headers = actorHeaders(actor);
+  headers.set("X-UniJam-Resolution-Authority", "true");
+  const response = await stub.fetch("https://room/internal/resolutions", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      resolutionId,
+      recordingId,
+      title,
+      matchId: `match_${resolutionId.slice(4)}`,
+      provider: "spotify",
+      providerRecordingId: `provider_${resolutionId.slice(4)}`,
+      method: "metadata",
+      explicit,
+      evidence: ["deterministic_test_match"],
+    }),
+  });
+  expect(response.status).toBe(201);
+}
+
+async function stageResolved(
+  stub: DurableObjectStub,
+  actor: Actor,
+  commandId: string,
+  suggestionId: string,
+  recordingId: string,
+  title: string,
+  explicit: boolean | null = false,
+): Promise<ProtocolResult> {
+  const resolutionId = `res_${suggestionId.slice(4)}`;
+  await registerResolution(stub, actor, resolutionId, recordingId, title, explicit);
+  return command(stub, actor, commandId, "suggestion.stage", { suggestionId, resolutionId });
+}
+
 async function snapshot(stub: DurableObjectStub) {
   const response = await stub.fetch("https://room/state");
-  const body = await response.json<{ snapshot: { seq: number; suggestions: Record<string, unknown>; occurrences: Array<{ occurrenceId: string; recordingId: string; status: string; cosignerIds: string[]; voterIds: string[]; playbackConfirmedAtMs?: number }> } }>();
+  const body = await response.json<{ snapshot: {
+    seq: number;
+    participants: Record<string, Actor & { ready: boolean }>;
+    suggestions: Record<string, { suggestionId: string; recordingId: string; title: string; submittedBy: string; status: string; resolutionId?: string; provenance?: Record<string, unknown> }>;
+    occurrences: Array<{ occurrenceId: string; recordingId: string; status: string; cosignerIds: string[]; voterIds: string[]; playbackConfirmedAtMs?: number }>;
+  } }>();
   return body.snapshot;
 }
 
 describe("RoomDurableObject serialized authority", () => {
+  it("persists the host as the first canonical room participant", async () => {
+    const stub = await newRoom("host-canonical-participant");
+    const state = await snapshot(stub);
+    expect(state.participants).toEqual({ [host.participantId]: { ...host, ready: false } });
+    await runInDurableObject(stub, (_instance, durableState) => {
+      expect(durableState.storage.sql.exec<{ participant_id: string; role: string; nickname: string; ready: number }>(
+        "SELECT participant_id, role, nickname, ready FROM participants",
+      ).toArray()).toEqual([{ participant_id: host.participantId, role: "host", nickname: host.nickname, ready: 0 }]);
+    });
+  });
+
+  it("stages only participant-bound server resolutions and retains their provenance", async () => {
+    const stub = await newRoom("server-bound-resolution");
+    await Promise.all([join(stub, guest, "resolved_guest_01"), join(stub, otherGuest, "resolved_guest_02")]);
+
+    const unauthorizedHeaders = actorHeaders(guest);
+    const unauthorized = await stub.fetch("https://room/internal/resolutions", {
+      method: "POST",
+      headers: unauthorizedHeaders,
+      body: JSON.stringify({}),
+    });
+    expect(unauthorized.status).toBe(403);
+
+    await registerResolution(stub, guest, "res_bound_recording_01", "rec_server_canonical_01", "Server canonical title", true);
+    expect(await command(stub, guest, "command_fabricated_fields_01", "suggestion.stage", {
+      suggestionId: "sug_fabricated_fields_01",
+      resolutionId: "res_bound_recording_01",
+      recordingId: "rec_client_fabricated_01",
+      title: "Client fabricated title",
+    })).toMatchObject({ type: "error", code: "COMMAND_REJECTED" });
+    expect(await command(stub, otherGuest, "command_stolen_resolution_01", "suggestion.stage", {
+      suggestionId: "sug_stolen_resolution_01",
+      resolutionId: "res_bound_recording_01",
+    })).toMatchObject({ type: "error", code: "COMMAND_REJECTED" });
+
+    const accepted = await command(stub, guest, "command_bound_resolution_01", "suggestion.stage", {
+      suggestionId: "sug_bound_resolution_01",
+      resolutionId: "res_bound_recording_01",
+    });
+    expect(accepted).toMatchObject({
+      type: "ack",
+      events: [{
+        type: "suggestion.held",
+        payload: {
+          recordingId: "rec_server_canonical_01",
+          title: "Server canonical title",
+          resolutionId: "res_bound_recording_01",
+          provenance: expect.objectContaining({ provider: "spotify", storefront: "US", method: "metadata" }),
+        },
+      }],
+    });
+    expect((await snapshot(stub)).suggestions.sug_bound_resolution_01).toMatchObject({
+      recordingId: "rec_server_canonical_01",
+      title: "Server canonical title",
+      status: "held",
+      resolutionId: "res_bound_recording_01",
+      provenance: expect.objectContaining({ provider: "spotify", storefront: "US", evidence: ["deterministic_test_match"] }),
+    });
+    expect(await command(stub, guest, "command_reuse_resolution_01", "suggestion.stage", {
+      suggestionId: "sug_reuse_resolution_01",
+      resolutionId: "res_bound_recording_01",
+    })).toMatchObject({ type: "error", code: "COMMAND_REJECTED" });
+
+    await runInDurableObject(stub, (_instance, durableState) => {
+      const grant = durableState.storage.sql.exec<{ recording_id: string; title: string; participant_id: string; consumed_suggestion_id: string; provenance_json: string }>(
+        "SELECT recording_id, title, participant_id, consumed_suggestion_id, provenance_json FROM resolution_grants WHERE resolution_id = ?",
+        "res_bound_recording_01",
+      ).toArray()[0];
+      expect(grant).toMatchObject({
+        recording_id: "rec_server_canonical_01",
+        title: "Server canonical title",
+        participant_id: guest.participantId,
+        consumed_suggestion_id: "sug_bound_resolution_01",
+      });
+      expect(JSON.parse(grant!.provenance_json)).toMatchObject({ provider: "spotify", storefront: "US", matchId: "match_bound_recording_01" });
+    });
+  });
+
   it("co-signs simultaneous approvals for one recording without creating duplicate occurrences", async () => {
     const stub = await newRoom("simultaneous-approval");
     await Promise.all([join(stub, guest, "simultaneous_guest_01"), join(stub, otherGuest, "simultaneous_guest_02")]);
     await Promise.all([
-      command(stub, guest, "command_stage_guest_01", "suggestion.stage", { suggestionId: "sug_guest_track_01", recordingId: "rec_shared_track_01", title: "Shared track" }),
-      command(stub, otherGuest, "command_stage_guest_02", "suggestion.stage", { suggestionId: "sug_guest_track_02", recordingId: "rec_shared_track_01", title: "Shared track" }),
+      stageResolved(stub, guest, "command_stage_guest_01", "sug_guest_track_01", "rec_shared_track_01", "Shared track"),
+      stageResolved(stub, otherGuest, "command_stage_guest_02", "sug_guest_track_02", "rec_shared_track_01", "Shared track"),
     ]);
 
     const results = await Promise.all([
@@ -128,10 +253,11 @@ describe("RoomDurableObject serialized authority", () => {
   it("returns the original result for an identical retry and rejects changed intent", async () => {
     const stub = await newRoom("command-idempotency");
     await join(stub, guest, "idempotency_guest_01");
-    const payload = { suggestionId: "sug_idempotency_01", recordingId: "rec_idempotency_01", title: "Retry-safe" };
+    await registerResolution(stub, guest, "res_idempotency_01", "rec_idempotency_01", "Retry-safe");
+    const payload = { suggestionId: "sug_idempotency_01", resolutionId: "res_idempotency_01" };
     const first = await command(stub, guest, "command_idempotent_01", "suggestion.stage", payload);
     const retry = await command(stub, guest, "command_idempotent_01", "suggestion.stage", payload);
-    const conflict = await command(stub, guest, "command_idempotent_01", "suggestion.stage", { ...payload, title: "Changed" });
+    const conflict = await command(stub, guest, "command_idempotent_01", "suggestion.stage", { ...payload, suggestionId: "sug_idempotency_changed" });
 
     expect(first.type).toBe("ack");
     expect(retry).toMatchObject({ type: "ack", duplicate: true, seq: first.type === "ack" ? first.seq : -1 });
@@ -143,7 +269,7 @@ describe("RoomDurableObject serialized authority", () => {
     const stub = await newRoom("duplicate-mutations");
     await join(stub, guest, "duplicate_guest_01");
     for (const [suffix, recording] of [["01", "rec_queue_track_01"], ["02", "rec_queue_track_02"]] as const) {
-      await command(stub, guest, `command_stage_queue_${suffix}`, "suggestion.stage", { suggestionId: `sug_queue_track_${suffix}`, recordingId: recording, title: `Track ${suffix}` });
+      await stageResolved(stub, guest, `command_stage_queue_${suffix}`, `sug_queue_track_${suffix}`, recording, `Track ${suffix}`);
       await command(stub, host, `command_approve_queue_${suffix}`, "suggestion.approve", { suggestionId: `sug_queue_track_${suffix}` });
     }
     const initial = await snapshot(stub);
@@ -180,9 +306,7 @@ describe("RoomDurableObject serialized authority", () => {
     const roomName = "eviction-persistence";
     const stub = await newRoom(roomName);
     await join(stub, guest, "eviction_guest_01");
-    const accepted = await command(stub, guest, "command_before_evict_01", "suggestion.stage", {
-      suggestionId: "sug_before_evict_01", recordingId: "rec_before_evict_01", title: "Persistent track",
-    });
+    const accepted = await stageResolved(stub, guest, "command_before_evict_01", "sug_before_evict_01", "rec_before_evict_01", "Persistent track");
     expect(accepted.type).toBe("ack");
 
     await abortAllDurableObjects();
@@ -196,9 +320,7 @@ describe("RoomDurableObject serialized authority", () => {
   it("records requested, opened, and host-confirmed handoffs without inferring playback", async () => {
     const stub = await newRoom("handoff-observations");
     await join(stub, guest, "handoff_guest_01");
-    await command(stub, guest, "command_stage_handoff_01", "suggestion.stage", {
-      suggestionId: "sug_handoff_track_01", recordingId: "rec_handoff_track_01", title: "Handoff track",
-    });
+    await stageResolved(stub, guest, "command_stage_handoff_01", "sug_handoff_track_01", "rec_handoff_track_01", "Handoff track");
     await command(stub, host, "command_approve_handoff_01", "suggestion.approve", { suggestionId: "sug_handoff_track_01" });
     const occurrence = (await snapshot(stub)).occurrences.find((item) => item.status === "now");
     expect(occurrence).toBeDefined();
@@ -232,7 +354,7 @@ describe("RoomDurableObject serialized authority", () => {
     expect(await command(stub, staleCohost, "command_leave_canonical_01", "participant.leave", {}))
       .toMatchObject({ type: "ack" });
     expect(await command(stub, staleCohost, "command_after_leave_stage_01", "suggestion.stage", {
-      suggestionId: "sug_after_leave_01", recordingId: "rec_after_leave_01", title: "Must not land",
+      suggestionId: "sug_after_leave_01", resolutionId: "res_after_leave_01",
     })).toMatchObject({ type: "error", code: "FORBIDDEN" });
 
     // A stale co-host session may rejoin, but only with safe guest authority.
@@ -290,7 +412,7 @@ describe("RoomDurableObject serialized authority", () => {
         occurrences: Array<{ occurrenceId: string; title: string; status: string; cosignerIds: string[]; voterIds: string[] }>;
       };
       expect(active.rules.contributionLimit).toBe(4);
-      expect(active.participants).toEqual({});
+      expect(active.participants).toEqual({ [host.participantId]: { ...host, ready: false } });
       expect(active.occurrences).toHaveLength(2);
       expect(active.occurrences.map((occurrence) => occurrence.status)).toEqual(["played", "now"]);
       expect(active.occurrences).toEqual(expect.arrayContaining([
@@ -368,8 +490,8 @@ describe("RoomDurableObject serialized authority", () => {
       "participant.join",
       {},
     )));
-    expect(joins.filter((result) => result.type === "ack")).toHaveLength(25);
-    expect(joins.filter((result) => result.type === "error")).toHaveLength(1);
+    expect(joins.filter((result) => result.type === "ack")).toHaveLength(24);
+    expect(joins.filter((result) => result.type === "error")).toHaveLength(2);
   });
 
   it("closes hibernating guest sockets when the invite authority rotates", async () => {
@@ -439,9 +561,7 @@ describe("RoomDurableObject serialized authority", () => {
   it("sanitizes ended-room authority and removes its expired detailed projection", async () => {
     const stub = await newRoom("retention-sanitization");
     await command(stub, guest, "command_join_retention_01", "participant.join", {});
-    await command(stub, guest, "command_stage_retention_01", "suggestion.stage", {
-      suggestionId: "sug_retention_track_01", recordingId: "rec_retention_track_01", title: "Temporary detail",
-    });
+    await stageResolved(stub, guest, "command_stage_retention_01", "sug_retention_track_01", "rec_retention_track_01", "Temporary detail");
     const ended = await stub.fetch("https://room/commands", {
       method: "POST",
       headers: actorHeaders(host, true),

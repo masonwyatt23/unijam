@@ -95,7 +95,7 @@ test("a resolved guest contribution stages the canonical recording", async ({ pa
   let command: {
     commandId: string;
     action: string;
-    payload: { suggestionId: string; recordingId: string; title: string; held: boolean };
+    payload: { suggestionId: string; resolutionId: string };
   } | null = null;
   await page.route("**/api/v1/rooms/ROOM1234/resolve", (route) => route.fulfill({
     status: 200,
@@ -103,6 +103,7 @@ test("a resolved guest contribution stages the canonical recording", async ({ pa
     body: JSON.stringify({
       data: {
         status: "matched",
+        resolutionId: "res_canonical123",
         recordingId: "rec_canonical123",
         title: "Canonical Pick",
         artists: ["Room Artist"],
@@ -135,7 +136,9 @@ test("a resolved guest contribution stages the canonical recording", async ({ pa
   expect(command).not.toBeNull();
   expect(command!.commandId).toMatch(/^cmd_/);
   expect(command!.action).toBe("suggestion.stage");
-  expect(command!.payload).toMatchObject({ recordingId: "rec_canonical123", title: "Canonical Pick", held: false });
+  expect(command!.payload).toEqual(expect.objectContaining({ resolutionId: "res_canonical123" }));
+  expect(command!.payload).not.toHaveProperty("recordingId");
+  expect(command!.payload).not.toHaveProperty("title");
   expect(command!.payload.suggestionId).toMatch(/^sug_/);
 });
 

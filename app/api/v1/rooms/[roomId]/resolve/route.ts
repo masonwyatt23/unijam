@@ -11,7 +11,7 @@ import {
   stableRecordingIdentity,
 } from "@/lib/server/catalog-resolution";
 import { connectorJsonRequest, type ConnectorProxyEnv } from "@/lib/server/connector-proxy";
-import { authenticateRoomActor, normalizeV1RoomId, type RoomAuthorityEnv } from "@/lib/server/room-authority";
+import { actorHeaders, authenticateRoomActor, normalizeV1RoomId, roomStub, type RoomAuthorityEnv } from "@/lib/server/room-authority";
 import { createProviderHandoffLinks } from "@/lib/providers/handoff";
 import type { MusicProvider } from "@/lib/provider-state-engine";
 
@@ -70,7 +70,7 @@ async function persistMatch(db: D1Database, candidate: CatalogCandidate, method:
       JSON.stringify({ evidence, deterministic: true, storefront: "US" }), now, now,
     ),
   ]);
-  return identity.recordingId;
+  return identity;
 }
 
 export async function POST(request: Request, context: Context): Promise<Response> {
@@ -124,11 +124,33 @@ export async function POST(request: Request, context: Context): Promise<Response
     if (resolution.status === "no_match") return apiResponse(resolution);
     const candidate = resolution.match.candidate;
     const providerUrl = createProviderHandoffLinks(candidate.provider, candidate.providerRecordingId).universalUrl;
-    const recordingId = await persistMatch(env.DB, candidate, intent.kind === "provider_recording" ? "provider_id" : "metadata", resolution.match.evidence);
+    const method = intent.kind === "provider_recording" ? "provider_id" : "metadata";
+    const identity = await persistMatch(env.DB, candidate, method, resolution.match.evidence);
+    const resolutionId = `res_${crypto.randomUUID()}`;
+    const registrationHeaders = actorHeaders(access.actor, roomId);
+    registrationHeaders.set("Content-Type", "application/json");
+    registrationHeaders.set("X-UniJam-Resolution-Authority", "true");
+    const registration = await roomStub(env as RoomAuthorityEnv, roomId).fetch(new Request("https://room.internal/internal/resolutions", {
+      method: "POST",
+      headers: registrationHeaders,
+      body: JSON.stringify({
+        resolutionId,
+        recordingId: identity.recordingId,
+        title: candidate.title,
+        matchId: identity.matchId,
+        provider: candidate.provider,
+        providerRecordingId: candidate.providerRecordingId,
+        method,
+        explicit: candidate.explicit ?? null,
+        evidence: resolution.match.evidence,
+      }),
+    }));
+    if (!registration.ok) return apiError("RESOLUTION_AUTHORITY_FAILED", "The resolved recording could not be bound to this room", 503, true);
     return apiResponse({
       status: "matched",
       storefront: "US",
-      recordingId,
+      resolutionId,
+      recordingId: identity.recordingId,
       title: candidate.title,
       artists: candidate.artists,
       album: candidate.album ?? null,
