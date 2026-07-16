@@ -554,6 +554,27 @@ test("router caps the actual JSON stream when Content-Length is missing", async 
   assert.equal((await response.json() as { error: { code: string } }).error.code, "BODY_TOO_LARGE");
 });
 
+test("disabled providers expose a clean closed-pilot status without an allowlist entry", async () => {
+  const response = await handleConnectorRequest(
+    new Request("https://connector/v1/connections/status", {
+      method: "POST",
+      headers: { Authorization: "Bearer internal-fixture-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ accountId: "not-allowlisted", connectionId: "spotify:not-allowlisted", provider: "spotify" }),
+    }),
+    env({ PILOT_ACCOUNT_ALLOWLIST: "", SPOTIFY_ENABLED: "false", SPOTIFY_PUBLISHING_ENABLED: "false" }),
+    { store: new MemoryStore() },
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json() as { data: unknown }).data, {
+    provider: "spotify",
+    connectionId: "spotify:not-allowlisted",
+    connected: false,
+    enabled: false,
+    publishingEnabled: false,
+    storefront: null,
+  });
+});
+
 test("disconnect fences an OAuth callback that already consumed its one-time state", async () => {
   const store = new MemoryStore();
   const base = env();

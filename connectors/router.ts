@@ -326,6 +326,19 @@ export async function handleConnectorRequest(
       const provider = providerValue(body.provider);
       const accountId = requiredString(body, "accountId");
       const connectionId = requiredString(body, "connectionId");
+      // A closed pilot is an expected product state, not an authorization or
+      // connector failure. Do not consult private connection data or require an
+      // allowlist entry until the provider has actually been activated.
+      if (!providerEnabled(env, provider)) {
+        return response(requestId, {
+          provider,
+          connectionId,
+          connected: false,
+          enabled: false,
+          publishingEnabled: false,
+          storefront: null,
+        });
+      }
       allowlisted(env, accountId);
       const connection = await store.getConnection(accountId, connectionId, provider);
       return response(requestId, {
