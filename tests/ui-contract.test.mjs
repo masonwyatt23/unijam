@@ -295,6 +295,9 @@ test("provider-backed music library is artwork-rich, isolated, and can add canon
   assert.match(css, /\.library-track-list/);
   assert.match(css, /@media \(max-width: 420px\)/);
   assert.doesNotMatch(library, /Promise\.all\([^)]*spotify[^)]*apple/i);
+  assert.doesNotMatch(library, /ProviderBrand[^>]+compact/);
+  assert.match(library, /Spotify checks its best catalog matches/);
+  assert.doesNotMatch(css, /track-copy \.provider-brand|library-track-actions \.provider-brand/);
 });
 
 test("pilot UI exposes real room, invite, handoff, and publishing operations", async () => {
