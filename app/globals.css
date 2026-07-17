@@ -270,8 +270,8 @@ select { height: 48px; cursor: pointer; }
 .track-copy strong, .track-copy span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .track-copy strong { font-size: 1.05rem; }
 .track-copy span { margin-top: 4px; color: var(--ink-soft); font-size: .88rem; }
-.track-copy small { display: block; overflow: hidden; margin-top: 4px; color: var(--ink-soft); font-size: .82rem; text-overflow: ellipsis; white-space: nowrap; }
-.provider-text-link { width: max-content; min-height: 30px; display: inline-flex; align-items: center; margin-top: 2px; color: var(--cue-dark); font-size: .82rem; font-weight: 700; text-underline-offset: 3px; }
+.track-copy small { display: block; overflow: hidden; margin-top: 4px; color: var(--ink-soft); font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.provider-text-link { width: max-content; min-height: 30px; display: inline-flex; align-items: center; margin-top: 2px; color: var(--cue-dark); font-size: 14px; font-weight: 700; text-underline-offset: 3px; }
 .queue-artwork { width: 58px; height: 58px; display: grid; place-items: center; border-radius: 2px; background: var(--paper-blue); object-fit: contain; }
 .queue-artwork svg { width: 21px; }
 .track-duration { color: var(--ink-soft); }
@@ -484,7 +484,7 @@ select { height: 48px; cursor: pointer; }
 .library-search label:focus-within { outline: 3px solid var(--cue); outline-offset: 2px; }
 .library-search label svg { flex: 0 0 auto; color: var(--ink-soft); }
 .library-search input { width: 100%; min-height: 44px; border: 0; outline: 0; background: transparent; font: 1rem var(--body); color: var(--ink); }
-.library-search-note { margin: -14px 0 22px; color: var(--ink-soft); font-size: .875rem; }
+.library-search-note { margin: -14px 0 22px; color: var(--ink-soft); font-size: 14px; }
 .library-inline-state { min-height: 230px; display: grid; grid-template-columns: 48px minmax(0,520px); place-content: center; gap: 18px; padding: 36px; border: 1px dashed var(--line-strong); text-align: left; }
 .library-inline-state > svg { width: 38px; height: 38px; color: var(--cue); }
 .library-inline-state strong { font: 600 1.6rem var(--display); text-transform: uppercase; }
@@ -501,11 +501,11 @@ select { height: 48px; cursor: pointer; }
 .library-track-copy strong, .library-track-copy span, .library-track-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .library-track-copy strong { font-size: 1.04rem; }
 .library-track-copy span { margin-top: 2px; color: var(--ink-soft); }
-.library-track-copy small { margin-top: 4px; color: var(--ink-soft); font-size: .875rem; }
-.library-duration { color: var(--ink-soft); font: .76rem var(--utility); }
+.library-track-copy small { margin-top: 4px; color: var(--ink-soft); font-size: 14px; }
+.library-duration { color: var(--ink-soft); font: 14px var(--utility); }
 .library-track-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .library-track-actions .button { white-space: nowrap; }
-.library-track-actions > a { min-height: 44px; display: inline-flex; align-items: center; color: var(--cue-dark); font-size: .875rem; font-weight: 700; text-underline-offset: 3px; white-space: nowrap; }
+.library-track-actions > a { min-height: 44px; display: inline-flex; align-items: center; color: var(--cue-dark); font-size: 14px; font-weight: 700; text-underline-offset: 3px; white-space: nowrap; }
 .library-load-more { display: flex; justify-content: center; padding-top: 26px; }
 .spinning { animation: spin 900ms linear infinite; }
 
