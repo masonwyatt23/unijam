@@ -69,8 +69,19 @@ test("connector candidates are validated before entering the canonical catalog",
   assert.equal(parseConnectorCandidate({ provider: "apple_music", providerRecordingId: "1", title: "Song", artists: ["Artist"] }, "spotify"), null);
   assert.deepEqual(parseConnectorCandidate({
     provider: "spotify", providerRecordingId: "track", title: " Song ", artists: [" Artist "], storefronts: ["US"], version: "live",
+    providerUrl: "https://open.spotify.com/track/track",
+    artwork: { url: "https://i.scdn.co/image/fixtureArtwork01", width: 300, height: 300 },
   }, "spotify"), {
     provider: "spotify", providerRecordingId: "track", title: "Song", artists: ["Artist"], storefronts: ["US"], version: "live",
+    providerUrl: "https://open.spotify.com/track/track",
+    artwork: { url: "https://i.scdn.co/image/fixtureArtwork01", width: 300, height: 300 },
+  });
+  assert.deepEqual(parseConnectorCandidate({
+    provider: "spotify", providerRecordingId: "track", title: "Song", artists: ["Artist"],
+    providerUrl: "https://evil.test/track/track",
+    artwork: { url: "https://evil.test/image/fixtureArtwork01", width: 300, height: 300 },
+  }, "spotify"), {
+    provider: "spotify", providerRecordingId: "track", title: "Song", artists: ["Artist"],
   });
 });
 

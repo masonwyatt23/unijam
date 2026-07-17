@@ -1,4 +1,4 @@
-import type { ProviderAdapter, ProviderCatalogQuery, ProviderRequestContext } from "../lib/providers/contracts.ts";
+import type { ProviderAdapter, ProviderCatalogQuery, ProviderLibraryPageRequest, ProviderLibrarySearchRequest, ProviderRequestContext } from "../lib/providers/contracts.ts";
 import type { MusicProvider } from "../lib/provider-state-engine.ts";
 import {
   cancelPublishOperation,
@@ -234,6 +234,25 @@ async function runCatalogQuery(
   throw new HttpError(400, "INVALID_MODE", "Unknown catalog query mode");
 }
 
+function libraryPageRequest(body: Record<string, unknown>): ProviderLibraryPageRequest {
+  const rawLimit = body.limit;
+  const limit = rawLimit === undefined ? 20 : typeof rawLimit === "number" ? rawLimit : Number.NaN;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) {
+    throw new HttpError(400, "INVALID_BODY", "limit must be an integer from 1 to 20");
+  }
+  const cursor = body.cursor;
+  if (cursor !== undefined && (typeof cursor !== "string" || cursor.length === 0 || cursor.length > 200)) {
+    throw new HttpError(400, "INVALID_BODY", "cursor is invalid");
+  }
+  return { limit, ...(typeof cursor === "string" ? { cursor } : {}) };
+}
+
+function librarySearchRequest(body: Record<string, unknown>): ProviderLibrarySearchRequest {
+  const query = requiredString(body, "query");
+  if (query.length > 200) throw new HttpError(400, "INVALID_BODY", "query is too long");
+  return { ...libraryPageRequest(body), query };
+}
+
 function assertCallback(body: Record<string, unknown>, origin: string): void {
   if (requiredString(body, "callbackUrl") !== spotifyCallbackUrl(origin)) {
     throw new HttpError(400, "CALLBACK_MISMATCH", "Spotify callback URL does not match the configured callback");
@@ -433,6 +452,21 @@ export async function handleConnectorRequest(
         credentialRef: "catalog-only",
         storefront: "US",
       }));
+    }
+
+    if (request.method === "POST" && (url.pathname === "/v1/library/tracks" || url.pathname === "/v1/library/search")) {
+      const body = await readObject(request);
+      const provider = providerValue(body.provider);
+      requireProviderEnabled(env, provider);
+      const accountId = requiredString(body, "accountId");
+      const connectionId = requiredString(body, "connectionId");
+      allowlisted(env, accountId, provider);
+      const adapter = await adapterFor({ env, store, provider, accountId, connectionId, fetcher: dependencies.fetcher, now });
+      const context = { requestId, provider, credentialRef: connectionId, storefront: "US" as const };
+      const page = url.pathname === "/v1/library/tracks"
+        ? await adapter.libraryTracks(context, libraryPageRequest(body))
+        : await adapter.searchLibrary(context, librarySearchRequest(body));
+      return response(requestId, page);
     }
 
     if (request.method === "POST" && url.pathname === "/v1/catalog/source") {

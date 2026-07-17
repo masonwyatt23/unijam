@@ -10,6 +10,13 @@ export interface RecordingMetadata {
   readonly explicit?: boolean;
   readonly version?: TrackVersion;
   readonly edition?: "standard" | "deluxe" | "expanded" | "unknown";
+  readonly artwork?: RecordingArtwork;
+}
+
+export interface RecordingArtwork {
+  readonly url: string;
+  readonly width: number;
+  readonly height: number;
 }
 
 export interface ResolutionRequest extends RecordingMetadata {
@@ -21,6 +28,7 @@ export interface ResolutionRequest extends RecordingMetadata {
 export interface CatalogCandidate extends RecordingMetadata {
   readonly provider: MusicProvider;
   readonly providerRecordingId: string;
+  readonly providerUrl?: string;
   readonly storefronts?: readonly string[];
 }
 

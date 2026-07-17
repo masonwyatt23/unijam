@@ -110,6 +110,7 @@ async function registerResolution(
       resolutionId,
       recordingId,
       title,
+      artists: ["Synthetic Test Artist"],
       matchId: `match_${resolutionId.slice(4)}`,
       provider: "spotify",
       providerRecordingId: `provider_${resolutionId.slice(4)}`,
@@ -204,6 +205,7 @@ describe("RoomDurableObject serialized authority", () => {
       status: "held",
       resolutionId: "res_bound_recording_01",
       provenance: expect.objectContaining({ provider: "spotify", storefront: "US", evidence: ["deterministic_test_match"] }),
+      display: expect.objectContaining({ artists: ["Synthetic Test Artist"], provider: "spotify", providerUrl: "https://open.spotify.com/track/provider_bound_recording_01" }),
     });
     expect(await command(stub, guest, "command_reuse_resolution_01", "suggestion.stage", {
       suggestionId: "sug_reuse_resolution_01",

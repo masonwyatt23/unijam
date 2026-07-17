@@ -5,6 +5,7 @@ import { createPublishPreview, confirmPublishPreview, createDestinationPublishSt
 import type { ProviderAdapter } from "../lib/providers/contracts.ts";
 import type { MusicProvider } from "../lib/provider-state-engine.ts";
 import { AppleMusicAdapter, createAppleDeveloperToken } from "./apple-music.ts";
+import { saveEncryptedConnection } from "./connections.ts";
 import { ConnectorProviderError, failureForResponse } from "./errors.ts";
 import { providerFetch, providerJson } from "./http.ts";
 import { exchangeSpotifyAuthorizationCode, spotifyCallbackUrl, startSpotifyAuthorization } from "./oauth.ts";
@@ -215,7 +216,7 @@ test("Spotify PKCE uses one-time state, S256, exact callback, and no client secr
   assert.equal(authorize.origin, "https://accounts.spotify.com");
   assert.equal(authorize.searchParams.get("code_challenge_method"), "S256");
   assert.deepEqual(new Set(authorize.searchParams.get("scope")?.split(" ")), new Set([
-    "playlist-modify-private", "playlist-read-private", "user-read-private",
+    "playlist-modify-private", "playlist-read-private", "user-read-private", "user-library-read",
   ]));
   assert.equal(authorize.searchParams.get("redirect_uri"), spotifyCallbackUrl("https://unijam.ashlr.ai"));
   assert.equal(store.attempts.size, 1);
@@ -235,7 +236,7 @@ test("Spotify PKCE uses one-time state, S256, exact callback, and no client secr
         token_type: "Bearer",
         expires_in: 3600,
         refresh_token: "refresh-fixture",
-        scope: "playlist-modify-private playlist-read-private user-read-private",
+        scope: "playlist-modify-private playlist-read-private user-read-private user-library-read",
       });
     },
   });
@@ -279,6 +280,62 @@ test("Spotify adapter uses current private-playlist and playlist-item contracts"
   assert.equal(read.ownershipVerified, true);
   await adapter.search(context, { title: "Fixture", artists: ["Artist"], limit: 50 });
   assert.equal(new URL(requests[4].url).searchParams.get("limit"), "10");
+});
+
+test("Spotify library pages and saved-track search return validated artwork and official links", async () => {
+  const firstId = "4uLU6hMCjMI75M1A2tKUQC";
+  const secondId = "6habFhsOp2NvshLv26DqMb";
+  const track = (id: string, imageUrl: string) => ({
+    id,
+    name: `Track ${id.slice(0, 2)}`,
+    artists: [{ name: "Fixture Artist" }],
+    album: { name: "Fixture Album", images: [{ url: imageUrl, width: 300, height: 300 }] },
+    duration_ms: 180_000,
+    explicit: false,
+    available_markets: ["US"],
+  });
+  const requests: Request[] = [];
+  const responses = [
+    Response.json({
+      items: [{ added_at: "2026-01-02T03:04:05Z", track: track(firstId, "https://i.scdn.co/image/fixtureArtwork01") }],
+      next: "https://api.spotify.com/v1/me/tracks?offset=20&limit=20",
+      total: 21,
+    }),
+    Response.json({ tracks: { items: [
+      track(firstId, "https://i.scdn.co/image/fixtureArtwork01"),
+      track(secondId, "https://evil.test/image/fixtureArtwork02"),
+    ] } }),
+    Response.json([true, false]),
+  ];
+  const adapter = new SpotifyAdapter({
+    accessToken: "access",
+    fetcher: async (input, init) => {
+      requests.push(new Request(input, init));
+      return responses.shift()!;
+    },
+  });
+  const context = { requestId: "r", provider: "spotify" as const, storefront: "US" as const };
+  const page = await adapter.libraryTracks(context, { limit: 50 });
+  assert.equal(new URL(requests[0].url).searchParams.get("limit"), "20");
+  assert.equal(page.nextCursor, "20");
+  assert.equal(page.total, 21);
+  assert.deepEqual(page.items[0], {
+    provider: "spotify",
+    providerRecordingId: firstId,
+    title: "Track 4u",
+    artists: ["Fixture Artist"],
+    album: "Fixture Album",
+    durationMs: 180_000,
+    explicit: false,
+    artwork: { url: "https://i.scdn.co/image/fixtureArtwork01", width: 300, height: 300 },
+    providerUrl: `https://open.spotify.com/track/${firstId}`,
+    addedAt: "2026-01-02T03:04:05Z",
+  });
+  const searched = await adapter.searchLibrary(context, { query: "Fixture", limit: 20 });
+  assert.equal(new URL(requests[1].url).searchParams.get("limit"), "10");
+  assert.equal(new URL(requests[2].url).pathname, "/v1/me/library/contains");
+  assert.deepEqual(searched.items.map((item) => item.providerRecordingId), [firstId]);
+  await assert.rejects(adapter.libraryTracks(context, { limit: 20, cursor: "https://evil.test" }), /invalid Spotify library cursor/);
 });
 
 test("Spotify oEmbed source metadata is title-only and rejects spoofed embeds", async () => {
@@ -502,6 +559,97 @@ test("Apple playlist reconciliation maps library song IDs to catalog IDs and fai
   );
 });
 
+test("Apple Music library pages and search use catalog IDs and validated artwork", async () => {
+  const librarySong = (libraryId: string, catalogId: string | undefined, artworkUrl: string) => ({
+    id: libraryId,
+    type: "library-songs",
+    attributes: {
+      name: "Fixture Song",
+      artistName: "Fixture Artist",
+      albumName: "Fixture Album",
+      durationInMillis: 181_000,
+      contentRating: "explicit",
+      artwork: { url: artworkUrl, width: 1200, height: 1200 },
+      playParams: catalogId ? { catalogId } : {},
+    },
+  });
+  const requests: Request[] = [];
+  const responses = [
+    Response.json({
+      data: [
+        librarySong("i.fixture", "203709340", "https://is5-ssl.mzstatic.com/image/thumb/Music1/fixture/{w}x{h}bb.jpg"),
+        librarySong("i.unmapped", undefined, "https://is5-ssl.mzstatic.com/image/thumb/Music1/unmapped/{w}x{h}bb.jpg"),
+      ],
+      next: "/v1/me/library/songs?offset=next_20&limit=20",
+      meta: { total: 22 },
+    }),
+    Response.json({ results: { "library-songs": {
+      data: [librarySong("i.search", "1440833098", "https://evil.test/image/{w}x{h}bb.jpg")],
+      next: null,
+    } } }),
+  ];
+  const adapter = new AppleMusicAdapter({
+    developerToken: "developer",
+    musicUserToken: "user",
+    fetcher: async (input, init) => {
+      requests.push(new Request(input, init));
+      return responses.shift()!;
+    },
+  });
+  const context = { requestId: "r", provider: "apple_music" as const, storefront: "US" as const };
+  const page = await adapter.libraryTracks(context, { limit: 20 });
+  assert.equal(requests[0].headers.get("Music-User-Token"), "user");
+  assert.equal(page.items.length, 1, "library-only songs without a catalog ID are not queueable");
+  assert.equal(page.items[0].providerRecordingId, "203709340");
+  assert.equal(page.items[0].libraryItemId, "i.fixture");
+  assert.deepEqual(page.items[0].artwork, {
+    url: "https://is5-ssl.mzstatic.com/image/thumb/Music1/fixture/300x300bb.jpg",
+    width: 300,
+    height: 300,
+  });
+  assert.equal(page.items[0].providerUrl, "https://music.apple.com/us/song/203709340");
+  assert.equal(page.nextCursor, "next_20");
+  assert.equal(page.total, 22);
+  const searched = await adapter.searchLibrary(context, { query: "Fixture", limit: 20 });
+  assert.equal(new URL(requests[1].url).pathname, "/v1/me/library/search");
+  assert.equal(searched.items[0].artwork, undefined, "untrusted artwork origins are omitted");
+  await assert.rejects(adapter.searchLibrary(context, { query: "Fixture", limit: 20, cursor: "bad/cursor" }), /invalid Apple Music library cursor/);
+});
+
+test("connector library routes require an allowlisted encrypted connection and return no-store pages", async () => {
+  const store = new MemoryStore();
+  const base = env();
+  await saveEncryptedConnection({
+    env: base,
+    store,
+    accountId: "allowed-account",
+    connectionId: "spotify:allowed-account",
+    provider: "spotify",
+    tokens: { accessToken: "saved-access", refreshToken: "saved-refresh", expiresAtMs: 999_999, scopes: ["user-library-read"] },
+    nowMs: 1_000,
+  });
+  const headers = { Authorization: "Bearer internal-fixture-secret", "Content-Type": "application/json" };
+  const response = await handleConnectorRequest(new Request("https://connector/v1/library/tracks", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ accountId: "allowed-account", connectionId: "spotify:allowed-account", provider: "spotify", limit: 20 }),
+  }), base, {
+    store,
+    now: () => 2_000,
+    fetcher: async () => Response.json({ items: [], next: null, total: 0 }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual((await response.json() as { data: unknown }).data, { items: [], nextCursor: null, total: 0 });
+
+  const denied = await handleConnectorRequest(new Request("https://connector/v1/library/search", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ accountId: "not-allowed", connectionId: "spotify:not-allowed", provider: "spotify", query: "Fixture" }),
+  }), base, { store });
+  assert.equal(denied.status, 403);
+});
+
 test("router enforces internal auth, pilot allowlist, exact origin, encrypted storage, and disconnect", async () => {
   const store = new MemoryStore();
   const base = env();
@@ -540,7 +688,7 @@ test("router enforces internal auth, pilot allowlist, exact origin, encrypted st
     {
       store,
       now: () => 2_000,
-      fetcher: async () => Response.json({ access_token: "secret-access", refresh_token: "secret-refresh", token_type: "Bearer", expires_in: 3600, scope: "playlist-modify-private playlist-read-private user-read-private" }),
+      fetcher: async () => Response.json({ access_token: "secret-access", refresh_token: "secret-refresh", token_type: "Bearer", expires_in: 3600, scope: "playlist-modify-private playlist-read-private user-read-private user-library-read" }),
     },
   );
   assert.equal(callback.status, 201);
@@ -873,7 +1021,7 @@ test("disconnect fences an OAuth callback that already consumed its one-time sta
     fetcher: async () => {
       entered.resolve();
       await release.promise;
-      return Response.json({ access_token: "stale-access", refresh_token: "stale-refresh", token_type: "Bearer", expires_in: 3600, scope: "playlist-modify-private playlist-read-private user-read-private" });
+      return Response.json({ access_token: "stale-access", refresh_token: "stale-refresh", token_type: "Bearer", expires_in: 3600, scope: "playlist-modify-private playlist-read-private user-read-private user-library-read" });
     },
   });
   await entered.promise;

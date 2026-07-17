@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   ArrowLeft, ArrowRight, Check, ChevronDown, CircleAlert, CircleCheck, Clock3,
-  Copy, ExternalLink, KeyRound, Link2, ListChecks, LogOut, Menu, Music2, Radio,
+  Copy, ExternalLink, KeyRound, Library, Link2, ListChecks, LogOut, Menu, Music2, Radio,
   RotateCcw, Settings2, Share2, ShieldCheck, Signal, Sparkles, ThumbsUp, Unplug,
   Users, WifiOff, X,
 } from "lucide-react";
@@ -31,12 +31,23 @@ export type RoomSuggestion = {
   submittedBy: string;
   status: "pending" | "approved" | "held" | "rejected";
   occurrenceId?: string;
+  display?: RecordingDisplay;
+};
+export type RecordingDisplay = {
+  artists: string[];
+  album?: string;
+  durationMs?: number;
+  explicit?: boolean;
+  provider: "spotify" | "apple_music";
+  providerUrl: string;
+  artwork?: { url: string; width: number; height: number };
 };
 export type RoomOccurrence = {
   occurrenceId: string;
   recordingId: string;
   suggestionId: string;
   title: string;
+  display?: RecordingDisplay;
   status: "now" | "staged" | "held" | "played" | "skipped";
   position: number;
   cosignerIds: string[];
@@ -254,6 +265,7 @@ export function ProductShell({ children, guest = false, roomId, displayName, roo
   }, [open]);
   const navItems = useMemo(() => [
     { href: "/host", label: "Rooms", icon: Radio },
+    { href: roomId ? `/library?roomId=${roomId}` : "/library", label: "Music library", icon: Library },
     ...(roomId ? [{ href: `/room/${roomId}/review`, label: "Pick review", icon: ListChecks }] : []),
     { href: "/connections", label: "Connections", icon: Link2 },
     ...(roomId ? [{ href: `/room/${roomId}/recap`, label: "Recap", icon: Clock3 }] : []),
@@ -307,6 +319,14 @@ export function SegmentedControl<T extends string>({ label, value, options, onCh
   return <div className="segmented" role="radiogroup" aria-label={label}>{options.map((option, index) => <button key={option.value} ref={(node) => { refs.current[index] = node; }} type="button" role="radio" aria-checked={value === option.value} tabIndex={value === option.value ? 0 : -1} onClick={() => onChange(option.value)} onKeyDown={(event) => onKeyDown(event, index)}>{option.label}</button>)}</div>;
 }
 
+function QueueArtwork({ item }: { item: RoomOccurrence }) {
+  const [failed, setFailed] = useState(false);
+  if (!item.display?.artwork || failed) return <span className="queue-artwork artwork-fallback" aria-hidden="true"><Music2 /></span>;
+  // Provider artwork remains direct and untransformed.
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img className="queue-artwork" src={item.display.artwork.url} width={item.display.artwork.width} height={item.display.artwork.height} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} />;
+}
+
 export function LivingSetlist({ snapshot, guest, actorId, onRefresh }: { snapshot: RoomSnapshot; guest: boolean; actorId: string; onRefresh: () => void }) {
   const [announcement, setAnnouncement] = useState("");
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -335,7 +355,14 @@ export function LivingSetlist({ snapshot, guest, actorId, onRefresh }: { snapsho
     {announcement && <p className="setlist-feedback" role="status">{announcement}</p>}
     {visibleCount === 0 ? <div className="setlist-empty"><Music2 /><h3>No songs yet</h3><p>Approved picks will appear here in one continuous queue.</p></div> : <div className="setlist-spine">{groups.map((group) => group.items.length > 0 && <div className={`queue-group queue-${group.key}`} key={group.key}><div className="queue-label"><span className={group.key === "now" ? `cue-lamp${group.items[0]?.playbackConfirmedAtMs ? " is-on" : ""}` : "spine-node"} /><strong>{group.key}</strong></div><div className="queue-items">{group.items.map((item, index) => {
       const voted = item.voterIds.includes(actorId);
-      return <article className="track-row" key={item.occurrenceId}><span className="track-position utility">{group.key === "now" ? "LIVE" : group.key === "next" ? "UP" : String(index + 1).padStart(2, "0")}</span><div className="track-copy"><strong>{item.title}</strong><span>Picked by {submitter(item)} · {item.cosignerIds.length} co-signs</span><small className="recording-id">{item.recordingId}</small></div><span className="track-duration utility">{item.voterIds.length} VOTES</span>{!(["played", "held"] as string[]).includes(group.key) && <button className={`cosign${voted ? " is-active" : ""}`} disabled={pendingId === item.occurrenceId} onClick={() => void command(item.occurrenceId, "queue.vote", { occurrenceId: item.occurrenceId, vote: !voted }, `${voted ? "Vote removed" : "Vote saved"} for ${item.title}`)} aria-label={`${voted ? "Remove vote from" : "Vote for"} ${item.title}`} aria-pressed={voted}><ThumbsUp size={16} /><span>{item.voterIds.length}</span></button>}{group.key === "played" && <CircleCheck className="played-check" aria-label="Played" />}</article>;
+      return <article className="track-row" key={item.occurrenceId}>
+        <span className="track-position utility">{group.key === "now" ? "LIVE" : group.key === "next" ? "UP" : String(index + 1).padStart(2, "0")}</span>
+        <QueueArtwork item={item} />
+        <div className="track-copy"><strong>{item.title}</strong><span>{item.display?.artists.length ? `${item.display.artists.join(", ")} · ` : ""}Picked by {submitter(item)} · {item.cosignerIds.length} co-signs</span><small>{item.display?.album ?? item.recordingId}{item.display?.explicit ? " · Explicit" : ""}</small>{item.display ? item.display.provider === "spotify" ? <ProviderBrand provider="spotify" compact background="light" purpose="attribution" href={item.display.providerUrl} label={`Open ${item.title} on Spotify`} /> : <ProviderBrand provider="apple-music" compact variant="listen-badge" background="light" purpose="attribution" href={item.display.providerUrl} label={`Listen to ${item.title} on Apple Music`} /> : null}</div>
+        <span className="track-duration utility">{item.voterIds.length} VOTES</span>
+        {!(["played", "held"] as string[]).includes(group.key) && <button className={`cosign${voted ? " is-active" : ""}`} disabled={pendingId === item.occurrenceId} onClick={() => void command(item.occurrenceId, "queue.vote", { occurrenceId: item.occurrenceId, vote: !voted }, `${voted ? "Vote removed" : "Vote saved"} for ${item.title}`)} aria-label={`${voted ? "Remove vote from" : "Vote for"} ${item.title}`} aria-pressed={voted}><ThumbsUp size={16} /><span>{item.voterIds.length}</span></button>}
+        {group.key === "played" && <CircleCheck className="played-check" aria-label="Played" />}
+      </article>;
     })}</div></div>)}</div>}
     {!guest && now && <div className="setlist-controls"><div><strong>{now.playbackConfirmedAtMs ? "Playback confirmed" : `Did ${now.title} start?`}</strong><span>{now.playbackConfirmedAtMs ? "Advance when the track finishes, or skip it if playback stops." : "Confirm only after you hear it begin. Advance stays locked until then."}</span></div><div className="setlist-control-actions"><button className="button button-quiet" disabled={pendingId === now.occurrenceId} onClick={() => void command(now.occurrenceId, "queue.skip", { occurrenceId: now.occurrenceId }, `${now.title} was skipped`)}>Skip</button><button className="button button-primary" disabled={!now.playbackConfirmedAtMs || pendingId === now.occurrenceId} title={!now.playbackConfirmedAtMs ? "Confirm playback before advancing" : undefined} onClick={() => void command(now.occurrenceId, "queue.advance", { occurrenceId: now.occurrenceId }, `${now.title} moved to Played`)}>Advance <ArrowRight size={19} /></button><button className="button button-quiet" disabled={Boolean(now.playbackConfirmedAtMs) || pendingId === now.occurrenceId} onClick={() => void command(now.occurrenceId, "playback.confirm", { occurrenceId: now.occurrenceId }, `Playback confirmed for ${now.title}`)}>{now.playbackConfirmedAtMs ? <><Check size={19} /> Confirmed</> : "Confirm playback"}</button></div></div>}
   </section>;

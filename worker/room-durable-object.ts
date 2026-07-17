@@ -33,7 +33,18 @@ type Suggestion = {
   status: "pending" | "approved" | "held" | "rejected";
   resolutionId?: string;
   provenance?: ResolutionProvenance;
+  display?: RecordingDisplay;
   occurrenceId?: string;
+};
+
+type RecordingDisplay = {
+  artists: string[];
+  album?: string;
+  durationMs?: number;
+  explicit?: boolean;
+  provider: "spotify" | "apple_music";
+  providerUrl: string;
+  artwork?: { url: string; width: number; height: number };
 };
 
 type ResolutionProvenance = {
@@ -51,6 +62,7 @@ type ResolutionGrantRow = {
   title: string;
   participant_id: string;
   explicit: number | null;
+  display_json: string;
   provenance_json: string;
   expires_at_ms: number;
   consumed_suggestion_id: string | null;
@@ -61,6 +73,7 @@ type Occurrence = {
   recordingId: string;
   suggestionId: string;
   title: string;
+  display?: RecordingDisplay;
   status: "now" | "staged" | "held" | "played" | "skipped";
   position: number;
   cosignerIds: string[];
@@ -136,6 +149,44 @@ function requiredText(payload: Record<string, unknown>, key: string, max = 300):
   const value = typeof payload[key] === "string" ? String(payload[key]).trim() : "";
   if (!value || value.length > max) throw new Error(`${key} is malformed`);
   return value;
+}
+
+function recordingDisplay(input: Record<string, unknown>, provider: RecordingDisplay["provider"], providerRecordingId: string): RecordingDisplay {
+  const artists = Array.isArray(input.artists)
+    ? input.artists.map((artist) => typeof artist === "string" ? artist.trim() : "").filter(Boolean)
+    : [];
+  if (artists.length === 0 || artists.length > 20 || artists.some((artist) => artist.length > 200)) throw new Error("artists are malformed");
+  const album = typeof input.album === "string" && input.album.trim() ? input.album.trim() : undefined;
+  if (album && album.length > 300) throw new Error("album is malformed");
+  const durationMs = typeof input.durationMs === "number" && Number.isSafeInteger(input.durationMs) && input.durationMs >= 0 ? input.durationMs : undefined;
+  const explicit = typeof input.explicit === "boolean" ? input.explicit : undefined;
+  const providerUrl = provider === "spotify"
+    ? `https://open.spotify.com/track/${providerRecordingId}`
+    : `https://music.apple.com/us/song/-/${providerRecordingId}`;
+  let artwork: RecordingDisplay["artwork"];
+  if (input.artwork && typeof input.artwork === "object" && !Array.isArray(input.artwork)) {
+    const candidate = input.artwork as Record<string, unknown>;
+    const width = Number(candidate.width); const height = Number(candidate.height);
+    const url = new URL(typeof candidate.url === "string" ? candidate.url : "");
+    const approved = provider === "spotify"
+      ? url.protocol === "https:" && url.hostname === "i.scdn.co" && url.pathname.startsWith("/image/")
+      : url.protocol === "https:" && url.hostname.endsWith(".mzstatic.com");
+    if (!approved || !Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 || width > 4_000 || height > 4_000) {
+      throw new Error("artwork is malformed");
+    }
+    artwork = { url: url.href, width, height };
+  }
+  return { artists, ...(album ? { album } : {}), ...(durationMs === undefined ? {} : { durationMs }), ...(explicit === undefined ? {} : { explicit }), provider, providerUrl, ...(artwork ? { artwork } : {}) };
+}
+
+function storedRecordingDisplay(value: string): RecordingDisplay | undefined {
+  try {
+    const parsed = JSON.parse(value) as Partial<RecordingDisplay>;
+    return Array.isArray(parsed.artists) && parsed.artists.length > 0 &&
+      (parsed.provider === "spotify" || parsed.provider === "apple_music") && typeof parsed.providerUrl === "string"
+      ? parsed as RecordingDisplay
+      : undefined;
+  } catch { return undefined; }
 }
 
 function legacyFingerprint(value: string): string {
@@ -335,6 +386,10 @@ export class RoomDurableObject extends DurableObject<RoomEnv> {
       CREATE TABLE IF NOT EXISTS legacy_imports (legacy_room_id TEXT PRIMARY KEY, export_hash TEXT UNIQUE NOT NULL, export_json TEXT NOT NULL, snapshot_json TEXT NOT NULL, events_json TEXT NOT NULL, settings_json TEXT, history_json TEXT, imported_at_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS account_deletions (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), purged_at_ms INTEGER NOT NULL);
     `);
+    const resolutionColumns = this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(resolution_grants)").toArray();
+    if (!resolutionColumns.some(({ name }) => name === "display_json")) {
+      this.ctx.storage.sql.exec("ALTER TABLE resolution_grants ADD COLUMN display_json TEXT NOT NULL DEFAULT '{}'");
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -494,13 +549,14 @@ export class RoomDurableObject extends DurableObject<RoomEnv> {
       });
       const provenance: ResolutionProvenance = { matchId, provider, providerRecordingId, storefront: "US", method, evidence };
       const provenanceJson = JSON.stringify(provenance);
+      const displayJson = JSON.stringify(recordingDisplay(input, provider, providerRecordingId));
       const existing = this.ctx.storage.sql.exec<ResolutionGrantRow>(
-        "SELECT resolution_id, recording_id, title, participant_id, explicit, provenance_json, expires_at_ms, consumed_suggestion_id FROM resolution_grants WHERE resolution_id = ? LIMIT 1",
+        "SELECT resolution_id, recording_id, title, participant_id, explicit, display_json, provenance_json, expires_at_ms, consumed_suggestion_id FROM resolution_grants WHERE resolution_id = ? LIMIT 1",
         resolutionId,
       ).toArray()[0];
       if (existing) {
         const same = existing.recording_id === recordingId && existing.title === title && existing.participant_id === actor.participantId &&
-          existing.explicit === (explicit === null ? null : explicit ? 1 : 0) && existing.provenance_json === provenanceJson;
+          existing.explicit === (explicit === null ? null : explicit ? 1 : 0) && existing.display_json === displayJson && existing.provenance_json === provenanceJson;
         if (!same) return Response.json(protocolError("RESOLUTION_ID_CONFLICT", "resolutionId was already registered with different provenance", metadata.sequence), { status: 409 });
         return Response.json({ resolutionId, duplicate: true, expiresAtMs: existing.expires_at_ms });
       }
@@ -509,13 +565,14 @@ export class RoomDurableObject extends DurableObject<RoomEnv> {
       this.ctx.storage.sql.exec("DELETE FROM resolution_grants WHERE expires_at_ms <= ? AND consumed_suggestion_id IS NULL", now);
       this.ctx.storage.sql.exec(
         `INSERT INTO resolution_grants
-         (resolution_id, recording_id, title, participant_id, explicit, provenance_json, expires_at_ms, consumed_suggestion_id, created_at_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+         (resolution_id, recording_id, title, participant_id, explicit, display_json, provenance_json, expires_at_ms, consumed_suggestion_id, created_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
         resolutionId,
         recordingId,
         title,
         actor.participantId,
         explicit === null ? null : explicit ? 1 : 0,
+        displayJson,
         provenanceJson,
         expiresAtMs,
         now,
@@ -782,7 +839,7 @@ export class RoomDurableObject extends DurableObject<RoomEnv> {
         }
         if (snapshot.suggestions[suggestionId]) throw new Error("suggestionId already exists");
         const resolution = this.ctx.storage.sql.exec<ResolutionGrantRow>(
-          "SELECT resolution_id, recording_id, title, participant_id, explicit, provenance_json, expires_at_ms, consumed_suggestion_id FROM resolution_grants WHERE resolution_id = ? LIMIT 1",
+          "SELECT resolution_id, recording_id, title, participant_id, explicit, display_json, provenance_json, expires_at_ms, consumed_suggestion_id FROM resolution_grants WHERE resolution_id = ? LIMIT 1",
           resolutionId,
         ).toArray()[0];
         if (!resolution || resolution.participant_id !== actor.participantId || resolution.expires_at_ms <= now || resolution.consumed_suggestion_id) {
@@ -791,12 +848,13 @@ export class RoomDurableObject extends DurableObject<RoomEnv> {
         const recordingId = resolution.recording_id;
         const title = resolution.title;
         const provenance = JSON.parse(resolution.provenance_json) as ResolutionProvenance;
+        const display = storedRecordingDisplay(resolution.display_json);
         const used = Object.values(snapshot.suggestions).filter((suggestion) => suggestion.submittedBy === actor.participantId && suggestion.status !== "rejected").length;
         if (actor.role === "guest" && used >= snapshot.rules.contributionLimit) throw new Error("Contribution limit reached");
         const status = resolution.explicit === 1 && snapshot.rules.explicitContent === "hold"
           ? "held"
           : snapshot.rules.approvalMode === "open" ? "approved" : "pending";
-        snapshot.suggestions[suggestionId] = { suggestionId, recordingId, title, submittedBy: actor.participantId, status, resolutionId, provenance };
+        snapshot.suggestions[suggestionId] = { suggestionId, recordingId, title, submittedBy: actor.participantId, status, resolutionId, provenance, ...(display ? { display } : {}) };
         this.ctx.storage.sql.exec("UPDATE resolution_grants SET consumed_suggestion_id = ? WHERE resolution_id = ? AND consumed_suggestion_id IS NULL", suggestionId, resolutionId);
         this.ctx.storage.sql.exec("INSERT INTO suggestions (suggestion_id, recording_id, submitter_id, status, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?)", suggestionId, recordingId, actor.participantId, status, now, now);
         emit(status === "held" ? "suggestion.held" : "suggestion.staged", { suggestionId, recordingId, title, status, resolutionId, provenance });
@@ -1020,6 +1078,7 @@ export class RoomDurableObject extends DurableObject<RoomEnv> {
       const activeCount = snapshot.occurrences.filter((item) => ["now", "staged"].includes(item.status)).length;
       const occurrence: Occurrence = {
         occurrenceId, recordingId: suggestion.recordingId, suggestionId: suggestion.suggestionId, title: suggestion.title,
+        ...(suggestion.display ? { display: suggestion.display } : {}),
         status: activeCount === 0 ? "now" : "staged", position: activeCount, cosignerIds: [suggestion.submittedBy], voterIds: [],
       };
       suggestion.occurrenceId = occurrenceId;

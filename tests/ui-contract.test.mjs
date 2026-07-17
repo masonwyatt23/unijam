@@ -276,6 +276,27 @@ test("all planned product routes exist", async () => {
   for (const route of routes) assert.ok((await read(route)).length > 100, route);
 });
 
+test("provider-backed music library is artwork-rich, isolated, and can add canonical songs to a room", async () => {
+  const [library, product, css, route] = await Promise.all([
+    read("app/library/page.tsx"),
+    read("app/components/product.tsx"),
+    read("app/globals.css"),
+    read("app/api/v1/providers/[provider]/library/route.ts"),
+  ]);
+  assert.match(product, /label: "Music library"/);
+  assert.match(library, /provider-shelf-\$\{provider\}/);
+  assert.match(library, /track\.artwork\.url/);
+  assert.match(library, /track\.artists\.join/);
+  assert.match(library, /track\.album/);
+  assert.match(library, /Add to room/);
+  assert.match(library, /action: "suggestion\.stage"/);
+  assert.match(route, /requireConnectorHost/);
+  assert.match(route, /limit > 20/);
+  assert.match(css, /\.library-track-list/);
+  assert.match(css, /@media \(max-width: 420px\)/);
+  assert.doesNotMatch(library, /Promise\.all\([^)]*spotify[^)]*apple/i);
+});
+
 test("pilot UI exposes real room, invite, handoff, and publishing operations", async () => {
   const [host, room, publish, handoff] = await Promise.all([
     read("app/host/page.tsx"),

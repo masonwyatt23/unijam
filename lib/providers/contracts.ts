@@ -1,4 +1,4 @@
-import type { CatalogCandidate, RecordingMetadata } from "../catalog/resolver.ts";
+import type { CatalogCandidate, RecordingArtwork, RecordingMetadata } from "../catalog/resolver.ts";
 import type { MusicProvider } from "../provider-state-engine.ts";
 
 export interface ProviderRequestContext {
@@ -10,6 +10,36 @@ export interface ProviderRequestContext {
 
 export interface ProviderCatalogQuery extends RecordingMetadata {
   readonly limit: number;
+}
+
+export interface ProviderLibraryPageRequest {
+  readonly cursor?: string;
+  readonly limit: number;
+}
+
+export interface ProviderLibrarySearchRequest extends ProviderLibraryPageRequest {
+  readonly query: string;
+}
+
+export interface ProviderLibraryTrack {
+  readonly provider: MusicProvider;
+  /** A queueable catalog recording identifier, never a provider library-row ID. */
+  readonly providerRecordingId: string;
+  readonly libraryItemId?: string;
+  readonly title: string;
+  readonly artists: readonly string[];
+  readonly album?: string;
+  readonly durationMs?: number;
+  readonly explicit?: boolean;
+  readonly artwork?: RecordingArtwork;
+  readonly providerUrl: string;
+  readonly addedAt?: string;
+}
+
+export interface ProviderLibraryPage {
+  readonly items: readonly ProviderLibraryTrack[];
+  readonly nextCursor: string | null;
+  readonly total?: number;
 }
 
 export interface ProviderPlaylistItem {
@@ -64,6 +94,14 @@ export interface ProviderCatalogAdapter {
     context: ProviderRequestContext,
     query: ProviderCatalogQuery,
   ): Promise<readonly CatalogCandidate[]>;
+  libraryTracks(
+    context: ProviderRequestContext,
+    request: ProviderLibraryPageRequest,
+  ): Promise<ProviderLibraryPage>;
+  searchLibrary(
+    context: ProviderRequestContext,
+    request: ProviderLibrarySearchRequest,
+  ): Promise<ProviderLibraryPage>;
 }
 
 /** Playlist writes are intentionally append-oriented and destination scoped. */

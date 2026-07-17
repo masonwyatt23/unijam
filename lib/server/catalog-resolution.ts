@@ -17,6 +17,38 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function validatedProviderUrl(provider: MusicProvider, providerRecordingId: string, value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  try {
+    const url = new URL(value);
+    const expectedPath = provider === "spotify" ? `/track/${providerRecordingId}` : `/us/song/${providerRecordingId}`;
+    const expectedHost = provider === "spotify" ? "open.spotify.com" : "music.apple.com";
+    return url.protocol === "https:" && url.hostname === expectedHost && url.pathname === expectedPath &&
+      !url.username && !url.password && !url.port && !url.search && !url.hash
+      ? url.href
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function validatedArtwork(provider: MusicProvider, value: unknown) {
+  const source = record(value);
+  if (!source || typeof source.url !== "string" || !Number.isSafeInteger(source.width) || !Number.isSafeInteger(source.height)) return undefined;
+  const width = Number(source.width);
+  const height = Number(source.height);
+  if (width <= 0 || height <= 0 || width > 10_000 || height > 10_000) return undefined;
+  try {
+    const url = new URL(source.url);
+    const validSpotify = provider === "spotify" && url.hostname === "i.scdn.co" && /^\/image\/[0-9A-Za-z]+$/.test(url.pathname);
+    const validApple = provider === "apple_music" && /^(?:is[0-9]+-ssl\.)?mzstatic\.com$/.test(url.hostname) && url.pathname.startsWith("/image/thumb/");
+    if (url.protocol !== "https:" || url.username || url.password || url.port || url.search || url.hash || (!validSpotify && !validApple)) return undefined;
+    return { url: url.href, width, height };
+  } catch {
+    return undefined;
+  }
+}
+
 export function parseConnectorCandidate(value: unknown, provider: MusicProvider): CatalogCandidate | null {
   const source = record(value);
   if (!source || source.provider !== provider) return null;
@@ -29,6 +61,8 @@ export function parseConnectorCandidate(value: unknown, provider: MusicProvider)
   const storefronts = Array.isArray(source.storefronts)
     ? source.storefronts.filter((storefront): storefront is string => typeof storefront === "string")
     : undefined;
+  const artwork = validatedArtwork(provider, source.artwork);
+  const providerUrl = validatedProviderUrl(provider, providerRecordingId, source.providerUrl);
   const version = typeof source.version === "string" && VERSION_VALUES.has(source.version)
     ? source.version as CatalogCandidate["version"]
     : undefined;
@@ -46,6 +80,8 @@ export function parseConnectorCandidate(value: unknown, provider: MusicProvider)
     ...(typeof source.explicit === "boolean" ? { explicit: source.explicit } : {}),
     ...(version ? { version } : {}),
     ...(edition ? { edition } : {}),
+    ...(artwork ? { artwork } : {}),
+    ...(providerUrl ? { providerUrl } : {}),
     ...(storefronts ? { storefronts } : {}),
   };
 }

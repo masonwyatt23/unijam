@@ -4,6 +4,10 @@ import type {
   CreatePrivatePlaylistRequest,
   ProviderAdapter,
   ProviderCatalogQuery,
+  ProviderLibraryPage,
+  ProviderLibraryPageRequest,
+  ProviderLibrarySearchRequest,
+  ProviderLibraryTrack,
   ProviderMutationReceipt,
   ProviderPlaylistSnapshot,
   ProviderRequestContext,
@@ -14,7 +18,9 @@ import { providerJson } from "./http.ts";
 import { inferEdition, inferVersion, isRecord, numberValue, stringValue } from "./catalog-shape.ts";
 
 const API = "https://api.spotify.com/v1";
+const API_ORIGIN = "https://api.spotify.com";
 const SPOTIFY_ID = /^[0-9A-Za-z]{22}$/;
+const SPOTIFY_ARTWORK_PATH = /^\/image\/[0-9A-Za-z]+$/;
 
 export interface SpotifyOEmbedMetadata {
   readonly provider: "spotify";
@@ -40,6 +46,81 @@ function bearer(accessToken: string, json = false): HeadersInit {
   };
 }
 
+function spotifyTrackUrl(id: string): string {
+  return `https://open.spotify.com/track/${id}`;
+}
+
+function spotifyArtwork(value: unknown): { url: string; width: number; height: number } | undefined {
+  if (!isRecord(value)) return undefined;
+  const raw = stringValue(value.url);
+  const width = numberValue(value.width);
+  const height = numberValue(value.height);
+  if (!raw || width === undefined || height === undefined || !Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0 || width > 4096 || height > 4096) {
+    return undefined;
+  }
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:" || url.hostname !== "i.scdn.co" || url.username || url.password || url.port || url.search || url.hash || !SPOTIFY_ARTWORK_PATH.test(url.pathname)) {
+      return undefined;
+    }
+    return { url: url.href, width, height };
+  } catch {
+    return undefined;
+  }
+}
+
+function spotifyAlbumArtwork(album: Record<string, unknown> | undefined) {
+  const images = album && Array.isArray(album.images)
+    ? album.images.flatMap((image) => {
+        const artwork = spotifyArtwork(image);
+        return artwork ? [artwork] : [];
+      })
+    : [];
+  return images.sort((left, right) => {
+    const leftDistance = left.width >= 300 ? left.width - 300 : 10_000 - left.width;
+    const rightDistance = right.width >= 300 ? right.width - 300 : 10_000 - right.width;
+    return leftDistance - rightDistance;
+  })[0];
+}
+
+function spotifyLibraryTrack(value: unknown, addedAt?: unknown): ProviderLibraryTrack | null {
+  const candidate = spotifyCandidate(value);
+  if (!candidate) return null;
+  const added = typeof addedAt === "string" && Number.isFinite(Date.parse(addedAt)) ? addedAt : undefined;
+  return {
+    provider: "spotify",
+    providerRecordingId: candidate.providerRecordingId,
+    title: candidate.title,
+    artists: candidate.artists,
+    ...(candidate.album ? { album: candidate.album } : {}),
+    ...(candidate.durationMs === undefined ? {} : { durationMs: candidate.durationMs }),
+    ...(candidate.explicit === undefined ? {} : { explicit: candidate.explicit }),
+    ...(candidate.artwork ? { artwork: candidate.artwork } : {}),
+    providerUrl: candidate.providerUrl ?? spotifyTrackUrl(candidate.providerRecordingId),
+    ...(added ? { addedAt: added } : {}),
+  };
+}
+
+function spotifyOffset(cursor: string | undefined): number {
+  if (cursor === undefined) return 0;
+  if (!/^(?:0|[1-9][0-9]{0,8})$/.test(cursor)) throw new Error("invalid Spotify library cursor");
+  return Number(cursor);
+}
+
+function spotifyNextCursor(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  const raw = stringValue(value);
+  if (!raw) throw invalidProviderResponse("spotify");
+  let url: URL;
+  try { url = new URL(raw); }
+  catch { throw invalidProviderResponse("spotify"); }
+  const offset = url.searchParams.get("offset");
+  if (url.origin !== API_ORIGIN || url.pathname !== "/v1/me/tracks" || !offset || !/^(?:0|[1-9][0-9]{0,8})$/.test(offset)) {
+    throw invalidProviderResponse("spotify");
+  }
+  return offset;
+}
+
 function spotifyPlaylistUrl(value: unknown, playlistId: string): string | undefined {
   const raw = stringValue(value);
   if (!raw) return undefined;
@@ -62,7 +143,9 @@ function spotifyCandidate(value: unknown): CatalogCandidate | null {
     ? value.artists.flatMap((artist) => isRecord(artist) && stringValue(artist.name) ? [String(artist.name)] : [])
     : [];
   if (!id || !title || artists.length === 0) return null;
-  const album = isRecord(value.album) ? stringValue(value.album.name) : undefined;
+  const albumObject = isRecord(value.album) ? value.album : undefined;
+  const album = albumObject ? stringValue(albumObject.name) : undefined;
+  const artwork = spotifyAlbumArtwork(albumObject);
   const isrc = isRecord(value.external_ids) ? stringValue(value.external_ids.isrc) : undefined;
   const availableMarkets = Array.isArray(value.available_markets)
     ? value.available_markets.filter((market): market is string => typeof market === "string")
@@ -79,6 +162,8 @@ function spotifyCandidate(value: unknown): CatalogCandidate | null {
     title,
     artists,
     ...(album ? { album } : {}),
+    ...(artwork ? { artwork } : {}),
+    providerUrl: spotifyTrackUrl(id),
     ...(numberValue(value.duration_ms) === undefined ? {} : { durationMs: numberValue(value.duration_ms) }),
     ...(isrc ? { isrc } : {}),
     ...(typeof value.explicit === "boolean" ? { explicit: value.explicit } : {}),
@@ -179,6 +264,52 @@ export class SpotifyAdapter implements ProviderAdapter {
       const candidate = spotifyCandidate(item);
       return candidate ? [candidate] : [];
     });
+  }
+
+  async libraryTracks(
+    _context: ProviderRequestContext,
+    request: ProviderLibraryPageRequest,
+  ): Promise<ProviderLibraryPage> {
+    const limit = Math.min(20, Math.max(1, Math.trunc(request.limit)));
+    const body = await this.json(`/me/tracks?${new URLSearchParams({ market: "US", limit: String(limit), offset: String(spotifyOffset(request.cursor)) })}`);
+    const items = Array.isArray(body.items) ? body.items : [];
+    const tracks = items.flatMap((item) => {
+      if (!isRecord(item)) return [];
+      const track = spotifyLibraryTrack(item.track, item.added_at);
+      return track ? [track] : [];
+    });
+    const total = numberValue(body.total);
+    return {
+      items: tracks,
+      nextCursor: spotifyNextCursor(body.next),
+      ...(total !== undefined && Number.isSafeInteger(total) && total >= 0 ? { total } : {}),
+    };
+  }
+
+  async searchLibrary(
+    _context: ProviderRequestContext,
+    request: ProviderLibrarySearchRequest,
+  ): Promise<ProviderLibraryPage> {
+    if (request.cursor !== undefined) throw new Error("Spotify saved-track search does not paginate");
+    const query = request.query.trim();
+    if (!query || query.length > 200) throw new Error("invalid Spotify library search query");
+    const limit = Math.min(10, Math.max(1, Math.trunc(request.limit)));
+    const body = await this.json(`/search?${new URLSearchParams({ q: query, type: "track", market: "US", limit: String(limit) })}`);
+    const candidates = isRecord(body.tracks) && Array.isArray(body.tracks.items)
+      ? body.tracks.items.flatMap((item) => {
+          const track = spotifyLibraryTrack(item);
+          return track ? [track] : [];
+        })
+      : [];
+    if (candidates.length === 0) return { items: [], nextCursor: null };
+    const uris = candidates.map((item) => `spotify:track:${item.providerRecordingId}`).join(",");
+    const saved = await providerJson(
+      `${API}/me/library/contains?${new URLSearchParams({ uris })}`,
+      { headers: bearer(this.options.accessToken) },
+      { provider: "spotify", fetcher: this.options.fetcher, now: this.options.now },
+      (value): value is boolean[] => Array.isArray(value) && value.length === candidates.length && value.every((entry) => typeof entry === "boolean"),
+    );
+    return { items: candidates.filter((_, index) => saved[index]), nextCursor: null };
   }
 
   async createPrivatePlaylist(

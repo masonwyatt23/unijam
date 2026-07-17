@@ -4,6 +4,10 @@ import type {
   CreatePrivatePlaylistRequest,
   ProviderAdapter,
   ProviderCatalogQuery,
+  ProviderLibraryPage,
+  ProviderLibraryPageRequest,
+  ProviderLibrarySearchRequest,
+  ProviderLibraryTrack,
   ProviderMutationReceipt,
   ProviderPlaylistSnapshot,
   ProviderRequestContext,
@@ -16,6 +20,8 @@ import { encodeBase64Url } from "./storage.ts";
 
 const API = "https://api.music.apple.com/v1";
 const APPLE_CATALOG_ID = /^[0-9]+$/;
+const APPLE_LIBRARY_ID = /^[0-9A-Za-z._-]+$/;
+const APPLE_CURSOR = /^[0-9A-Za-z._~-]{1,200}$/;
 
 export interface AppleMusicAdapterOptions {
   readonly developerToken: string;
@@ -41,6 +47,54 @@ function appleMusicPlaylistUrl(value: unknown): string | undefined {
   }
 }
 
+function appleMusicSongUrl(id: string): string {
+  return `https://music.apple.com/us/song/${id}`;
+}
+
+function appleMusicArtwork(value: unknown): { url: string; width: number; height: number } | undefined {
+  if (!isRecord(value)) return undefined;
+  const template = stringValue(value.url);
+  const maxWidth = numberValue(value.width);
+  const maxHeight = numberValue(value.height);
+  if (!template || maxWidth === undefined || maxHeight === undefined || !Number.isSafeInteger(maxWidth) || !Number.isSafeInteger(maxHeight) || maxWidth <= 0 || maxHeight <= 0 || maxWidth > 10_000 || maxHeight > 10_000) {
+    return undefined;
+  }
+  try {
+    const parsed = new URL(template);
+    if (
+      parsed.protocol !== "https:" || !/^(?:is[0-9]+-ssl\.)?mzstatic\.com$/.test(parsed.hostname) ||
+      parsed.username || parsed.password || parsed.port || parsed.search || parsed.hash ||
+      !parsed.pathname.startsWith("/image/thumb/") ||
+      (template.match(/\{w\}/g)?.length ?? 0) !== 1 || (template.match(/\{h\}/g)?.length ?? 0) !== 1
+    ) return undefined;
+    const size = Math.min(300, maxWidth, maxHeight);
+    const resolved = new URL(template.replace("{w}", String(size)).replace("{h}", String(size)));
+    return { url: resolved.href, width: size, height: size };
+  } catch {
+    return undefined;
+  }
+}
+
+function appleCursor(cursor: string | undefined): string | undefined {
+  if (cursor === undefined) return undefined;
+  if (!APPLE_CURSOR.test(cursor)) throw new Error("invalid Apple Music library cursor");
+  return cursor;
+}
+
+function appleNextCursor(value: unknown, expectedPath: string): string | null {
+  if (value === null || value === undefined) return null;
+  const raw = stringValue(value);
+  if (!raw) throw invalidProviderResponse("apple_music");
+  let url: URL;
+  try { url = new URL(raw, API); }
+  catch { throw invalidProviderResponse("apple_music"); }
+  const offset = url.searchParams.get("offset");
+  if (url.origin !== new URL(API).origin || url.pathname !== expectedPath || !offset || !APPLE_CURSOR.test(offset)) {
+    throw invalidProviderResponse("apple_music");
+  }
+  return offset;
+}
+
 function appleMusicDescription(value: unknown): string | undefined {
   return stringValue(value) ?? (isRecord(value) ? stringValue(value.standard) : undefined);
 }
@@ -55,18 +109,49 @@ function songCandidate(value: unknown): CatalogCandidate | null {
   const album = stringValue(attributes?.albumName);
   const durationMs = numberValue(attributes?.durationInMillis);
   const isrc = stringValue(attributes?.isrc);
+  const artwork = appleMusicArtwork(attributes?.artwork);
   return {
     provider: "apple_music",
     providerRecordingId: id,
     title,
     artists: [artist],
     ...(album ? { album } : {}),
+    ...(artwork ? { artwork } : {}),
+    providerUrl: appleMusicSongUrl(id),
     ...(durationMs === undefined ? {} : { durationMs }),
     ...(isrc ? { isrc } : {}),
     ...(attributes?.contentRating === "explicit" ? { explicit: true } : attributes?.contentRating === "clean" ? { explicit: false } : {}),
     version: inferVersion(title, album),
     edition: inferEdition(album),
     storefronts: ["US"],
+  };
+}
+
+function appleLibraryTrack(value: unknown): ProviderLibraryTrack | null {
+  if (!isRecord(value) || value.type !== "library-songs") return null;
+  const libraryItemId = stringValue(value.id);
+  const attributes = isRecord(value.attributes) ? value.attributes : undefined;
+  const playParams = attributes && isRecord(attributes.playParams) ? attributes.playParams : undefined;
+  const catalogId = stringValue(playParams?.catalogId);
+  const title = stringValue(attributes?.name);
+  const artist = stringValue(attributes?.artistName);
+  if (!libraryItemId || !APPLE_LIBRARY_ID.test(libraryItemId) || !catalogId || !APPLE_CATALOG_ID.test(catalogId) || !title || !artist) return null;
+  const album = stringValue(attributes?.albumName);
+  const durationMs = numberValue(attributes?.durationInMillis);
+  const artwork = appleMusicArtwork(attributes?.artwork);
+  const addedAt = stringValue(attributes?.dateAdded);
+  return {
+    provider: "apple_music",
+    providerRecordingId: catalogId,
+    libraryItemId,
+    title,
+    artists: [artist],
+    ...(album ? { album } : {}),
+    ...(durationMs === undefined ? {} : { durationMs }),
+    ...(attributes?.contentRating === "explicit" ? { explicit: true } : attributes?.contentRating === "clean" ? { explicit: false } : {}),
+    ...(artwork ? { artwork } : {}),
+    providerUrl: appleMusicSongUrl(catalogId),
+    ...(addedAt && Number.isFinite(Date.parse(addedAt)) ? { addedAt } : {}),
   };
 }
 
@@ -149,6 +234,47 @@ export class AppleMusicAdapter implements ProviderAdapter {
       const candidate = songCandidate(item);
       return candidate ? [candidate] : [];
     });
+  }
+
+  async libraryTracks(
+    _context: ProviderRequestContext,
+    request: ProviderLibraryPageRequest,
+  ): Promise<ProviderLibraryPage> {
+    const limit = Math.min(20, Math.max(1, Math.trunc(request.limit)));
+    const cursor = appleCursor(request.cursor);
+    const body = await this.json(`/me/library/songs?${new URLSearchParams({ limit: String(limit), ...(cursor ? { offset: cursor } : {}) })}`, {}, false, true);
+    const items = (Array.isArray(body.data) ? body.data : []).flatMap((item) => {
+      const track = appleLibraryTrack(item);
+      return track ? [track] : [];
+    });
+    const meta = isRecord(body.meta) ? body.meta : undefined;
+    const total = numberValue(meta?.total);
+    return {
+      items,
+      nextCursor: appleNextCursor(body.next, "/v1/me/library/songs"),
+      ...(total !== undefined && Number.isSafeInteger(total) && total >= 0 ? { total } : {}),
+    };
+  }
+
+  async searchLibrary(
+    _context: ProviderRequestContext,
+    request: ProviderLibrarySearchRequest,
+  ): Promise<ProviderLibraryPage> {
+    const query = request.query.trim();
+    if (!query || query.length > 200) throw new Error("invalid Apple Music library search query");
+    const limit = Math.min(20, Math.max(1, Math.trunc(request.limit)));
+    const cursor = appleCursor(request.cursor);
+    const body = await this.json(`/me/library/search?${new URLSearchParams({ term: query, types: "library-songs", limit: String(limit), ...(cursor ? { offset: cursor } : {}) })}`, {}, false, true);
+    const results = isRecord(body.results) ? body.results : undefined;
+    const songs = results && isRecord(results["library-songs"]) ? results["library-songs"] : undefined;
+    const items = songs && Array.isArray(songs.data) ? songs.data.flatMap((item) => {
+      const track = appleLibraryTrack(item);
+      return track ? [track] : [];
+    }) : [];
+    return {
+      items,
+      nextCursor: appleNextCursor(songs?.next, "/v1/me/library/search"),
+    };
   }
 
   async createPrivatePlaylist(
