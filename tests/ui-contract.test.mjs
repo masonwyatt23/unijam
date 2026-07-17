@@ -264,8 +264,20 @@ test("live product surfaces contain no demo identity or queue fixtures", async (
 });
 
 test("accessibility and constrained viewport policies are present", async () => {
-  const css = await read("app/globals.css");
+  const [css, shell, host, library] = await Promise.all([
+    read("app/globals.css"), read("app/components/product.tsx"), read("app/host/page.tsx"), read("app/library/page.tsx"),
+  ]);
   assert.match(css, /min-width: 320px/);
+  assert.match(css, /min-height: 100dvh/);
+  assert.match(css, /safe-area-inset-top/);
+  assert.match(css, /\.nav-scrim/);
+  assert.match(css, /\.provider-text-link \{ width: max-content; min-height: 44px/);
+  assert.match(css, /\.library-track-copy a \{ width: max-content; max-width: 100%; min-height: 44px/);
+  assert.match(shell, /role=\{open \? "dialog" : undefined\}/);
+  assert.match(shell, /document\.body\.style\.overflow = "hidden"/);
+  assert.match(shell, /event\.key !== "Tab"/);
+  assert.match(host, /Connect Apple Music or Spotify/);
+  assert.match(library, /opens in a new tab/);
   assert.match(css, /min-height: 44px/);
   assert.match(css, /prefers-reduced-motion: reduce/);
   assert.match(css, /forced-colors: active/);

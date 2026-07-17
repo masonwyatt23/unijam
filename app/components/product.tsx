@@ -253,6 +253,7 @@ export function ProductShell({ children, guest = false, roomId, displayName, roo
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const railRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     if (!open) return;
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
@@ -263,11 +264,32 @@ export function ProductShell({ children, guest = false, roomId, displayName, roo
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [open]);
+  useEffect(() => {
+    if (!open || guest) return;
+    const rail = railRef.current;
+    if (!rail) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    const focusable = () => [...rail.querySelectorAll<HTMLElement>('a[href], button:not([disabled])')];
+    document.body.style.overflow = "hidden";
+    requestAnimationFrame(() => focusable()[0]?.focus());
+    const trapFocus = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); setOpen(false); menuButtonRef.current?.focus(); return; }
+      if (event.key !== "Tab") return;
+      const items = focusable();
+      if (!items.length) return;
+      const current = document.activeElement;
+      if (event.shiftKey && current === items[0]) { event.preventDefault(); items.at(-1)?.focus(); }
+      else if (!event.shiftKey && current === items.at(-1)) { event.preventDefault(); items[0]?.focus(); }
+    };
+    document.addEventListener("keydown", trapFocus);
+    return () => { document.body.style.overflow = previousOverflow; document.removeEventListener("keydown", trapFocus); if (document.activeElement === document.body) previousFocus?.focus(); };
+  }, [guest, open]);
   const navItems = useMemo(() => [
     { href: "/host", label: "Rooms", icon: Radio },
     { href: roomId ? `/library?roomId=${roomId}` : "/library", label: "Music library", icon: Library },
     ...(roomId ? [{ href: `/room/${roomId}/review`, label: "Pick review", icon: ListChecks }] : []),
-    { href: "/connections", label: "Connections", icon: Link2 },
+    { href: "/connections", label: "Connect music", icon: Link2 },
     ...(roomId ? [{ href: `/room/${roomId}/recap`, label: "Recap", icon: Clock3 }] : []),
   ], [roomId]);
   const roomName = roomLabel ?? (roomId ? `Room ${roomId}` : "Current room");
@@ -281,13 +303,14 @@ export function ProductShell({ children, guest = false, roomId, displayName, roo
     }
   }
   return <div className={`product-shell${guest ? " is-guest" : ""}`}>
-    <a href="#main-content" className="skip-link">Skip to main content</a>
+    <a href="#main-content" className="skip-link" aria-hidden={open || undefined} tabIndex={open ? -1 : undefined}>Skip to main content</a>
     <header className="mobile-bar"><Brand compact /><button ref={menuButtonRef} className="icon-button" onClick={() => setOpen(!open)} aria-expanded={open} aria-controls="app-nav" aria-label={open ? "Close navigation" : "Open navigation"}>{open ? <X /> : <Menu />}</button></header>
-    <aside className={`rail${open ? " is-open" : ""}`} id="app-nav"><Brand />
-      {guest ? <div className="guest-rail-copy"><span className="utility">GUEST ACCESS</span><strong>{roomName}</strong><p>Your session only opens this room.</p></div> : <nav aria-label="Host workspace">{navItems.map((item) => { const active = pathname === item.href || item.href === "/connections" && pathname.startsWith("/connections/"); const Icon = item.icon; return <Link key={item.href} href={item.href} className={active ? "active" : ""} aria-current={active ? "page" : undefined}><Icon size={19} />{item.label}</Link>; })}</nav>}
+    {open ? <button type="button" className="nav-scrim" aria-label="Close navigation" onClick={() => { setOpen(false); menuButtonRef.current?.focus(); }} /> : null}
+    <aside ref={railRef} className={`rail${open ? " is-open" : ""}`} id="app-nav" role={open ? "dialog" : undefined} aria-modal={open || undefined} aria-label={open ? "UniJam navigation" : undefined}><Brand />
+      {guest ? <div className="guest-rail-copy"><span className="utility">GUEST ACCESS</span><strong>{roomName}</strong><p>Your session only opens this room.</p></div> : <nav aria-label="Host workspace">{navItems.map((item) => { const active = pathname === item.href || item.href === "/connections" && pathname.startsWith("/connections/"); const Icon = item.icon; return <Link key={item.href} href={item.href} className={active ? "active" : ""} aria-current={active ? "page" : undefined} onClick={() => setOpen(false)}><Icon size={19} />{item.label}</Link>; })}</nav>}
       <div className="rail-bottom">{!guest && roomId && <Link href={`/room/${roomId}`} className="rail-live"><span className="live-dot" /> {roomName} <ArrowRight size={17} /></Link>}{guest ? <div className="rail-account"><span className="avatar">G</span><span><strong>{accountName}</strong><small>Room-scoped session</small></span></div> : <div className="rail-account-wrap"><button className="rail-account" type="button" aria-expanded={accountMenuOpen} aria-controls="account-menu" onClick={() => setAccountMenuOpen((value) => !value)}><span className="avatar">{initials(accountName)}</span><span><strong>{accountName}</strong><small>Passkey secured</small></span><ChevronDown size={16} aria-hidden="true" /></button>{accountMenuOpen ? <div className="rail-account-menu" id="account-menu"><button type="button" disabled={signingOut} onClick={() => void signOut()}><LogOut size={16} /> {signingOut ? "Signing out…" : "Sign out"}</button></div> : null}</div>}</div>
     </aside>
-    <main className="workspace" id="main-content">{children}</main>
+    <main className="workspace" id="main-content" aria-hidden={open || undefined}>{children}</main>
   </div>;
 }
 

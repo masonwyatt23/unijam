@@ -25,7 +25,7 @@ function ProviderStatus({ provider }: { provider: Provider }) {
       <div><h2>{name}</h2><span className={status.data?.connected ? "connection-ok" : "connection-wait"}>{status.data?.connected ? <CircleCheck /> : <CircleAlert />}{state}</span></div>
       <p>{provider === "spotify" ? "Authorization Code + PKCE and Spotify publishing are managed on a provider-only screen." : "MusicKit authorization and Apple Music publishing are managed on a provider-only screen."}</p>
       <dl><div><dt>Storefront</dt><dd>{status.data?.storefront?.toUpperCase() ?? "US pilot"}</dd></div><div><dt>Publishing</dt><dd>{status.data?.publishingEnabled ? "Enabled" : "Feature-gated"}</dd></div></dl>
-      {status.state === "error" ? <button className="button button-quiet" onClick={status.refresh}>Retry {name} status</button> : <Link className="button button-ink" href={`/connections/${provider}`}>Manage {name} <ArrowRight size={18} /></Link>}
+      {status.state === "error" ? <button className="button button-quiet" onClick={status.refresh}>Retry {name} status</button> : <Link className="button button-ink" href={`/connections/${provider}`}>{status.data?.connected ? `Manage ${name}` : `Connect ${name}`} <ArrowRight size={18} /></Link>}
     </div>
   </article>;
 }
@@ -43,7 +43,7 @@ export default function ConnectionsPage() {
     /></ProductShell>;
   }
   return <ProductShell displayName={host.data.displayName}>
-    <PageHeader eyebrow="CONNECTIONS" title="Choose one provider" description="Provider authorization stays isolated. Open one service to connect, disconnect, or review its publishing gate." />
+    <PageHeader eyebrow="CONNECT YOUR MUSIC" title="Choose your service" description="Connect Apple Music or Spotify in its own secure screen. You can use UniJam rooms without connecting either service." />
     {!host.data.recentPasskey && <StatusBanner tone="warning" title="Passkey confirmation required" action={<Link className="button button-quiet" href={hostSignInPath("/connections")}>Confirm passkey</Link>}>Provider changes require a recent passkey confirmation.</StatusBanner>}
     <div className="connection-grid"><ProviderStatus provider="spotify" /><ProviderStatus provider="apple-music" /></div>
     <p className="provider-footnote">This overview uses neutral UniJam symbols. Official provider artwork appears only inside its permitted, provider-specific context.</p>

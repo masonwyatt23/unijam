@@ -70,7 +70,7 @@
       "vars": {
         "PUBLIC_APP_ORIGIN": "https://staging.unijam.ashlr.ai",
         "SPOTIFY_ENABLED": "false",
-        "APPLE_MUSIC_ENABLED": "false",
+        "APPLE_MUSIC_ENABLED": "true",
         "SPOTIFY_PUBLISHING_ENABLED": "false",
         "APPLE_MUSIC_PUBLISHING_ENABLED": "false"
       },

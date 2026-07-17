@@ -9,7 +9,7 @@ export default function LandingPage() {
         <Brand />
         <nav>
           <Link href="/join" className="text-link">Join a room</Link>
-          <Link href="/host/sign-in" className="button button-ink">Host with a passkey <ArrowRight size={18} /></Link>
+          <Link href="/host/sign-in" className="button button-ink"><span className="landing-host-label">Host with a passkey</span><span className="landing-host-label-short">Host</span> <ArrowRight size={18} /></Link>
         </nav>
       </header>
 
