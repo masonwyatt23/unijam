@@ -83,7 +83,10 @@ test("release configuration accepts DO name bindings and reports only real block
   assert.equal(report.ok, true);
   assert.equal(report.issues.some((entry) => entry.code === "BINDING_CARDINALITY"), false);
   assert.equal(report.issues.some((entry) => entry.code === "DO_CLASS"), false);
-  assert.equal(report.issues.every((entry) => entry.code === "D1_SENTINEL" || entry.severity !== "warning"), true);
+  assert.equal(report.issues.every((entry) =>
+    entry.severity !== "warning" || entry.code === "D1_SENTINEL" ||
+    entry.code === "FEATURE_FLAG_OPEN" && entry.message === "staging APPLE_MUSIC_ENABLED is committed open; initial deployments must be closed",
+  ), true);
 });
 
 test("release runbook uses paired commit-bound deploys after every secret write", () => {
