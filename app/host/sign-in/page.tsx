@@ -3,7 +3,8 @@
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import { useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Brand, CopyButton, KeyRound } from "@/app/components/product";
+import { Brand, KeyRound } from "@/app/components/product";
+import { RecoveryCodeVault } from "@/app/components/recovery-code-vault";
 import { safeHostReturnTo } from "@/lib/host-return-to";
 
 type Mode = "passkey" | "create" | "recovery" | "enroll";
@@ -112,7 +113,7 @@ export default function HostSignInPage() {
   }
 
   if (recoveryCodes) {
-    return <main className="auth-page"><header><Brand /></header><section className="auth-card recovery-card"><span className="gate-icon"><KeyRound /></span><p className="eyebrow">SAVE ONCE</p><h1>Your recovery codes</h1><p>These ten single-use codes will not be shown again. Store them in a password manager before continuing.</p><ol className="recovery-code-list" aria-label="Recovery codes">{recoveryCodes.map((code) => <li key={code}><code>{code}</code></li>)}</ol><CopyButton value={recoveryCodes.join("\n")}>Copy all codes</CopyButton><button className="button button-primary button-wide" onClick={() => router.replace(passkeyReturnTo)}>I saved these codes</button></section></main>;
+    return <main className="auth-page"><header><Brand /></header><section className="auth-card recovery-card"><span className="gate-icon"><KeyRound /></span><p className="eyebrow">SAVE ONCE</p><h1>Your recovery codes</h1><p>These ten single-use codes will not be shown again. Save them before continuing.</p><RecoveryCodeVault codes={recoveryCodes} onContinue={() => router.replace(passkeyReturnTo)} /></section></main>;
   }
 
   const title = mode === "passkey" ? "Sign in or create an account" : mode === "create" ? "Create your UniJam account" : mode === "recovery" ? "Use a recovery code" : "Join the host pilot";

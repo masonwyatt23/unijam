@@ -227,7 +227,14 @@ select { height: 48px; cursor: pointer; }
 .recovery-card { width: min(100%,680px); }
 .recovery-code-list { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px 20px; padding: 18px 18px 18px 44px; border: 1px solid var(--line); margin: 0 0 22px; background: var(--paper); text-align: left; }
 .recovery-code-list code { font: 500 .9rem var(--utility); overflow-wrap: anywhere; }
-.recovery-card > .button { margin-top: 14px; }
+.recovery-actions { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
+.recovery-actions .button { width: 100%; }
+.recovery-file-warning { max-width: none !important; display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: start; padding: 14px 16px; border: 1px solid #a9c6b7; border-radius: 4px; margin: 14px 0 0 !important; background: var(--done-soft); color: var(--ink) !important; text-align: left; }
+.recovery-file-warning svg { margin-top: 2px; color: var(--done); }
+.recovery-file-warning strong { display: block; }
+.recovery-feedback { min-height: 22px; margin: 12px 0 !important; color: var(--ink-soft); font-size: .875rem; }
+.recovery-feedback.is-error { color: var(--danger); font-weight: 700; }
+.recovery-card > .button-wide { margin-top: 12px; }
 
 /* Live room */
 .room-topbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 28px; padding-bottom: 24px; border-bottom: 1px solid var(--line); }
@@ -583,6 +590,7 @@ select { height: 48px; cursor: pointer; }
 
 @media (max-width: 420px) {
   .recovery-code-list { grid-template-columns: 1fr; }
+  .recovery-actions { grid-template-columns: 1fr; }
   .landing-nav { padding-inline: 16px; }
   .landing-nav .button { padding-inline: 13px; }
   .hero { padding-inline: 16px; }

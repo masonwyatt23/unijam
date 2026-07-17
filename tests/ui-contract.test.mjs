@@ -68,11 +68,18 @@ test("guest invite capability is cleared from the URL and retained only for retr
 
 test("pilot enrollment uses a real passkey ceremony and shows recovery codes once", async () => {
   const signIn = await read("app/host/sign-in/page.tsx");
+  const vault = await read("app/components/recovery-code-vault.tsx");
   assert.match(signIn, /startRegistration/);
   assert.match(signIn, /enrollmentCode/);
   assert.match(signIn, /registration\/options/);
   assert.match(signIn, /registration\/verify/);
-  assert.match(signIn, /recoveryCodes\.join\("\\n"\)/);
+  assert.match(signIn, /RecoveryCodeVault codes=\{recoveryCodes\}/);
+  assert.match(vault, /codes\.join\("\\n"\)/);
+  assert.match(vault, /new Blob\(\[formatRecoveryCodeFile\(codes\)\], \{ type: "text\/plain;charset=utf-8" \}\)/);
+  assert.match(vault, /anchor\.download = RECOVERY_CODE_FILENAME/);
+  assert.match(vault, /URL\.createObjectURL/);
+  assert.match(vault, /URL\.revokeObjectURL/);
+  assert.doesNotMatch(vault, /fetch\(|(?:localStorage|sessionStorage)/);
   assert.match(signIn, /These ten single-use codes will not be shown again/);
   assert.doesNotMatch(signIn, /(?:localStorage|sessionStorage).*recovery/i);
 });
