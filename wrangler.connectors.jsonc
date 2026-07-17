@@ -11,8 +11,6 @@
   "analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "unijam_connectors_development" }],
   "vars": {
     "PUBLIC_APP_ORIGIN": "http://localhost:3000",
-    "SPOTIFY_PILOT_ACCOUNT_ALLOWLIST": "",
-    "APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST": "",
     "SPOTIFY_ENABLED": "false",
     "APPLE_MUSIC_ENABLED": "false",
     "SPOTIFY_PUBLISHING_ENABLED": "false",
@@ -42,8 +40,6 @@
       "analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "unijam_connectors_production" }],
       "vars": {
         "PUBLIC_APP_ORIGIN": "https://unijam.ashlr.ai",
-        "SPOTIFY_PILOT_ACCOUNT_ALLOWLIST": "",
-        "APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST": "",
         "SPOTIFY_ENABLED": "false",
         "APPLE_MUSIC_ENABLED": "false",
         "SPOTIFY_PUBLISHING_ENABLED": "false",
@@ -73,8 +69,6 @@
       "analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "unijam_connectors_staging" }],
       "vars": {
         "PUBLIC_APP_ORIGIN": "https://staging.unijam.ashlr.ai",
-        "SPOTIFY_PILOT_ACCOUNT_ALLOWLIST": "",
-        "APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST": "",
         "SPOTIFY_ENABLED": "false",
         "APPLE_MUSIC_ENABLED": "false",
         "SPOTIFY_PUBLISHING_ENABLED": "false",

@@ -12,6 +12,7 @@ import {
   recordPublishReconciliation,
   startPublishAttempt,
 } from "./model.ts";
+import { MAX_PUBLISH_PREVIEW_ITEMS, publishPreviewLimitMessage } from "./limits.ts";
 
 function preview(provider: "spotify" | "apple_music") {
   return createPublishPreview({
@@ -105,4 +106,10 @@ test("rate limiting preserves pending work without requiring speculative writes"
   assert.throws(() => startPublishAttempt(state, 9_999), /not due/);
   state = startPublishAttempt(state, 10_000);
   assert.equal(state.attempt, 2);
+});
+
+test("publish previews expose the connector item limit before provider work", () => {
+  assert.equal(MAX_PUBLISH_PREVIEW_ITEMS, 500);
+  assert.equal(publishPreviewLimitMessage(500), null);
+  assert.match(publishPreviewLimitMessage(501) ?? "", /501 publishable recordings.*at most 500/);
 });

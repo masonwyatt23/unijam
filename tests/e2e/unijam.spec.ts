@@ -168,35 +168,80 @@ test("a guest who chooses Spotify gets a direct account action without borrowing
   await expect(page.getByRole("link", { name: /sign in or create account/i })).toHaveCount(0);
 });
 
+test("a temporary account-status outage never turns into an account-creation prompt", async ({ page }) => {
+  await mockRoom(page, "guest");
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({
+    status: 503,
+    contentType: "application/json",
+    body: JSON.stringify({ data: null, error: { code: "PERSISTENCE_UNAVAILABLE", message: "Account persistence is unavailable", retryable: true }, requestId: "req_auth_outage" }),
+  }));
+  await page.route("**/api/v1/rooms/ROOM1234/resolve", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      data: {
+        status: "matched", resolutionId: "res_outage_pick_01", recordingId: "rec_outage_pick_01",
+        title: "Outage Pick", artists: ["Room Artist"], album: null, explicit: false, version: "studio",
+        provider: "apple-music", providerRecordingId: "1559523357",
+        providerUrl: "https://music.apple.com/us/song/1559523357", evidence: ["provider_id"],
+      },
+      error: null,
+      requestId: "req_outage_resolve",
+    }),
+  }));
+  await page.route("**/api/v1/rooms/ROOM1234/commands", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ data: { type: "ack", seq: 5 }, error: null, requestId: "req_outage_stage" }),
+  }));
+
+  await gotoReady(page, "/room/ROOM1234");
+  await page.getByLabel(/search in/i).selectOption("apple-music");
+  await page.getByLabel(/song link, title, or artist/i).fill("Outage Pick — Room Artist");
+  await page.getByRole("button", { name: /find and add song/i }).click();
+  await expect(page.getByRole("status").filter({ hasText: /Outage Pick by Room Artist was added/i })).toBeVisible();
+  await expect(page.getByRole("link", { name: /sign in or create an account/i })).toHaveCount(0);
+});
+
 test("provider consent returns to the originating room with a visible result", async ({ page }) => {
   await mockRoom(page, "guest");
   await gotoReady(page, "/room/ROOM1234?provider=spotify&providerResult=connected");
   await expect(page.getByRole("status").filter({ hasText: "Spotify connected" })).toContainText("ready for your own catalog and playlist actions");
 });
 
-test("held provider candidates keep official linked attribution", async ({ page }) => {
+test("held provider candidates keep official linked attribution and require a fresh reviewed selection", async ({ page }) => {
   await mockRoom(page, "guest");
-  await page.route("**/api/v1/rooms/ROOM1234/resolve", (route) => route.fulfill({
-    status: 200,
-    contentType: "application/json",
-    body: JSON.stringify({
-      data: {
-        status: "hold",
-        reasons: ["ambiguous_candidates"],
-        candidates: [{
-          candidate: {
-            title: "Candidate Pick",
-            artists: ["Room Artist"],
-            provider: "spotify",
-            providerRecordingId: "4uLU6hMCjMI75M1A2tKUQC",
-            providerUrl: "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC",
-          },
-          score: 0.91,
-        }],
-      },
-      error: null,
-      requestId: "req_hold",
-    }),
+  let selectedRecordingId: string | undefined;
+  await page.route("**/api/v1/rooms/ROOM1234/resolve", (route) => {
+    const request = route.request().postDataJSON() as { selection?: string };
+    selectedRecordingId = request.selection;
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: request.selection ? {
+          status: "matched", resolutionId: "res_selected_spotify_01", recordingId: "rec_selected_spotify_01",
+          title: "Candidate Pick", artists: ["Room Artist"], album: null, explicit: false, version: "studio",
+          provider: "spotify", providerRecordingId: request.selection,
+          providerUrl: "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC", evidence: ["participant_selected"],
+        } : {
+          status: "hold", reasons: ["ambiguous_candidates"], candidates: [{
+            candidate: {
+              title: "Candidate Pick", artists: ["Room Artist"], provider: "spotify",
+              providerRecordingId: "4uLU6hMCjMI75M1A2tKUQC",
+              providerUrl: "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC",
+            },
+            score: 0.91,
+          }],
+        },
+        error: null,
+        requestId: "req_hold",
+      }),
+    });
+  });
+  await page.route("**/api/v1/rooms/ROOM1234/commands", (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ data: { type: "ack", seq: 5 }, error: null, requestId: "req_selected_stage" }),
   }));
 
   await gotoReady(page, "/room/ROOM1234");
@@ -206,40 +251,44 @@ test("held provider candidates keep official linked attribution", async ({ page 
   await expect(page.getByRole("link", { name: /Candidate Pick/ })).toHaveAttribute("href", "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC");
   await expect(page.getByText(/91% metadata score/i)).toHaveCount(0);
   await expect(page.getByText(/Listen to the choices and pick the exact recording/i)).toBeVisible();
+  await page.getByRole("button", { name: "Choose this version" }).click();
+  await expect(page.getByRole("status").filter({ hasText: /was added to the room/i })).toBeVisible();
+  expect(selectedRecordingId).toBe("4uLU6hMCjMI75M1A2tKUQC");
 });
 
 test("Spotify title-only metadata reaches explicit Apple Music selection and stages only the selected grant", async ({ page }) => {
   await mockRoom(page, "guest");
   let command: { action: string; payload: { resolutionId: string } } | null = null;
-  await page.route("**/api/v1/rooms/ROOM1234/resolve", (route) => route.fulfill({
-    status: 200,
-    contentType: "application/json",
-    body: JSON.stringify({
-      data: {
-        status: "hold",
-        storefront: "US",
-        reasons: ["source_metadata_incomplete"],
-        sourceAttribution: {
-          provider: "spotify",
-          title: "Never Gonna Give You Up",
-          providerUrl: "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC",
-        },
-        candidates: [{
-          resolutionId: "res_manual_apple_01",
-          candidate: {
-            title: "Never Gonna Give You Up",
-            artists: ["Rick Astley"],
-            provider: "apple_music",
-            providerRecordingId: "1559523357",
-            providerUrl: "https://music.apple.com/us/song/1559523357",
+  await page.route("**/api/v1/rooms/ROOM1234/resolve", (route) => {
+    const request = route.request().postDataJSON() as { selection?: string };
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: request.selection ? {
+          status: "matched", resolutionId: "res_manual_apple_01", recordingId: "rec_manual_apple_01",
+          title: "Never Gonna Give You Up", artists: ["Rick Astley"], album: null, explicit: false,
+          version: "studio", provider: "apple-music", providerRecordingId: "1559523357",
+          providerUrl: "https://music.apple.com/us/song/1559523357", evidence: ["participant_selected"],
+        } : {
+          status: "hold", storefront: "US", reasons: ["source_metadata_incomplete"],
+          sourceAttribution: {
+            provider: "spotify", title: "Never Gonna Give You Up",
+            providerUrl: "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC",
           },
-          score: 1,
-        }],
-      },
-      error: null,
-      requestId: "req_manual_review",
-    }),
-  }));
+          candidates: [{
+            candidate: {
+              title: "Never Gonna Give You Up", artists: ["Rick Astley"], provider: "apple_music",
+              providerRecordingId: "1559523357", providerUrl: "https://music.apple.com/us/song/1559523357",
+            },
+            score: 1,
+          }],
+        },
+        error: null,
+        requestId: "req_manual_review",
+      }),
+    });
+  });
   await page.route("**/api/v1/rooms/ROOM1234/commands", (route) => {
     command = route.request().postDataJSON() as typeof command;
     return route.fulfill({
@@ -416,6 +465,11 @@ test("an authority close refreshes an ended room once and stops reconnecting", a
 });
 
 test("room creation works by keyboard and reflows at 320px", async ({ page }) => {
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ data: { accountId: "account_12345678", displayName: "Room Host", recentPasskey: true, recoveryEnrollmentAvailable: false }, error: null, requestId: "req_create_host" }),
+  }));
   await gotoReady(page, "/rooms/new");
   const hostApproval = page.getByRole("radio", { name: /host approves/i });
   const openApproval = page.getByRole("radio", { name: /add immediately/i });
@@ -437,6 +491,40 @@ test("room creation works by keyboard and reflows at 320px", async ({ page }) =>
   expect(heading).toMatch(/set the room rules/i);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   expect(overflow).toBeLessThanOrEqual(1);
+});
+
+test("room creation is gated by host identity and recovers after session expiry", async ({ page }) => {
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({
+    status: 401,
+    contentType: "application/json",
+    body: JSON.stringify({ data: null, error: { code: "UNAUTHENTICATED", message: "Host session is missing or expired" }, requestId: "req_create_unauthenticated" }),
+  }));
+  await gotoReady(page, "/rooms/new");
+  await expect(page.getByRole("heading", { name: "Sign in to create a room" })).toBeVisible();
+  await expect(page.getByRole("radio", { name: /host approves/i })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Sign in or create an account" })).toHaveAttribute(
+    "href",
+    "/host/sign-in?returnTo=%2Frooms%2Fnew",
+  );
+
+  await page.unroute("**/api/v1/auth/me");
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ data: { accountId: "account_12345678", displayName: "Room Host", recentPasskey: true, recoveryEnrollmentAvailable: false }, error: null, requestId: "req_create_host" }),
+  }));
+  await page.route("**/api/v1/rooms", (route) => route.fulfill({
+    status: 401,
+    contentType: "application/json",
+    body: JSON.stringify({ data: null, error: { code: "UNAUTHENTICATED", message: "Sign in with a passkey to create a room" }, requestId: "req_create_expired" }),
+  }));
+  await gotoReady(page, "/rooms/new");
+  await page.getByRole("button", { name: /create room/i }).click();
+  await expect(page.getByRole("alert")).toContainText("Sign in with a passkey to create a room");
+  await expect(page.getByRole("link", { name: "Sign in again and return" })).toHaveAttribute(
+    "href",
+    "/host/sign-in?returnTo=%2Frooms%2Fnew",
+  );
 });
 
 test("a failed join keeps the cleared capability available for one retry", async ({ page }) => {

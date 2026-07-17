@@ -134,20 +134,9 @@ for (const environment of environments) {
       issue("warning", "FEATURE_FLAG_OPEN", `${environment} ${flag} is committed open; initial deployments must be closed`);
     }
   }
-  for (const [provider, flag, allowlistName] of [
-    ["Spotify", "SPOTIFY_ENABLED", "SPOTIFY_PILOT_ACCOUNT_ALLOWLIST"],
-    ["Apple Music", "APPLE_MUSIC_ENABLED", "APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST"],
-  ]) {
-    const pilotAccounts = String(connectorEnv.vars?.[allowlistName] ?? "")
-      .split(",").map((value) => value.trim()).filter(Boolean);
-    if (connectorEnv.vars?.[flag] === "true" && pilotAccounts.length === 0) {
-      issue("error", "PILOT_ALLOWLIST_EMPTY", `${environment} cannot activate ${provider} without an explicit ${allowlistName}`);
-    }
-    if (new Set(pilotAccounts).size !== pilotAccounts.length) {
-      issue("error", "PILOT_ALLOWLIST_DUPLICATE", `${environment} ${provider} pilot allowlist contains duplicate entries`);
-    }
-    if (pilotAccounts.length > 5) {
-      issue("error", "PILOT_ALLOWLIST_LIMIT", `${environment} ${provider} pilot allowlist exceeds the five-host release limit`);
+  for (const allowlistName of ["SPOTIFY_PILOT_ACCOUNT_ALLOWLIST", "APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST"]) {
+    if (Object.hasOwn(connectorEnv.vars ?? {}, allowlistName)) {
+      issue("error", "PILOT_ALLOWLIST_EXPOSED", `${environment} ${allowlistName} must be installed as a secret, never committed as a Wrangler variable`);
     }
   }
   if (connectorEnv.vars?.SPOTIFY_PUBLISHING_ENABLED === "true" && connectorEnv.vars?.SPOTIFY_ENABLED !== "true") {
@@ -204,10 +193,15 @@ expectValue(web.workers_dev, false, "WEB_PUBLIC_ROUTE", "default web workers.dev
 expectValue(web.preview_urls, false, "WEB_PREVIEW_ROUTE", "default web preview URLs");
 expectValue(connector.workers_dev, false, "CONNECTOR_PUBLIC_ROUTE", "default connector workers.dev route");
 expectValue(connector.preview_urls, false, "CONNECTOR_PREVIEW_ROUTE", "default connector preview URLs");
+for (const allowlistName of ["SPOTIFY_PILOT_ACCOUNT_ALLOWLIST", "APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST"]) {
+  if (Object.hasOwn(connector.vars ?? {}, allowlistName)) {
+    issue("error", "PILOT_ALLOWLIST_EXPOSED", `default ${allowlistName} must be installed as a secret, never committed as a Wrangler variable`);
+  }
+}
 
 const forbiddenWebSecrets = [
   "CONNECTOR_SHARED_SECRET", "CONNECTOR_OPERATOR_SECRET", "TOKEN_ENCRYPTION_KEY_B64URL", "TOKEN_KEY_VERSION", "SPOTIFY_CLIENT_ID",
-  "APPLE_TEAM_ID", "APPLE_KEY_ID", "APPLE_PRIVATE_KEY_JWK",
+  "APPLE_TEAM_ID", "APPLE_KEY_ID", "APPLE_PRIVATE_KEY_JWK", "SPOTIFY_PILOT_ACCOUNT_ALLOWLIST", "APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST",
 ];
 const webText = JSON.stringify(web);
 for (const secret of forbiddenWebSecrets) {

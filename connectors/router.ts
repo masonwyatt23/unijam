@@ -110,7 +110,9 @@ function isAllowlisted(env: ConnectorEnv, accountId: string, provider: MusicProv
   const configured = provider === "spotify"
     ? env.SPOTIFY_PILOT_ACCOUNT_ALLOWLIST
     : env.APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST;
-  const accounts = new Set(configured.split(",").map((value) => value.trim()).filter(Boolean));
+  const entries = (configured ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+  const accounts = new Set(entries);
+  if (entries.length === 0 || entries.length > 5 || accounts.size !== entries.length) return false;
   return accounts.has(accountId);
 }
 

@@ -180,15 +180,48 @@ test("live contributions resolve before staging a canonical suggestion", async (
   assert.match(room, /LISTENER_CONNECTION_REQUIRED/);
   assert.match(room, /PROVIDER_NOT_CONNECTED/);
   assert.match(room, /Switch to Apple Music/);
+  assert.match(room, /account\.error\?\.code === "UNAUTHENTICATED"/);
+  assert.doesNotMatch(room, /offerMembership=\{guest && account\.status === "error"\}/);
   assert.match(resolver, /catalogPrincipalForRoom/);
   assert.doesNotMatch(resolver, /const accountId = access\.registry\.owner_account_id/);
   assert.doesNotMatch(room, /metadata score/);
   assert.match(resolver, /mandatorySelection = true/);
   assert.match(resolver, /spotify_oembed_title/);
   assert.match(resolver, /explicit_user_selection_required/);
+  assert.match(resolver, /selectedProviderRecordingId/);
+  assert.match(resolver, /INVALID_MATCH_SELECTION/);
+  assert.match(resolver, /participant_selected/);
+  assert.match(room, /selection: candidate\.candidate\.providerRecordingId/);
   assert.doesNotMatch(resolver, /embedding|analytics|machine learning|\bML\b/);
   assert.doesNotMatch(room, /payload: \{ suggestionId:[^\n]+recordingId:/);
   assert.doesNotMatch(room, /synthetic recording IDs|Catalog resolution unavailable/);
+});
+
+test("mixed-provider handoff and publishing safely backfill every missing destination edge", async () => {
+  const [handoff, preview, publishPage, backfill] = await Promise.all([
+    read("app/api/v1/rooms/[roomId]/handoff/[provider]/route.ts"),
+    read("app/api/v1/rooms/[roomId]/publish-preview/route.ts"),
+    read("app/room/[roomId]/publish/page.tsx"),
+    read("lib/server/provider-match.ts"),
+  ]);
+  assert.match(handoff, /catalogPrincipalForRoom/);
+  assert.match(handoff, /backfillProviderMatch/);
+  assert.match(handoff, /LISTENER_CONNECTION_REQUIRED/);
+  assert.match(preview, /loadProviderMatches/);
+  assert.match(preview, /backfillPreviewProviderMatches/);
+  assert.match(preview, /MATCH_BACKFILL_IN_PROGRESS/);
+  assert.match(publishPage, /MAX_PREVIEW_BACKFILL_REQUESTS = 4/);
+  assert.match(publishPage, /failure\.code !== "MATCH_BACKFILL_IN_PROGRESS"/);
+  assert.match(preview, /PUBLISH_ITEM_LIMIT_EXCEEDED/);
+  assert.ok(preview.indexOf("const limitMessage = publishPreviewLimitMessage") < preview.indexOf("const existing = await loadProviderMatches"));
+  assert.match(publishPage, /Setlist is too large to publish/);
+  assert.match(publishPage, /publishable\.length > MAX_PUBLISH_PREVIEW_ITEMS/);
+  assert.match(preview, /backfillProviderMatch/);
+  assert.match(preview, /providerValue === "apple_music" \? \{ kind: "public" \}/);
+  assert.match(preview, /\{ kind: "account", accountId: host\.account_id \}/);
+  assert.match(backfill, /!canonical\.isrc/);
+  assert.match(backfill, /resolution\.match\.evidence\.includes\("isrc"\)/);
+  assert.match(backfill, /reason: "ambiguous_match"/);
 });
 
 test("guest entry is name-only and account continuity stays optional", async () => {

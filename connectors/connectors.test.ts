@@ -691,13 +691,18 @@ test("router caps the actual JSON stream when Content-Length is missing", async 
 });
 
 test("disabled providers expose a clean closed-pilot status without an allowlist entry", async () => {
+  const closedEnv = env({
+    SPOTIFY_ENABLED: "false",
+    SPOTIFY_PUBLISHING_ENABLED: "false",
+  });
+  Reflect.deleteProperty(closedEnv, "SPOTIFY_PILOT_ACCOUNT_ALLOWLIST");
   const response = await handleConnectorRequest(
     new Request("https://connector/v1/connections/status", {
       method: "POST",
       headers: { Authorization: "Bearer internal-fixture-secret", "Content-Type": "application/json" },
       body: JSON.stringify({ accountId: "not-allowlisted", connectionId: "spotify:not-allowlisted", provider: "spotify" }),
     }),
-    env({ SPOTIFY_PILOT_ACCOUNT_ALLOWLIST: "", SPOTIFY_ENABLED: "false", SPOTIFY_PUBLISHING_ENABLED: "false" }),
+    closedEnv,
     { store: new MemoryStore() },
   );
   assert.equal(response.status, 200);
@@ -752,6 +757,26 @@ test("provider pilot allowlists are independent while status remains available f
   );
   assert.equal(denied.status, 403);
   assert.equal((await denied.json() as { error: { code: string } }).error.code, "PILOT_NOT_ALLOWED");
+});
+
+test("malformed or over-limit provider allowlist secrets fail closed", async () => {
+  const headers = { Authorization: "Bearer internal-fixture-secret", "Content-Type": "application/json" };
+  for (const configured of [
+    "target,target",
+    "one,two,three,four,five,target",
+  ]) {
+    const response = await handleConnectorRequest(
+      new Request("https://connector/v1/connections/status", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ accountId: "target", connectionId: "spotify:target", provider: "spotify" }),
+      }),
+      env({ SPOTIFY_PILOT_ACCOUNT_ALLOWLIST: configured }),
+      { store: new MemoryStore() },
+    );
+    assert.equal(response.status, 200);
+    assert.equal((await response.json() as { data: { enabled: boolean } }).data.enabled, false);
+  }
 });
 
 test("Apple public catalog and provider-link metadata need no listener token", async () => {

@@ -86,6 +86,16 @@ test("release configuration accepts DO name bindings and reports only real block
   assert.equal(report.issues.every((entry) => entry.code === "D1_SENTINEL" || entry.severity !== "warning"), true);
 });
 
+test("release runbook uses paired commit-bound deploys after every secret write", () => {
+  const runbook = readFileSync(new URL("../docs/PILOT_RELEASE.md", import.meta.url), "utf8");
+  assert.match(runbook, /Cloudflare immediately creates and deploys a new version of the targeted Worker/);
+  assert.match(runbook, /invalidates any previously captured connector candidate/);
+  assert.match(runbook, /deploying both the connector and web Workers from the same clean HEAD/);
+  assert.match(runbook, /npm run dry-run:connectors -- --env staging\s+npm run deploy:connectors -- --env staging\s+npm run dry-run:cloudflare -- --env staging\s+npm run deploy:cloudflare -- --env staging/);
+  assert.match(runbook, /npm run deploy:connectors -- --env production --production-confirmation I_UNDERSTAND_THIS_DEPLOYS_PRODUCTION/);
+  assert.doesNotMatch(runbook, /npx wrangler deploy --config wrangler\.connectors\.jsonc/);
+});
+
 test("load harness refuses the production hostname before reading credentials", () => {
   const result = spawnSync(process.execPath, [
     "scripts/run-room-load.mjs",
@@ -130,8 +140,8 @@ test("pilot preflight can gate one provider without opening publishing", () => {
   ], { cwd: repositoryRoot, encoding: "utf8" });
   const report = JSON.parse(result.stdout);
   assert.equal(report.requiredProvider, "apple-music");
-  assert.equal(report.issues.some((entry) => entry.severity === "blocker" && entry.code === "PILOT_ALLOWLIST_EMPTY" && /Apple Music/.test(entry.message)), true);
-  assert.equal(report.issues.some((entry) => entry.severity === "blocker" && entry.code === "PILOT_ALLOWLIST_EMPTY" && /Spotify/.test(entry.message)), false);
+  assert.equal(report.issues.some((entry) => entry.severity === "blocker" && entry.code === "PILOT_ALLOWLIST_UNVERIFIED" && /Apple Music/.test(entry.message)), true);
+  assert.equal(report.issues.some((entry) => entry.severity === "blocker" && entry.code === "PILOT_ALLOWLIST_UNVERIFIED" && /Spotify/.test(entry.message)), false);
   assert.equal(report.expected.workers.includes("unijam-connectors-staging"), true);
 });
 
@@ -165,15 +175,66 @@ test("Apple private key installer validates a piped P-256 key without disclosing
 
 test("provider pilot configuration uses independent five-host allowlists", () => {
   const connector = JSON.parse(readFileSync(new URL("../wrangler.connectors.jsonc", import.meta.url), "utf8").replace(/^\s*\/\/.*$/gm, ""));
-  for (const environment of ["staging", "production"]) {
-    const vars = connector.env[environment].vars;
-    assert.equal(vars.SPOTIFY_PILOT_ACCOUNT_ALLOWLIST, "");
-    assert.equal(vars.APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST, "");
+  for (const vars of [connector.vars, connector.env.staging.vars, connector.env.production.vars]) {
+    assert.equal("SPOTIFY_PILOT_ACCOUNT_ALLOWLIST" in vars, false);
+    assert.equal("APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST" in vars, false);
     assert.equal("PILOT_ACCOUNT_ALLOWLIST" in vars, false);
   }
   const validator = readFileSync(new URL("../scripts/validate-release-config.mjs", import.meta.url), "utf8");
-  assert.match(validator, /PILOT_ALLOWLIST_LIMIT/);
-  assert.match(validator, /pilot allowlist exceeds the five-host release limit/);
+  assert.match(validator, /PILOT_ALLOWLIST_EXPOSED/);
+  assert.match(validator, /must be installed as a secret, never committed as a Wrangler variable/);
+});
+
+test("provider allowlist installer validates and redacts private account IDs", () => {
+  const accountIds = [
+    "11111111-1111-4111-8111-111111111111",
+    "22222222-2222-4222-8222-222222222222",
+  ];
+  const result = spawnSync(process.execPath, [
+    "scripts/install-provider-allowlist.mjs",
+    "--provider", "spotify",
+    "--env", "staging",
+    "--dry-run",
+  ], { cwd: repositoryRoot, encoding: "utf8", input: accountIds.join("\n") });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    ok: true,
+    environment: "staging",
+    provider: "spotify",
+    secretName: "SPOTIFY_PILOT_ACCOUNT_ALLOWLIST",
+    accountCount: 2,
+    secretInstalled: false,
+  });
+  for (const accountId of accountIds) assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, new RegExp(accountId));
+
+  const overLimit = Array.from({ length: 6 }, (_, index) => `0000000${index + 1}-0000-4000-8000-00000000000${index + 1}`);
+  const rejected = spawnSync(process.execPath, [
+    "scripts/install-provider-allowlist.mjs",
+    "--provider", "apple-music",
+    "--env", "staging",
+    "--dry-run",
+  ], { cwd: repositoryRoot, encoding: "utf8", input: overLimit.join(",") });
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /exceeds the five-account release limit/);
+  for (const accountId of overLimit) assert.doesNotMatch(`${rejected.stdout}\n${rejected.stderr}`, new RegExp(accountId));
+});
+
+test("provider allowlist production mutation requires confirmation and closed active flags", () => {
+  const accountId = "11111111-1111-4111-8111-111111111111";
+  const rejected = spawnSync(process.execPath, [
+    "scripts/install-provider-allowlist.mjs", "--provider", "spotify", "--env", "production",
+  ], { cwd: repositoryRoot, encoding: "utf8", input: accountId });
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /I_UNDERSTAND_THIS_DEPLOYS_A_PRODUCTION_SECRET_VERSION/);
+  assert.doesNotMatch(`${rejected.stdout}\n${rejected.stderr}`, new RegExp(accountId));
+
+  const source = readFileSync(new URL("../scripts/install-provider-allowlist.mjs", import.meta.url), "utf8");
+  assert.match(source, /deployments", "status"/);
+  assert.match(source, /versions", "view"/);
+  for (const flag of ["SPOTIFY_ENABLED", "APPLE_MUSIC_ENABLED", "SPOTIFY_PUBLISHING_ENABLED", "APPLE_MUSIC_PUBLISHING_ENABLED"]) {
+    assert.match(source, new RegExp(flag));
+  }
+  assert.match(source, /releaseCandidateInvalidated: true/);
 });
 
 test("pilot preflight parses only deterministic migration and active-version evidence", () => {

@@ -6,6 +6,7 @@ import { Check, CircleAlert, ExternalLink, RotateCcw, Square } from "lucide-reac
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { ErrorPanel, LoadingPanel, PageHeader, ProductShell, ProviderBrand, SegmentedControl, StatusBanner, useRoomState } from "@/app/components/product";
+import { MAX_PUBLISH_PREVIEW_ITEMS, publishPreviewLimitMessage } from "@/lib/publishing/limits";
 
 type Provider = "spotify" | "apple-music";
 type ProviderValue = "spotify" | "apple_music";
@@ -43,6 +44,7 @@ const providerOptions = [
   { value: "apple-music", label: "Apple Music" },
 ] as const;
 const terminalPhases = new Set(["succeeded", "failed", "cancelled", "reconnect"]);
+const MAX_PREVIEW_BACKFILL_REQUESTS = 4;
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { credentials: "include", ...init });
@@ -113,11 +115,23 @@ export default function PublishPage() {
     event.preventDefault(); setBusy("preview"); setMessage(""); setErrorCode(""); setPreview(null); setOperation(null); setOperationId(null); setConfirmation(false);
     const data = new FormData(event.currentTarget);
     try {
-      const next = await api<Preview>(`/api/v1/rooms/${encodeURIComponent(roomId)}/publish-preview`, {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ provider, playlistName: data.get("playlistName"), playlistDescription: data.get("playlistDescription") }),
-      });
-      setPreview(next);
+      for (let attempt = 0; attempt < MAX_PREVIEW_BACKFILL_REQUESTS; attempt += 1) {
+        try {
+          const next = await api<Preview>(`/api/v1/rooms/${encodeURIComponent(roomId)}/publish-preview`, {
+            method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ provider, playlistName: data.get("playlistName"), playlistDescription: data.get("playlistDescription") }),
+          });
+          setPreview(next);
+          return;
+        } catch (cause) {
+          const failure = cause as Error & { code?: string; retryable?: boolean };
+          if (failure.code !== "MATCH_BACKFILL_IN_PROGRESS" || !failure.retryable) throw failure;
+          // Each request performs a small deterministic prefix. Yield between
+          // requests so one large room never becomes one long Worker request.
+          await new Promise((resolve) => setTimeout(resolve, 75));
+        }
+      }
+      throw new Error("Destination matching paused after a bounded batch. Request the preview again to continue safely.");
     } catch (cause) {
       const failure = cause as Error & { code?: string };
       setMessage(failure.message); setErrorCode(failure.code ?? "");
@@ -164,15 +178,17 @@ export default function PublishPage() {
   const { actor, snapshot } = room.data;
   if (actor.role !== "host") return <ProductShell guest roomId={roomId} displayName={actor.nickname}><ErrorPanel title="Room owner required" message="Only the passkey-authenticated room owner can confirm publishing." /></ProductShell>;
   const publishable = snapshot.occurrences.filter((item) => !["held", "skipped"].includes(item.status));
+  const publishLimitMessage = publishPreviewLimitMessage(publishable.length);
   const needsConnection = ["PROVIDER_NOT_CONNECTED", "PROVIDER_RECONNECT_REQUIRED", "RECENT_PASSKEY_REQUIRED"].includes(errorCode);
 
   return <ProductShell roomId={roomId} displayName={actor.nickname}><PageHeader eyebrow="PUBLISH" title={`Publish room ${roomId}`} description="Create one new private playlist at a time. Each service succeeds, fails, retries, or cancels independently." backHref={`/room/${roomId}/recap`} />
     {snapshot.lifecycle === "active" ? <StatusBanner tone="warning" title="Room still active">The immutable preview uses canonical sequence {snapshot.seq}. Any later queue change requires a new preview.</StatusBanner> : null}
+    {publishLimitMessage ? <StatusBanner tone="warning" title="Setlist is too large to publish">{publishLimitMessage}</StatusBanner> : null}
     {message ? <StatusBanner tone="danger" title="Destination needs attention">{message}</StatusBanner> : null}
     {needsConnection ? <StatusBanner tone="warning" title="Security or connection action required" action={<Link className="button button-quiet" href={errorCode === "RECENT_PASSKEY_REQUIRED" ? "/host/sign-in" : "/connections"}>Open {errorCode === "RECENT_PASSKEY_REQUIRED" ? "passkey sign-in" : "connections"}</Link>}>Complete this action, then request a fresh immutable preview.</StatusBanner> : null}
     {operation?.state.phase === "succeeded" && !operation.destinationUrl ? <StatusBanner tone="success" title="Private playlist created">This service did not return a shareable URL. Open your library in {provider === "spotify" ? "Spotify" : "Apple Music"} to find the new playlist.</StatusBanner> : null}
 
-    {!preview && !operationId ? <form className="form-card publish-setup" onSubmit={(event) => void requestPreview(event)}><div className="form-section"><span className="form-index">01</span><div><h2>Choose one destination</h2><p>Provider branding appears only after a real provider response supplies a licensed destination.</p><SegmentedControl label="Publish destination" value={provider} onChange={setProvider} options={providerOptions} /></div></div><div className="form-section"><span className="form-index">02</span><div><h2>Name the private playlist</h2><div className="field-grid"><label className="field"><span>Playlist name</span><input name="playlistName" maxLength={100} defaultValue={`UniJam ${roomId}`} required /></label><label className="field"><span>Description</span><input name="playlistDescription" maxLength={300} defaultValue="Created from a live UniJam room" /></label></div></div></div><div className="form-actions"><span>{publishable.length} canonical {publishable.length === 1 ? "recording" : "recordings"}</span><button className="button button-primary" disabled={busy === "preview" || publishable.length === 0}>{busy === "preview" ? "Building preview…" : "Review immutable preview"}</button></div></form> : null}
+    {!preview && !operationId ? <form className="form-card publish-setup" onSubmit={(event) => void requestPreview(event)}><div className="form-section"><span className="form-index">01</span><div><h2>Choose one destination</h2><p>Provider branding appears only after a real provider response supplies a licensed destination.</p><SegmentedControl label="Publish destination" value={provider} onChange={setProvider} options={providerOptions} /></div></div><div className="form-section"><span className="form-index">02</span><div><h2>Name the private playlist</h2><div className="field-grid"><label className="field"><span>Playlist name</span><input name="playlistName" maxLength={100} defaultValue={`UniJam ${roomId}`} required /></label><label className="field"><span>Description</span><input name="playlistDescription" maxLength={300} defaultValue="Created from a live UniJam room" /></label></div></div></div><div className="form-actions"><span>{publishable.length} canonical {publishable.length === 1 ? "recording" : "recordings"}</span><button className="button button-primary" disabled={busy === "preview" || publishable.length === 0 || publishable.length > MAX_PUBLISH_PREVIEW_ITEMS}>{busy === "preview" ? "Building preview…" : "Review immutable preview"}</button></div></form> : null}
 
     {operationId && !preview ? <div className="publish-operation" aria-live="polite"><span className="state-spinner" /><p>Restoring the immutable destination…</p></div> : null}
     {preview ? <section className="publish-preview"><div className="preview-title"><div><p className="eyebrow">IMMUTABLE DESTINATION</p><h2>{preview.destination.name}</h2><p>New private {preview.provider === "spotify" ? "Spotify" : "Apple Music"} playlist · room sequence {preview.roomRevision}</p><small>{preview.destination.description}</small></div><span className="immutable"><Check /> Fingerprint locked</span></div><ol className="compact-tracklist">{preview.items.map((item) => <li key={item.itemKey}><span>{String(item.position + 1).padStart(2, "0")}</span><strong>{titleByRecording.get(item.canonicalRecordingId) ?? item.canonicalRecordingId}</strong><small>{item.providerRecordingId}</small></li>)}</ol>

@@ -4,7 +4,6 @@ import { parseCatalogInput } from "@/lib/catalog/input";
 import { resolveUsCatalogRecording, type CatalogCandidate, type ResolutionRequest } from "@/lib/catalog/resolver";
 import { apiError, apiResponse } from "@/lib/server/api-response";
 import {
-  normalizeCatalogText,
   parseConnectorCandidate,
   parseConnectorEnvelope,
   parseSpotifyOEmbedSource,
@@ -13,6 +12,13 @@ import {
   titleOnlyReviewCandidates,
 } from "@/lib/server/catalog-resolution";
 import { catalogPrincipalForRoom } from "@/lib/server/catalog-principal";
+import {
+  persistCanonicalRecordingMatches,
+  providerCorrectionAuthority,
+  ProviderMatchConflictError,
+  type ProviderMatchEdge,
+  type ProviderMatchMethod,
+} from "@/lib/server/provider-match";
 import {
   catalogResolutionRateLimitResponse,
   withCatalogResolutionBudget,
@@ -41,49 +47,23 @@ function connectorFailure(status: number): Response {
 async function persistMatch(
   db: D1Database,
   candidate: CatalogCandidate,
-  method: "provider_id" | "metadata",
+  method: ProviderMatchMethod,
   evidence: readonly string[],
-  options: { identityBasis?: "canonical" | "provider"; deterministic?: boolean } = {},
+  options: {
+    identityBasis?: "canonical" | "provider";
+    deterministic?: boolean;
+    related?: readonly ProviderMatchEdge[];
+    review?: { accountId: string; roomId: string; participantId: string };
+  } = {},
 ) {
-  const identity = await stableRecordingIdentity(candidate, options.identityBasis);
-  const now = Date.now();
-  const normalizedTitle = normalizeCatalogText(candidate.title);
-  const normalizedArtist = normalizeCatalogText(candidate.artists.join(", "));
-  await db.batch([
-    db.prepare(
-      `INSERT INTO canonical_recordings
-       (recording_id, isrc, normalized_title, normalized_artist, album, duration_ms, explicit, version_label, created_at_ms, updated_at_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(recording_id) DO UPDATE SET
-         isrc = COALESCE(canonical_recordings.isrc, excluded.isrc),
-         normalized_title = excluded.normalized_title,
-         normalized_artist = excluded.normalized_artist,
-         album = COALESCE(excluded.album, canonical_recordings.album),
-         duration_ms = COALESCE(excluded.duration_ms, canonical_recordings.duration_ms),
-         explicit = COALESCE(excluded.explicit, canonical_recordings.explicit),
-         version_label = COALESCE(excluded.version_label, canonical_recordings.version_label),
-         updated_at_ms = excluded.updated_at_ms`,
-    ).bind(
-      identity.recordingId, candidate.isrc ?? null, normalizedTitle, normalizedArtist, candidate.album ?? null,
-      candidate.durationMs ?? null, candidate.explicit === undefined ? null : candidate.explicit ? 1 : 0,
-      candidate.version ?? null, now, now,
-    ),
-    db.prepare(
-      `INSERT INTO provider_matches
-       (match_id, recording_id, provider, storefront, provider_recording_id, method, confidence_basis_json, status, created_at_ms, updated_at_ms)
-       VALUES (?, ?, ?, 'us', ?, ?, ?, 'matched', ?, ?)
-       ON CONFLICT(recording_id, provider, storefront) DO UPDATE SET
-         provider_recording_id = excluded.provider_recording_id,
-         method = excluded.method,
-         confidence_basis_json = excluded.confidence_basis_json,
-         status = 'matched',
-         updated_at_ms = excluded.updated_at_ms`,
-    ).bind(
-      identity.matchId, identity.recordingId, candidate.provider, candidate.providerRecordingId, method,
-      JSON.stringify({ evidence, deterministic: options.deterministic ?? true, storefront: "US" }), now, now,
-    ),
-  ]);
-  return identity;
+  return persistCanonicalRecordingMatches({
+    db,
+    candidate,
+    identityBasis: options.identityBasis,
+    primary: { method, evidence, deterministic: options.deterministic ?? true },
+    related: options.related,
+    review: options.review,
+  });
 }
 
 type RoomAccess = NonNullable<Awaited<ReturnType<typeof authenticateRoomActor>>>;
@@ -102,19 +82,45 @@ async function registerCandidateGrant(input: {
   readonly roomId: string;
   readonly access: RoomAccess;
   readonly candidate: CatalogCandidate;
-  readonly method: "provider_id" | "metadata";
+  readonly method: ProviderMatchMethod;
   readonly evidence: readonly string[];
   readonly identityBasis?: "canonical" | "provider";
   readonly deterministic?: boolean;
+  readonly related?: readonly ProviderMatchEdge[];
 }): Promise<Response | {
   readonly resolutionId: string;
   readonly recordingId: string;
   readonly providerUrl: string;
 }> {
-  const identity = await persistMatch(input.db, input.candidate, input.method, input.evidence, {
-    identityBasis: input.identityBasis,
-    deterministic: input.deterministic,
-  });
+  let identity: Awaited<ReturnType<typeof persistMatch>>;
+  const correctionAuthority = input.method === "user_correction"
+    ? providerCorrectionAuthority({
+        accountId: input.access.session.accountId,
+        roomId: input.roomId,
+        participantId: input.access.actor.participantId,
+      })
+    : null;
+  const roomLocalCorrection = correctionAuthority?.kind === "room_local";
+  const evidence = roomLocalCorrection
+    ? [...new Set([...input.evidence, "room_local_guest_selection"])]
+    : input.evidence;
+  try {
+    identity = roomLocalCorrection
+      ? await stableRecordingIdentity(input.candidate, input.identityBasis ?? "provider")
+      : await persistMatch(input.db, input.candidate, input.method, evidence, {
+          identityBasis: input.identityBasis,
+          deterministic: input.deterministic,
+          related: input.related,
+          ...(correctionAuthority?.kind === "reviewed"
+            ? { review: correctionAuthority.review }
+            : {}),
+        });
+  } catch (error) {
+    if (error instanceof ProviderMatchConflictError) {
+      return apiError("PROVIDER_MATCH_CONFLICT", "This provider recording is already bound to a different reviewed match", 409);
+    }
+    throw error;
+  }
   const resolutionId = `res_${crypto.randomUUID()}`;
   const registrationHeaders = actorHeaders(input.access.actor, input.roomId);
   registrationHeaders.set("Content-Type", "application/json");
@@ -131,7 +137,7 @@ async function registerCandidateGrant(input: {
       providerRecordingId: input.candidate.providerRecordingId,
       method: input.method,
       explicit: input.candidate.explicit ?? null,
-      evidence: input.evidence,
+      evidence,
     }),
   }));
   if (!registration.ok) return apiError("RESOLUTION_AUTHORITY_FAILED", "The resolved recording could not be bound to this room", 503, true);
@@ -150,7 +156,7 @@ export async function POST(request: Request, context: Context): Promise<Response
     const roomId = normalizeV1RoomId((await context.params).roomId);
     const access = await authenticateRoomActor(roomEnv, request, roomId);
     if (!access) return apiError("UNAUTHENTICATED", "Join this room before resolving a contribution", 401);
-    const body = await request.json() as { input?: unknown; provider?: unknown };
+    const body = await request.json() as { input?: unknown; provider?: unknown; selection?: unknown };
     if (typeof body.input !== "string") return apiError("INVALID_CATALOG_INPUT", "Enter a track link or search", 400);
     const intent = parseCatalogInput(body.input);
     if (intent.kind === "unsupported") {
@@ -174,6 +180,7 @@ export async function POST(request: Request, context: Context): Promise<Response
       sessionId: access.session.sessionId,
       now: Date.now(),
     }, async () => {
+    const selectedProviderRecordingId = typeof body.selection === "string" ? body.selection.trim() : null;
     const accountId = catalogPrincipal.kind === "account" ? catalogPrincipal.accountId : null;
     const catalogPath = catalogPrincipal.kind === "public" ? "/v1/catalog/public-query" : "/v1/catalog/query";
     const catalogIdentity = accountId === null ? {} : {
@@ -186,7 +193,8 @@ export async function POST(request: Request, context: Context): Promise<Response
     let resolutionRequest: ResolutionRequest;
     const method: "provider_id" | "metadata" = intent.kind === "provider_recording" && !crossProvider ? "provider_id" : "metadata";
     let mandatorySelection = false;
-    let sourceAttribution: { provider: "spotify"; title: string; providerUrl: string } | undefined;
+    let sourceAttribution: { provider: "spotify"; providerRecordingId: string; title: string; providerUrl: string } | undefined;
+    let completeSourceCandidate: CatalogCandidate | undefined;
     let crossEvidence: string[] = [];
 
     if (crossProvider && intent.kind === "provider_recording") {
@@ -200,6 +208,7 @@ export async function POST(request: Request, context: Context): Promise<Response
         if (!source || provider !== "apple_music") return apiError("PROVIDER_UNAVAILABLE", "Spotify returned invalid link metadata", 502, true);
         sourceAttribution = {
           provider: "spotify",
+          providerRecordingId: source.providerRecordingId,
           title: source.title,
           providerUrl: createProviderHandoffLinks("spotify", source.providerRecordingId).universalUrl,
         };
@@ -215,6 +224,7 @@ export async function POST(request: Request, context: Context): Promise<Response
       } else {
         const source = parseConnectorCandidate(sourceData, "apple_music");
         if (!source || provider !== "spotify") return apiError("PROVIDER_UNAVAILABLE", "Apple Music returned invalid catalog metadata", 502, true);
+        completeSourceCandidate = source;
         crossEvidence = ["apple_music_source_metadata"];
         resolutionRequest = {
           provider,
@@ -272,37 +282,71 @@ export async function POST(request: Request, context: Context): Promise<Response
     if (mandatorySelection) {
       const ranked = titleOnlyReviewCandidates(sourceAttribution?.title ?? "", provider, candidates);
       if (ranked.length === 0) return apiResponse({ status: "no_match", storefront: "US", sourceAttribution });
-      const selections = [];
-      for (const entry of ranked) {
-        const evidence = [...new Set([...entry.evidence, ...crossEvidence])];
-        const grant = await registerCandidateGrant({
-          db,
-          roomEnv,
-          roomId,
-          access,
-          candidate: entry.candidate,
-          method: "metadata",
-          evidence,
-          identityBasis: "provider",
+      if (selectedProviderRecordingId) {
+        const selected = ranked.find(({ candidate }) => candidate.providerRecordingId === selectedProviderRecordingId);
+        if (!selected) return apiError("INVALID_MATCH_SELECTION", "Choose one of the current reviewed recordings", 409);
+        const evidence = [...new Set([...selected.evidence, ...crossEvidence, "participant_selected"] )];
+        const related: ProviderMatchEdge[] = sourceAttribution ? [{
+          candidate: { provider: "spotify", providerRecordingId: sourceAttribution.providerRecordingId },
+          method: "user_correction",
+          evidence: ["spotify_oembed_title", "participant_selected_cross_provider_match"],
           deterministic: false,
+        }] : [];
+        const grant = await registerCandidateGrant({
+          db, roomEnv, roomId, access, candidate: selected.candidate,
+          method: "user_correction", evidence, identityBasis: "provider", deterministic: false, related,
         });
         if (grant instanceof Response) return grant;
-        selections.push({
-          ...entry,
-          resolutionId: grant.resolutionId,
-          candidate: { ...entry.candidate, providerUrl: grant.providerUrl },
+        return apiResponse({
+          status: "matched", storefront: "US", resolutionId: grant.resolutionId, recordingId: grant.recordingId,
+          title: selected.candidate.title, artists: selected.candidate.artists, album: selected.candidate.album ?? null,
+          explicit: selected.candidate.explicit ?? null, version: selected.candidate.version ?? "unknown",
+          provider: "apple-music", providerRecordingId: selected.candidate.providerRecordingId,
+          providerUrl: grant.providerUrl, evidence,
         });
       }
       return apiResponse({
         status: "hold",
         storefront: "US",
         reasons: ["source_metadata_incomplete"],
-        candidates: selections,
+        candidates: ranked.map((entry) => ({
+          ...entry,
+          candidate: {
+            ...entry.candidate,
+            providerUrl: createProviderHandoffLinks(entry.candidate.provider, entry.candidate.providerRecordingId).universalUrl,
+          },
+        })),
         sourceAttribution,
       });
     }
     const resolution = resolveUsCatalogRecording(resolutionRequest, candidates);
     if (resolution.status === "hold") {
+      const actionable = resolution.candidates.filter(({ candidate }) =>
+        candidate.storefronts?.some((storefront) => storefront.toUpperCase() === "US"),
+      );
+      if (selectedProviderRecordingId) {
+        const selected = actionable.find(({ candidate }) => candidate.providerRecordingId === selectedProviderRecordingId);
+        if (!selected) return apiError("INVALID_MATCH_SELECTION", "Choose one of the current US recordings", 409);
+        const evidence = [...new Set([...selected.evidence, ...crossEvidence, "participant_selected"] )];
+        const related: ProviderMatchEdge[] = completeSourceCandidate ? [{
+          candidate: completeSourceCandidate,
+          method: "user_correction",
+          evidence: ["cross_provider_source", "participant_selected"],
+          deterministic: false,
+        }] : [];
+        const grant = await registerCandidateGrant({
+          db, roomEnv, roomId, access, candidate: selected.candidate,
+          method: "user_correction", evidence, deterministic: false, related,
+        });
+        if (grant instanceof Response) return grant;
+        return apiResponse({
+          status: "matched", storefront: "US", resolutionId: grant.resolutionId, recordingId: grant.recordingId,
+          title: selected.candidate.title, artists: selected.candidate.artists, album: selected.candidate.album ?? null,
+          explicit: selected.candidate.explicit ?? null, version: selected.candidate.version ?? "unknown",
+          provider: selected.candidate.provider === "apple_music" ? "apple-music" : "spotify",
+          providerRecordingId: selected.candidate.providerRecordingId, providerUrl: grant.providerUrl, evidence,
+        });
+      }
       return apiResponse({
         ...resolution,
         candidates: resolution.candidates.map((entry) => ({
@@ -317,7 +361,13 @@ export async function POST(request: Request, context: Context): Promise<Response
     if (resolution.status === "no_match") return apiResponse(resolution);
     const candidate = resolution.match.candidate;
     const evidence = [...new Set([...resolution.match.evidence, ...crossEvidence])];
-    const grant = await registerCandidateGrant({ db, roomEnv, roomId, access, candidate, method, evidence });
+    const related: ProviderMatchEdge[] = completeSourceCandidate ? [{
+      candidate: completeSourceCandidate,
+      method: "metadata",
+      evidence: ["cross_provider_source", ...crossEvidence],
+      deterministic: true,
+    }] : [];
+    const grant = await registerCandidateGrant({ db, roomEnv, roomId, access, candidate, method, evidence, related });
     if (grant instanceof Response) return grant;
     return apiResponse({
       status: "matched",

@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 
 import { ErrorPanel, LoadingPanel, PageHeader, ProductShell, StatusBanner, useCurrentHost } from "@/app/components/product";
+import { hostSignInPath, providerConnectionReturnTo } from "@/lib/host-return-to";
 import { providerResultMessage, providerResultPath, safeProviderReturnTo } from "@/lib/provider-return-to";
 import { apiMessage, useProviderStatus, type Envelope } from "../provider-status";
 
@@ -44,6 +45,7 @@ function loadMusicKit(): Promise<MusicKitGlobal> {
 export default function AppleMusicConnectionPage() {
   const searchParams = useSearchParams();
   const returnTo = safeProviderReturnTo(searchParams.get("returnTo"));
+  const confirmationReturnTo = providerConnectionReturnTo("apple-music", returnTo);
   const connectionResult = providerResultMessage("apple-music", searchParams.get("providerResult"));
   const host = useCurrentHost();
   const apple = useProviderStatus("apple-music");
@@ -114,13 +116,21 @@ export default function AppleMusicConnectionPage() {
   }
 
   if (host.status === "loading") return <ProductShell><LoadingPanel label="Checking Apple Music availability…" /></ProductShell>;
-  if (host.status === "error" || !host.data) return <ProductShell><ErrorPanel title="Host access required" message={host.error?.message ?? "Sign in before managing Apple Music."} /></ProductShell>;
+  if (host.status === "error" || !host.data) {
+    const unauthenticated = host.error?.code === "UNAUTHENTICATED";
+    return <ProductShell><ErrorPanel
+      title={unauthenticated ? "Sign in to manage Apple Music" : "Apple Music access could not be checked"}
+      message={unauthenticated ? "Use your UniJam passkey, then continue with Apple Music." : host.error?.message ?? "Your account status is temporarily unavailable."}
+      onRetry={unauthenticated ? undefined : host.refresh}
+      action={unauthenticated ? <a className="button button-primary" href={hostSignInPath(confirmationReturnTo)}>Sign in with a passkey</a> : undefined}
+    /></ProductShell>;
+  }
   return <ProductShell displayName={host.data.displayName}>
     <PageHeader eyebrow="APPLE MUSIC CONNECTION" title="Apple Music" description="MusicKit authorization runs only on this provider-specific screen." backHref={returnTo ?? "/connections"} />
     {connectionResult && <StatusBanner tone={connectionResult.tone} title={connectionResult.title}>{connectionResult.message}</StatusBanner>}
     {apple.state === "error" && <StatusBanner tone="warning" title="Apple Music status unavailable" action={<button className="button button-quiet" onClick={apple.refresh}>Retry status</button>}>{apple.message}</StatusBanner>}
     {apple.data?.enabled === false && <StatusBanner tone="warning" title="Apple Music pilot is paused">Rooms remain available. Apple Music connection and publishing stay closed until approved credentials and pilot access are active.</StatusBanner>}
-    {!host.data.recentPasskey && <StatusBanner tone="warning" title="Passkey confirmation required" action={<a className="button button-quiet" href="/host/sign-in">Confirm passkey</a>}>Connect and disconnect actions require a recent passkey confirmation.</StatusBanner>}
+    {!host.data.recentPasskey && <StatusBanner tone="warning" title="Passkey confirmation required" action={<a className="button button-quiet" href={hostSignInPath(confirmationReturnTo)}>Confirm passkey</a>}>Connect and disconnect actions require a recent passkey confirmation.</StatusBanner>}
     {feedback && <p className={feedback.tone === "error" ? "inline-error" : "inline-success"} role={feedback.tone === "error" ? "alert" : "status"}>{feedback.message}</p>}
     <div className="connection-detail"><article className="connection-card"><div className="provider-isolation provider-apple-bg"><span className="neutral-provider"><Link2 /><strong>Apple Music</strong></span></div><div className="connection-copy"><div><h2>Apple Music</h2><span className={apple.data?.connected ? "connection-ok" : "connection-wait"}>{apple.data?.connected ? <><CircleCheck /> Connected</> : <><CircleAlert /> {apple.state === "loading" ? "Checking…" : apple.state === "error" ? "Status unavailable" : apple.data?.enabled ? "Not connected" : "Pilot not active"}</>}</span></div><p>The connector validates and encrypts the Music User Token. Official Apple Music badges remain reserved for links to licensed content.</p><dl><div><dt>Storefront</dt><dd>{apple.data?.storefront?.toUpperCase() ?? "US pilot"}</dd></div><div><dt>Publishing</dt><dd>{apple.data?.publishingEnabled ? "Enabled" : "Feature-gated"}</dd></div></dl>{apple.data?.connected ? <button className="button button-quiet" disabled={!host.data.recentPasskey || working} onClick={() => void disconnect()}><Unplug size={18} /> {working ? "Disconnecting…" : "Disconnect Apple Music"}</button> : apple.data?.enabled ? <button className="button button-ink" disabled={!host.data.recentPasskey || working} onClick={() => void connect()}><KeyRound size={18} /> {working ? "Waiting for Apple Music…" : "Connect Apple Music"}</button> : <button className="button button-ink" disabled><KeyRound size={18} /> Connect Apple Music</button>}</div></article></div>
   </ProductShell>;

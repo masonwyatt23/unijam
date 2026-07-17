@@ -17,13 +17,13 @@ environment. Do not add a public route to the connector Worker.
   `TOKEN_ENCRYPTION_KEY_B64URL` (exactly 32
   random bytes, base64url), `TOKEN_KEY_VERSION`, `SPOTIFY_CLIENT_ID`,
   `APPLE_TEAM_ID`, `APPLE_KEY_ID`, and `APPLE_PRIVATE_KEY_JWK` (private P-256
-  JWK). Spotify uses Authorization Code with PKCE and therefore sends the
-  client ID, code verifier, and exact redirect URI without a client secret.
-- Variables: `PUBLIC_APP_ORIGIN` (`https://unijam.ashlr.ai` in production),
-  `SPOTIFY_PILOT_ACCOUNT_ALLOWLIST` and
-  `APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST` (independent comma-separated internal
-  UniJam account IDs, at most five each), and the
-  four explicit flags `SPOTIFY_ENABLED`, `APPLE_MUSIC_ENABLED`,
+  JWK), plus the independent `SPOTIFY_PILOT_ACCOUNT_ALLOWLIST` and
+  `APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST` secrets (comma-separated internal
+  UniJam account IDs, at most five each). Spotify uses Authorization Code with
+  PKCE and therefore sends the client ID, code verifier, and exact redirect URI
+  without a client secret.
+- Variables: `PUBLIC_APP_ORIGIN` (`https://unijam.ashlr.ai` in production) and
+  the four explicit flags `SPOTIFY_ENABLED`, `APPLE_MUSIC_ENABLED`,
   `SPOTIFY_PUBLISHING_ENABLED`, `APPLE_MUSIC_PUBLISHING_ENABLED`.
 
 Every feature flag defaults closed. A host's presence in one provider allowlist
@@ -35,6 +35,12 @@ until production/extended-quota approval. The production Spotify callback is
 route requires the same recent passkey-backed host session that started the
 ceremony, then forwards its server-derived account ID with the callback code,
 state, and exact callback URL to the private connector route.
+
+Pilot account IDs are private release material and must never be placed in
+`wrangler.connectors.jsonc`, shell arguments, logs, tickets, or chat. Install
+each allowlist from stdin with `npm run provider:install:allowlist`; the helper
+rejects empty, duplicate, malformed, or more-than-five-account cohorts and
+reports only the provider and account count.
 
 For Apple Music, the trusted web service first calls
 `POST /v1/apple-music/developer-token` with `{ accountId, origin }`. The

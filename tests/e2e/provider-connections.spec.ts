@@ -1,10 +1,10 @@
 import { expect, test } from "@playwright/test";
 
-async function stubAccount(page: import("@playwright/test").Page): Promise<void> {
+async function stubAccount(page: import("@playwright/test").Page, recentPasskey = true): Promise<void> {
   await page.route("**/api/v1/auth/me", (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
-    body: JSON.stringify({ data: { accountId: "acct_1", displayName: "Listener", recentPasskey: true }, error: null, requestId: "req_me" }),
+    body: JSON.stringify({ data: { accountId: "acct_1", displayName: "Listener", recentPasskey }, error: null, requestId: "req_me" }),
   }));
 }
 
@@ -27,6 +27,40 @@ test("Spotify keeps a validated room return and shows callback cancellation", as
     "href",
     "/api/v1/providers/spotify/connect?returnTo=%2Froom%2FROOM1234",
   );
+});
+
+test("passkey confirmation returns to each provider screen without losing its validated room destination", async ({ page }) => {
+  await stubAccount(page, false);
+  await stubStatus(page, "spotify", false);
+  await stubStatus(page, "apple-music", false);
+
+  await page.goto("/connections/spotify?returnTo=%2Froom%2FROOM1234");
+  await expect(page.getByRole("link", { name: "Confirm passkey" })).toHaveAttribute(
+    "href",
+    "/host/sign-in?returnTo=%2Fconnections%2Fspotify%3FreturnTo%3D%252Froom%252FROOM1234",
+  );
+
+  await page.goto("/connections/apple-music?returnTo=%2Froom%2FROOM1234");
+  await expect(page.getByRole("link", { name: "Confirm passkey" })).toHaveAttribute(
+    "href",
+    "/host/sign-in?returnTo=%2Fconnections%2Fapple-music%3FreturnTo%3D%252Froom%252FROOM1234",
+  );
+});
+
+test("connections gives an expired session one clear passkey recovery action", async ({ page }) => {
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({
+    status: 401,
+    contentType: "application/json",
+    body: JSON.stringify({ data: null, error: { code: "UNAUTHENTICATED", message: "Host session is missing or expired" }, requestId: "req_unauthenticated" }),
+  }));
+
+  await page.goto("/connections");
+  await expect(page.getByRole("heading", { name: "Sign in to manage connections" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Sign in with a passkey" })).toHaveAttribute(
+    "href",
+    "/host/sign-in?returnTo=%2Fconnections",
+  );
+  await expect(page.getByRole("button", { name: "Try again" })).toHaveCount(0);
 });
 
 test("Apple Music purges the server connection before clearing MusicKit authorization", async ({ page }) => {

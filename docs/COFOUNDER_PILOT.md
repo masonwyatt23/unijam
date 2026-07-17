@@ -74,8 +74,9 @@ Record only the internal account IDs in the restricted pilot release record.
 ## 3. Admit hosts to only their provider
 
 Provider admission is separate from host enrollment. Populate the
-provider-specific connector allowlists only after each person has completed
-passkey enrollment and the label-to-account query above has been reviewed:
+provider-specific connector allowlist secrets only after each person has
+completed passkey enrollment and the label-to-account query above has been
+reviewed:
 
 - `APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST`: Mason's internal account ID, plus only
   any other explicitly approved Apple Music tester IDs.
@@ -88,6 +89,22 @@ Spotify connector access and vice versa. Keep all provider feature flags false
 until the corresponding provider credentials, exact callbacks/origins, live
 contract tests, and disconnect test pass. Enable resolution/handoff before
 publishing, and enable each provider independently.
+
+Pipe the reviewed IDs directly into the redacting installer; do not place them
+in Wrangler variables, shell arguments, Git, tickets, or chat:
+
+```bash
+printf '%s\n' "$ACCOUNT_ID" | npm run provider:install:allowlist -- --provider apple-music --env staging --dry-run
+printf '%s\n' "$ACCOUNT_ID" | npm run provider:install:allowlist -- --provider apple-music --env staging
+```
+
+Repeat with `--provider spotify` for the Spotify cohort. The helper accepts
+newline- or comma-separated UUIDs on stdin, enforces one to five unique entries,
+and never prints the IDs. It refuses the write unless the one active connector
+version has all four provider flags closed. Every successful write immediately
+deploys a connector secret version and invalidates prior release evidence;
+redeploy both Workers from one clean HEAD before preflight. Production also
+requires `--production-confirmation I_UNDERSTAND_THIS_DEPLOYS_A_PRODUCTION_SECRET_VERSION`.
 
 ## 4. Expected closed states
 

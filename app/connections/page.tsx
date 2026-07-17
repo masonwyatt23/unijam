@@ -4,6 +4,7 @@ import Link from "next/link";
 import { ArrowRight, CircleAlert, CircleCheck, Link2 } from "lucide-react";
 
 import { ErrorPanel, LoadingPanel, PageHeader, ProductShell, StatusBanner, useCurrentHost } from "@/app/components/product";
+import { hostSignInPath } from "@/lib/host-return-to";
 import { providerName, useProviderStatus, type Provider } from "./provider-status";
 
 function ProviderStatus({ provider }: { provider: Provider }) {
@@ -32,10 +33,18 @@ function ProviderStatus({ provider }: { provider: Provider }) {
 export default function ConnectionsPage() {
   const host = useCurrentHost();
   if (host.status === "loading") return <ProductShell><LoadingPanel label="Checking provider availability…" /></ProductShell>;
-  if (host.status === "error" || !host.data) return <ProductShell><ErrorPanel title="Host access required" message={host.error?.message ?? "Sign in before managing provider connections."} /></ProductShell>;
+  if (host.status === "error" || !host.data) {
+    const unauthenticated = host.error?.code === "UNAUTHENTICATED";
+    return <ProductShell><ErrorPanel
+      title={unauthenticated ? "Sign in to manage connections" : "Connection access could not be checked"}
+      message={unauthenticated ? "Use your UniJam passkey to connect Spotify or Apple Music." : host.error?.message ?? "Your account status is temporarily unavailable."}
+      onRetry={unauthenticated ? undefined : host.refresh}
+      action={unauthenticated ? <Link className="button button-primary" href={hostSignInPath("/connections")}>Sign in with a passkey</Link> : undefined}
+    /></ProductShell>;
+  }
   return <ProductShell displayName={host.data.displayName}>
     <PageHeader eyebrow="CONNECTIONS" title="Choose one provider" description="Provider authorization stays isolated. Open one service to connect, disconnect, or review its publishing gate." />
-    {!host.data.recentPasskey && <StatusBanner tone="warning" title="Passkey confirmation required" action={<a className="button button-quiet" href="/host/sign-in">Confirm passkey</a>}>Provider changes require a recent passkey confirmation.</StatusBanner>}
+    {!host.data.recentPasskey && <StatusBanner tone="warning" title="Passkey confirmation required" action={<Link className="button button-quiet" href={hostSignInPath("/connections")}>Confirm passkey</Link>}>Provider changes require a recent passkey confirmation.</StatusBanner>}
     <div className="connection-grid"><ProviderStatus provider="spotify" /><ProviderStatus provider="apple-music" /></div>
     <p className="provider-footnote">This overview uses neutral UniJam symbols. Official provider artwork appears only inside its permitted, provider-specific context.</p>
   </ProductShell>;

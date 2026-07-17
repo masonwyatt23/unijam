@@ -8,8 +8,8 @@ export interface ConnectorEnv {
   readonly CONNECTOR_OPERATOR_SECRET: string;
   readonly TOKEN_ENCRYPTION_KEY_B64URL: string;
   readonly TOKEN_KEY_VERSION: string;
-  readonly SPOTIFY_PILOT_ACCOUNT_ALLOWLIST: string;
-  readonly APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST: string;
+  readonly SPOTIFY_PILOT_ACCOUNT_ALLOWLIST?: string;
+  readonly APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST?: string;
   readonly PUBLIC_APP_ORIGIN: string;
   readonly SPOTIFY_CLIENT_ID: string;
   readonly APPLE_TEAM_ID: string;

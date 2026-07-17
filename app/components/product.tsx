@@ -292,8 +292,8 @@ export function LoadingPanel({ label = "Loading room…" }: { label?: string }) 
   return <section className="state-panel" aria-live="polite" aria-busy="true"><span className="state-spinner" /><p className="eyebrow">CONNECTING</p><h1>{label}</h1><p>UniJam is asking the room authority for the latest state.</p></section>;
 }
 
-export function ErrorPanel({ title, message, onRetry }: { title: string; message: string; onRetry?: () => void }) {
-  return <section className="state-panel" role="alert"><span className="gate-icon"><WifiOff /></span><p className="eyebrow">ROOM UNAVAILABLE</p><h1>{title}</h1><p>{message}</p>{onRetry && <button className="button button-primary" onClick={onRetry}>Try again</button>}</section>;
+export function ErrorPanel({ title, message, onRetry, action }: { title: string; message: string; onRetry?: () => void; action?: ReactNode }) {
+  return <section className="state-panel" role="alert"><span className="gate-icon"><WifiOff /></span><p className="eyebrow">ACCESS UNAVAILABLE</p><h1>{title}</h1><p>{message}</p>{onRetry && <button className="button button-primary" onClick={onRetry}>Try again</button>}{action}</section>;
 }
 
 export function SegmentedControl<T extends string>({ label, value, options, onChange }: { label: string; value: T; options: readonly { value: T; label: string }[]; onChange: (value: T) => void }) {

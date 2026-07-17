@@ -261,9 +261,11 @@ if (!offline) {
     const connectorSecrets = namesFromSecretList(wrangler(["secret", "list", "--config", "wrangler.connectors.jsonc", "--env", environment]));
     const requiredWebSecrets = ["CONNECTOR_SERVICE_TOKEN"];
     const requiredConnectorSecrets = ["CONNECTOR_SHARED_SECRET", "CONNECTOR_OPERATOR_SECRET", "TOKEN_ENCRYPTION_KEY_B64URL", "TOKEN_KEY_VERSION"];
-    if (requiresProvider("spotify") || connector.vars.SPOTIFY_ENABLED === "true" || connector.vars.SPOTIFY_PUBLISHING_ENABLED === "true") requiredConnectorSecrets.push("SPOTIFY_CLIENT_ID");
+    if (requiresProvider("spotify") || connector.vars.SPOTIFY_ENABLED === "true" || connector.vars.SPOTIFY_PUBLISHING_ENABLED === "true") {
+      requiredConnectorSecrets.push("SPOTIFY_CLIENT_ID", "SPOTIFY_PILOT_ACCOUNT_ALLOWLIST");
+    }
     if (requiresProvider("apple-music") || connector.vars.APPLE_MUSIC_ENABLED === "true" || connector.vars.APPLE_MUSIC_PUBLISHING_ENABLED === "true") {
-      requiredConnectorSecrets.push("APPLE_TEAM_ID", "APPLE_KEY_ID", "APPLE_PRIVATE_KEY_JWK");
+      requiredConnectorSecrets.push("APPLE_TEAM_ID", "APPLE_KEY_ID", "APPLE_PRIVATE_KEY_JWK", "APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST");
     }
     assertNames(webSecrets, requiredWebSecrets, "WEB_SECRET_MISSING", `${web.name} secret inventory`);
     assertNames(connectorSecrets, requiredConnectorSecrets, "CONNECTOR_SECRET_MISSING", `${connector.name} secret inventory`);
@@ -281,17 +283,12 @@ if (!offline) {
   }
 }
 
-if (offline) issue("warning", "REMOTE_SKIPPED", "Cloudflare inventory, deployments, secrets, and origin health were not checked.");
-for (const [provider, providerSlug, allowlistName] of [
-  ["Spotify", "spotify", "SPOTIFY_PILOT_ACCOUNT_ALLOWLIST"],
-  ["Apple Music", "apple-music", "APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST"],
-]) {
-  if ((connector.vars[allowlistName] ?? "").trim() === "") {
-    issue(
-      requiresProvider(providerSlug) ? "blocker" : "warning",
-      "PILOT_ALLOWLIST_EMPTY",
-      `${environment} has no ${provider} pilot account IDs configured; this is correct only while that provider is closed.`,
-    );
+if (offline) {
+  issue("warning", "REMOTE_SKIPPED", "Cloudflare inventory, deployments, secrets, and origin health were not checked.");
+  for (const [provider, providerSlug] of [["Spotify", "spotify"], ["Apple Music", "apple-music"]]) {
+    if (requiresProvider(providerSlug)) {
+      issue("blocker", "PILOT_ALLOWLIST_UNVERIFIED", `${provider} pilot allowlist secret inventory cannot be verified in offline mode.`);
+    }
   }
 }
 

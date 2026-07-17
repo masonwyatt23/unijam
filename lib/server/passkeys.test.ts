@@ -62,7 +62,16 @@ test("post-authentication redirects stay on known UniJam host routes", () => {
   assert.equal(safeHostReturnTo("/room/ROOM1234/publish"), "/room/ROOM1234/publish");
   assert.equal(safeHostReturnTo("/room/ROOM1234/handoff/spotify"), "/room/ROOM1234/handoff/spotify");
   assert.equal(safeHostReturnTo("/connections/apple-music"), "/connections/apple-music");
-  for (const unsafe of ["https://evil.example", "//evil.example", "/join/ROOM1234", "/host?next=//evil.example", "/room/../../admin"]) {
+  assert.equal(
+    safeHostReturnTo("/connections/spotify?returnTo=%2Froom%2FROOM1234"),
+    "/connections/spotify?returnTo=%2Froom%2FROOM1234",
+  );
+  for (const unsafe of [
+    "https://evil.example", "//evil.example", "/join/ROOM1234", "/host?next=//evil.example", "/room/../../admin",
+    "/connections/spotify?returnTo=https%3A%2F%2Fevil.example",
+    "/connections/apple-music?returnTo=%2Froom%2FROOM1234&next=%2Fhost",
+    "https://unijam.invalid/connections/spotify?returnTo=%2Froom%2FROOM1234",
+  ]) {
     assert.equal(safeHostReturnTo(unsafe), "/host");
   }
 });

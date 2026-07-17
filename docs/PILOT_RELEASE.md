@@ -241,10 +241,22 @@ provider values only after the corresponding production approval gate is met:
 - `APPLE_TEAM_ID`, `APPLE_KEY_ID`, and `APPLE_PRIVATE_KEY_JWK`: the Apple Music
   identity values and the private P-256 key represented as a JWK. The private
   JWK never belongs in a file, GitHub secret output, web Worker, or browser.
+- `SPOTIFY_PILOT_ACCOUNT_ALLOWLIST` and
+  `APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST`: independent secret bindings containing
+  comma-separated internal UniJam account UUIDs, with one to five entries each.
 
 Use `npx wrangler secret put NAME --config wrangler.connectors.jsonc --env ENV`
 for each connector secret. Verify names with `wrangler secret list`; do not print
 values.
+
+Cloudflare immediately creates and deploys a new version of the targeted Worker
+for every `wrangler secret put`. Each connector credential or allowlist install
+therefore invalidates any previously captured connector candidate, even when no
+source file changed. Finish all secret writes while the provider flags remain
+closed, then commit the reviewed source and restore one auditable candidate by
+deploying both the connector and web Workers from the same clean HEAD with the
+checked-in release wrappers. Do not run provider preflight, capture evidence, or
+invite testers between a secret write and that paired redeploy.
 
 Install Apple's one-time `.p8` key without writing or printing a converted JWK:
 
@@ -257,12 +269,23 @@ The dry run reports only key type and curve. The live command converts the key
 in memory and sends the private JWK to Wrangler over stdin. Repeat with the
 independent production key only during an approved production activation.
 
-`SPOTIFY_PILOT_ACCOUNT_ALLOWLIST` and
-`APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST` contain comma-separated internal UniJam
-account IDs, not email addresses or provider IDs. Start both empty. Add at most
-five explicitly approved hosts to each provider's list after they enroll
-passkeys. A Spotify pilot host is not implicitly an Apple Music pilot host, or
-vice versa. Keep all four provider flags `false` for the baseline deployment.
+Provider allowlists are private release material, not Wrangler variables. Never
+place them in `wrangler.connectors.jsonc`, a command argument, Git, tickets, or
+chat. After hosts enroll passkeys, pipe the reviewed IDs through the installer:
+
+```bash
+printf '%s\n' "$ACCOUNT_ID" | npm run provider:install:allowlist -- --provider spotify --env staging --dry-run
+printf '%s\n' "$ACCOUNT_ID" | npm run provider:install:allowlist -- --provider spotify --env staging
+```
+
+Repeat with `--provider apple-music` for that independent cohort. The helper
+accepts newline- or comma-separated UUIDs on stdin, rejects empty, duplicate,
+malformed, or more-than-five-account input, and reports only the account count.
+It verifies the single active connector version has all four provider flags set
+to `false` before writing. Production writes additionally require
+`--production-confirmation I_UNDERSTAND_THIS_DEPLOYS_A_PRODUCTION_SECRET_VERSION`.
+A Spotify pilot host is not implicitly an Apple Music pilot host, or vice versa.
+Keep all four provider flags `false` for the baseline deployment.
 
 Set `LEGACY_MIGRATION_SECRET` on the web Worker only when an authenticated Sites
 migration is scheduled. `ENABLE_LEGACY_ROOM_API` must stay `false` except for
@@ -312,16 +335,22 @@ Deploy the connector first because the web Worker has a private service binding
 to its exact service name:
 
 ```bash
-npx wrangler deploy --config wrangler.connectors.jsonc --env staging
+npm run dry-run:connectors -- --env staging
+npm run deploy:connectors -- --env staging
 npm run dry-run:cloudflare -- --env staging
 npm run deploy:cloudflare -- --env staging
 ```
 
-Do not run `wrangler deploy` directly for the web Worker. For production, repeat
-the connector-first sequence and require the explicit confirmation phrase:
+Do not run `wrangler deploy` directly for either Worker. The wrappers require a
+clean worktree and bind both deployed versions to the same exact commit with an
+`unijam-release:<commit>` message. Any later secret write or feature-flag commit
+requires this complete connector-then-web sequence again before preflight or
+release evidence. For production, repeat the sequence and require the explicit
+confirmation phrase for both live deployments:
 
 ```bash
-npx wrangler deploy --config wrangler.connectors.jsonc --env production
+npm run dry-run:connectors -- --env production
+npm run deploy:connectors -- --env production --production-confirmation I_UNDERSTAND_THIS_DEPLOYS_PRODUCTION
 npm run dry-run:cloudflare -- --env production
 npm run deploy:cloudflare -- --env production --production-confirmation I_UNDERSTAND_THIS_DEPLOYS_PRODUCTION
 ```
@@ -383,9 +412,12 @@ npx wrangler d1 execute unijam-staging --config wrangler.jsonc --env staging --r
   --command "SELECT account_id, display_name FROM accounts WHERE deleted_at_ms IS NULL ORDER BY created_at_ms"
 ```
 
-Place Spotify users only in `SPOTIFY_PILOT_ACCOUNT_ALLOWLIST` and Apple Music
-users only in `APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST`. A cofounder who will test
-both may appear in both lists; each list independently remains capped at five.
+Install Spotify users only in the `SPOTIFY_PILOT_ACCOUNT_ALLOWLIST` secret and
+Apple Music users only in the `APPLE_MUSIC_PILOT_ACCOUNT_ALLOWLIST` secret. A
+cofounder who will test both may appear in both lists; each list independently
+remains capped at five. The readiness gate validates only secret names, never
+their values; retain the installer's redacted count output in the restricted
+release record.
 Run the provider-specific readiness gates before opening either resolution flag;
 they require only that provider's credential inventory and host cohort:
 

@@ -41,7 +41,7 @@ type ResolutionProvenance = {
   provider: "spotify" | "apple_music";
   providerRecordingId: string;
   storefront: "US";
-  method: "provider_id" | "metadata";
+  method: "provider_id" | "metadata" | "user_correction";
   evidence: string[];
 };
 
@@ -483,7 +483,8 @@ export class RoomDurableObject extends DurableObject<RoomEnv> {
       const providerRecordingId = requiredText(input, "providerRecordingId", 200);
       const explicit = input.explicit;
       const rawEvidence = input.evidence;
-      if ((provider !== "spotify" && provider !== "apple_music") || (method !== "provider_id" && method !== "metadata") ||
+      if ((provider !== "spotify" && provider !== "apple_music") ||
+        (method !== "provider_id" && method !== "metadata" && method !== "user_correction") ||
         (explicit !== null && typeof explicit !== "boolean") || !Array.isArray(rawEvidence) || rawEvidence.length === 0 || rawEvidence.length > 16) {
         throw new Error("Resolved recording provenance is malformed");
       }
