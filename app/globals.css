@@ -407,7 +407,9 @@ select { height: 48px; cursor: pointer; }
 .provider-spotify-bg { background: #191414; }
 .provider-isolation .provider-brand { padding: 18px; }
 .provider-spotify-bg .provider-brand img { width: 126px; }
-.provider-apple-bg { background: #f0f2f4; }
+.provider-apple-bg { background: linear-gradient(135deg, #f7f8fb 0%, #eef1f7 100%); }
+.provider-apple-bg .provider-apple-icon { padding: 26px; border-radius: 22px; background: rgba(255,255,255,.86); box-shadow: 0 12px 30px rgba(34,47,78,.12); }
+.provider-apple-bg .provider-apple-icon img { width: 72px; min-width: 72px; }
 .neutral-provider { display: inline-flex; align-items: center; gap: 12px; font: 600 1.8rem var(--display); text-transform: uppercase; }
 .neutral-provider svg { color: var(--cue); }
 .connection-copy { padding: 30px; }

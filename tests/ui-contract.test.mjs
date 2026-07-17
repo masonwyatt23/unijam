@@ -17,6 +17,7 @@ test("provider artwork is centralized and official", async () => {
   ].map(read));
   assert.match(product, /Full_Logo_Black_RGB\.svg/);
   assert.match(product, /marketing\.services\.apple\/api\/storage\/images/);
+  assert.match(product, /640a26dd7251da00075dc811/);
   assert.match(product, /url\.hostname === "open\.spotify\.com"/);
   assert.match(product, /url\.hostname === "music\.apple\.com"/);
   assert.match(product, /if \(href && !isApprovedProviderLink\(props\.provider, href\)\) return null/);
@@ -145,8 +146,9 @@ test("provider connection routes isolate official marks and authorization code",
   assert.doesNotMatch(hub, /ProviderBrand|Full_Logo|marketing\.services\.apple/);
   assert.match(spotify, /ProviderBrand provider="spotify"/);
   assert.doesNotMatch(spotify, /Apple Music|MusicKit|musicUserToken/);
-  assert.match(apple, /Official Apple Music badges remain reserved for links to licensed content/);
-  assert.doesNotMatch(apple, /ProviderBrand|Full_Logo/);
+  assert.match(apple, /ProviderBrand provider="apple-music" variant="music-icon"/);
+  assert.match(apple, /href="https:\/\/music\.apple\.com\/us"/);
+  assert.doesNotMatch(apple, /Full_Logo/);
 });
 
 test("Spotify connect consumes the connector PKCE authorization URL contract", async () => {
