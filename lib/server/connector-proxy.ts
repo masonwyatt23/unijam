@@ -69,9 +69,21 @@ export async function connectorJsonRequest(
   method = "POST",
 ): Promise<Response> {
   if (!env.CONNECTOR_SERVICE_TOKEN) return apiError("CONNECTOR_UNAVAILABLE", "Provider service is unavailable", 503, true);
-  return env.CONNECTORS.fetch(new Request(new URL(path, "https://unijam-connectors.internal"), {
-    method,
-    headers: { "Authorization": `Bearer ${env.CONNECTOR_SERVICE_TOKEN}`, "Content-Type": "application/json", "X-Request-Id": crypto.randomUUID() },
-    body: JSON.stringify(body),
-  }));
+  try {
+    const response = await env.CONNECTORS.fetch(new Request(new URL(path, "https://unijam-connectors.internal"), {
+      method,
+      headers: { "Authorization": `Bearer ${env.CONNECTOR_SERVICE_TOKEN}`, "Content-Type": "application/json", "X-Request-Id": crypto.randomUUID() },
+      body: JSON.stringify(body),
+    }));
+    const payload = await response.json() as unknown;
+    if (!payload || typeof payload !== "object" || !("data" in payload) || !("error" in payload) || !("requestId" in payload)) {
+      return apiError("CONNECTOR_UNAVAILABLE", "Provider service returned an invalid response", 502, true);
+    }
+    // Re-wrap service-binding responses at the public Worker boundary. This
+    // prevents a provider-internal Response stream or headers object from
+    // leaking across runtimes while preserving the connector's safe envelope.
+    return Response.json(payload, { status: response.status, headers: { "Cache-Control": "no-store" } });
+  } catch {
+    return apiError("CONNECTOR_UNAVAILABLE", "Provider service is unavailable", 503, true);
+  }
 }

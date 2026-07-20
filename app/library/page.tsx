@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Disc3, Library, LoaderCircle, Music2, Plus, Search, Unplug } from "lucide-react";
+import { Library, LoaderCircle, Music2, Plus, Search, Unplug } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 
 import { ErrorPanel, LoadingPanel, PageHeader, ProductShell, ProviderBrand, SegmentedControl, StatusBanner, useCurrentHost } from "@/app/components/product";
@@ -39,6 +39,7 @@ export default function MusicLibraryPage() {
   const searchParams = useSearchParams();
   const roomId = searchParams.get("roomId")?.trim().toUpperCase() ?? "";
   const [provider, setProvider] = useState<Provider>("spotify");
+  const [providerReady, setProviderReady] = useState(false);
   const [query, setQuery] = useState("");
   const [submittedQuery, setSubmittedQuery] = useState("");
   const [page, setPage] = useState<LibraryPage | null>(null);
@@ -48,6 +49,15 @@ export default function MusicLibraryPage() {
   const [addingId, setAddingId] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: "success" | "warning"; title: string; message: string } | null>(null);
   const requestRef = useRef(0);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const saved = window.localStorage.getItem("unijam.listening-preference");
+      if (saved === "apple-music" || saved === "spotify") setProvider(saved);
+      setProviderReady(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   const load = useCallback(async (cursor?: string, append = false) => {
     const requestId = ++requestRef.current;
@@ -71,10 +81,15 @@ export default function MusicLibraryPage() {
     }
   }, [provider, submittedQuery]);
   useEffect(() => {
-    if (!host.data) return;
+    if (!host.data || !providerReady) return;
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
-  }, [host.data, load]);
+  }, [host.data, load, providerReady]);
+
+  function chooseProvider(value: Provider) {
+    setProvider(value); setQuery(""); setSubmittedQuery(""); setPage(null); setFailure(null);
+    window.localStorage.setItem("unijam.listening-preference", value);
+  }
 
   function submitSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setSubmittedQuery(query.normalize("NFKC").trim());
@@ -107,14 +122,13 @@ export default function MusicLibraryPage() {
   if (host.status === "error" || !host.data) return <ProductShell><ErrorPanel title="Member account required" message={host.error?.message ?? "Sign in with a passkey to browse your connected music library."} action={<Link className="button button-primary" href={`/host/sign-in?returnTo=${encodeURIComponent(roomId ? `/library?roomId=${roomId}` : "/library")}`}>Sign in</Link>} /></ProductShell>;
 
   const name = providerName(provider);
-  const firstTrack = page?.items[0];
   return <ProductShell roomId={roomId || undefined} displayName={host.data.displayName}>
     <PageHeader eyebrow="YOUR MUSIC" title={roomId ? `Choose a song for room ${roomId}` : "Your music library"} description="Browse saved tracks or search one connected service at a time. Your private library is never copied into UniJam." backHref={roomId ? `/room/${roomId}` : "/host"} />
     {notice ? <StatusBanner tone={notice.tone} title={notice.title}>{notice.message}</StatusBanner> : null}
     <section className="library-deck" aria-labelledby="library-provider-title">
-      <div className="library-controls"><div><p className="eyebrow">ACTIVE RECORD SHELF</p><h2 id="library-provider-title">Browse {name}</h2></div><SegmentedControl label="Music service" value={provider} options={providers} onChange={(value) => { setProvider(value); setQuery(""); setSubmittedQuery(""); setPage(null); setFailure(null); }} /></div>
+      <div className="library-controls"><div><p className="eyebrow">ACTIVE RECORD SHELF</p><h2 id="library-provider-title">Browse {name}</h2></div><SegmentedControl label="Music service" value={provider} options={providers} onChange={chooseProvider} /></div>
       <div className={`provider-shelf provider-shelf-${provider}`}>
-        <div className="provider-shelf-heading">{provider === "spotify" ? <ProviderBrand provider="spotify" background="light" purpose="connect" /> : firstTrack ? <ProviderBrand provider="apple-music" variant="listen-badge" background="light" purpose="attribution" href={firstTrack.providerUrl} label={`Listen to ${firstTrack.title} on Apple Music`} /> : <div className="apple-shelf-title"><Disc3 /><strong>Apple Music library</strong></div>}<p>{submittedQuery ? `Results for “${submittedQuery}”` : "Recently saved songs"}{page?.total !== undefined ? ` · ${page.total.toLocaleString()} tracks` : ""}</p></div>
+        <div className="provider-shelf-heading">{provider === "spotify" ? <ProviderBrand provider="spotify" background="light" purpose="connect" /> : <ProviderBrand provider="apple-music" variant="music-icon" background="light" purpose="connect" href="https://music.apple.com/us" label="Open Apple Music" />}<p>{submittedQuery ? `Results for “${submittedQuery}”` : "Recently saved songs"}{page?.total !== undefined ? ` · ${page.total.toLocaleString()} tracks` : ""}</p></div>
         <form className="library-search" role="search" onSubmit={submitSearch}><label htmlFor="library-query"><span className="sr-only">Search {name}</span><Search aria-hidden="true" /><input id="library-query" type="search" value={query} maxLength={200} onChange={(event) => setQuery(event.target.value)} placeholder={provider === "spotify" ? "Find a saved song from Spotify’s best matches" : "Search songs, artists, or albums in Apple Music"} /></label><button className="button button-primary" disabled={loading}>{loading ? "Searching…" : "Search"}</button>{submittedQuery ? <button type="button" className="button button-quiet" onClick={() => { setQuery(""); setSubmittedQuery(""); }}>Saved tracks</button> : null}</form>
         {provider === "spotify" ? <p className="library-search-note">Spotify checks its best catalog matches against your saved tracks. If an older or less common save is missing, browse the saved shelf instead.</p> : null}
         {failure ? <div className="library-inline-state" role="alert"><Unplug /><div><strong>{failure.code === "PROVIDER_NOT_CONNECTED" ? `Connect ${name}` : failure.code === "PROVIDER_RECONNECT_REQUIRED" ? `Reconnect ${name}` : "Library unavailable"}</strong><p>{failure.message}</p><Link className="button button-primary" href={`/connections/${provider}?returnTo=${encodeURIComponent(roomId ? `/library?roomId=${roomId}` : "/library")}`}>{failure.code === "PROVIDER_RECONNECT_REQUIRED" ? "Reconnect" : "Open connection"}</Link></div></div> : null}

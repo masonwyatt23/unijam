@@ -81,3 +81,23 @@ test("mobile recap keeps real recording artwork, metadata, and actions readable"
   await expect(page.getByRole("link", { name: "Save the setlist" })).toBeVisible();
   await expectNoHorizontalOverflow(page);
 });
+
+test("mobile publishing preview shows artwork and human track details", async ({ page }) => {
+  await mockArtworkRoom(page);
+  await page.route("**/api/v1/rooms/mobile-room/publish-preview", (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ data: {
+      previewId: "preview_mobile", payloadFingerprint: "fingerprint_mobile", roomRevision: 8, provider: "spotify",
+      destination: { kind: "new_private_playlist", name: "UniJam mobile-room", description: "Created from a live UniJam room" },
+      items: [{ canonicalRecordingId: "rec_1", providerRecordingId: "4uLU6hMCjMI75M1A2tKUQC", position: 0, itemKey: "item_mobile" }],
+      createdAtMs: Date.now(),
+    }, error: null, requestId: "req_mobile_publish" }),
+  }));
+  await page.goto("/room/mobile-room/publish");
+  await page.getByRole("button", { name: "Review immutable preview" }).click();
+  await expect(page.getByText("The Test Artists · A Real Album")).toBeVisible();
+  await expect(page.locator("img.publish-track-artwork")).toBeVisible();
+  await expect(page.getByText("3:34")).toBeVisible();
+  await expect(page.getByText("4uLU6hMCjMI75M1A2tKUQC")).toHaveCount(0);
+  await expectNoHorizontalOverflow(page);
+});

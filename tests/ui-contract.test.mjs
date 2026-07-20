@@ -346,11 +346,12 @@ test("pilot UI exposes real room, invite, handoff, and publishing operations", a
 });
 
 test("resolved recording artwork and useful metadata survive the complete room journey", async () => {
-  const [product, review, handoffRoute, handoffPage, recap, css] = await Promise.all([
+  const [product, review, handoffRoute, handoffPage, publish, recap, css] = await Promise.all([
     read("app/components/product.tsx"),
     read("app/room/[roomId]/review/page.tsx"),
     read("app/api/v1/rooms/[roomId]/handoff/[provider]/route.ts"),
     read("app/room/[roomId]/handoff/provider-handoff-page.tsx"),
+    read("app/room/[roomId]/publish/page.tsx"),
     read("app/room/[roomId]/recap/page.tsx"),
     read("app/globals.css"),
   ]);
@@ -364,12 +365,32 @@ test("resolved recording artwork and useful metadata survive the complete room j
   assert.match(review, /Open on \{display\.provider/);
   assert.match(handoffRoute, /occurrence\.display\?\.provider === provider/);
   assert.match(handoffPage, /RecordingArtwork display=\{handoff\.display\}/);
+  assert.match(publish, /RecordingArtwork display=\{display\}/);
+  assert.match(publish, /display\?\.artists\.join/);
+  assert.doesNotMatch(publish, /<small>\{item\.providerRecordingId\}<\/small>/);
   assert.match(recap, /RecordingArtwork display=\{item\.display\}/);
   assert.match(recap, /item\.display\?\.artists\.join/);
   assert.doesNotMatch(recap, /<code>\{item\.occurrenceId\}<\/code>/);
   assert.match(css, /\.queue-artwork \{[^}]*object-fit: cover/);
   assert.match(css, /\.library-artwork \{[^}]*object-fit: cover/);
+  assert.match(css, /\.publish-track-artwork \{[^}]*object-fit: cover/);
   assert.doesNotMatch(css, /@media \(max-width: 760px\)[\s\S]*?\.queue-label strong \{ display: none/);
+});
+
+test("provider recovery and library selection stay actionable on unreliable mobile networks", async () => {
+  const [status, spotify, apple, library] = await Promise.all([
+    read("app/connections/provider-status.ts"),
+    read("app/connections/spotify/page.tsx"),
+    read("app/connections/apple-music/page.tsx"),
+    read("app/library/page.tsx"),
+  ]);
+  assert.match(status, /data: current\.data/);
+  assert.match(spotify, /spotify\.data\?\.enabled \|\| spotify\.state === "error"/);
+  assert.match(apple, /apple\.data\?\.enabled \|\| apple\.state === "error"/);
+  assert.match(library, /unijam\.listening-preference/);
+  assert.match(library, /if \(!host\.data \|\| !providerReady\) return/);
+  assert.match(library, /variant="music-icon"/);
+  assert.doesNotMatch(library, /firstTrack\.providerUrl/);
 });
 
 test("account logout also clears linked room authority", async () => {

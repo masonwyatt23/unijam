@@ -30,14 +30,14 @@ export function useProviderStatus(provider: Provider) {
       })
       .catch((cause) => {
         if (cause instanceof DOMException && cause.name === "AbortError") return;
-        setResource({ state: "error", data: null, message: cause instanceof Error ? cause.message : "Connection status is unavailable." });
+        setResource((current) => ({ state: "error", data: current.data, message: cause instanceof Error ? cause.message : "Connection status is unavailable." }));
       });
     return () => controller.abort();
   }, [provider, version]);
   return {
     ...resource,
     refresh: useCallback(() => {
-      setResource({ state: "loading", data: null, message: "" });
+      setResource((current) => ({ state: "loading", data: current.data, message: "" }));
       setVersion((value) => value + 1);
     }, []),
   };
