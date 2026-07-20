@@ -17,13 +17,13 @@ The files and remote assets below are trademarks of their respective owners. The
 ## Apple Music
 
 - Source: [Apple Music Identity Guidelines](https://marketing.services.apple/apple-music-identity-guidelines)
-- Official artwork URL: `https://marketing.services.apple/api/storage/images/6408fd8630506600073b0d7e/en-us-large@1x.png`
+- Official artwork URL: `https://marketing.services.apple/mdsa/assets/storage/blobs/images/6408fd8630506600073b0d7e/en-us-large@1x.png` (Apple's final asset URL; avoids a redirect that fails in some browsers)
 - Retrieved and verified: 2026-07-15
 - SHA-256: `09fec5baab2e9e90e570ef2b6913d88f3d2bdd26bd523172c5d3f4fdfdbddc1c`
 - Variant: English “Listen on Apple Music” badge, 222×65 RGBA PNG.
 - Permitted UniJam contexts: links to resolved Apple Music content and published Apple Music playlists only. Connection selectors use neutral UniJam artwork and the full text “Apple Music.”
 - UI rules: the badge is loaded directly from Apple's official host so it remains unmodified; minimum digital height is 30 pixels; use only one badge in a communication and preserve its built-in border and clear space of at least one-tenth of the rendered badge height. `ProviderBrand` renders it at 33 CSS pixels or larger, reserves additional wrapper clear space, and fails closed unless the link points to HTTPS US Apple Music content on `music.apple.com`.
-- Official in-app icon URL: `https://marketing.services.apple/api/storage/images/640a26dd7251da00075dc811/en-us-large%401x.png`
+- Official in-app icon URL: `https://marketing.services.apple/mdsa/assets/storage/blobs/images/640a26dd7251da00075dc811/en-us-large@1x.png` (Apple's final asset URL; avoids a redirect that fails in some browsers)
 - Retrieved and verified: 2026-07-17; SHA-256: `03a8d981587b5df151693858b035e2d53641882eb3192dd9b8ec78a6392169c3`; color icon, 112×112 RGBA PNG.
 - Permitted UniJam context: the isolated Apple Music connection screen only, as an unmodified link to the US Apple Music page. Apple's guidelines expressly permit the supplied icon for an in-app Apple Music link where a badge does not fit. It is never displayed on the neutral multi-service chooser or beside Spotify branding.
 

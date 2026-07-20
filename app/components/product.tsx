@@ -221,8 +221,8 @@ type AppleMusicBrand = {
 };
 export type ProviderBrandProps = (SpotifyBrand | AppleMusicBrand) & { compact?: boolean };
 const spotifyAssets = { light: "/brand/spotify/Full_Logo_Black_RGB.svg", dark: "/brand/spotify/Full_Logo_White_RGB.svg" } as const;
-const appleListenBadge = "https://marketing.services.apple/api/storage/images/6408fd8630506600073b0d7e/en-us-large@1x.png";
-const appleMusicIcon = "https://marketing.services.apple/api/storage/images/640a26dd7251da00075dc811/en-us-large%401x.png";
+const appleListenBadge = "https://marketing.services.apple/mdsa/assets/storage/blobs/images/6408fd8630506600073b0d7e/en-us-large@1x.png";
+const appleMusicIcon = "https://marketing.services.apple/mdsa/assets/storage/blobs/images/640a26dd7251da00075dc811/en-us-large@1x.png";
 
 function isApprovedProviderLink(provider: ProviderBrandProps["provider"], href: string): boolean {
   try {
@@ -238,6 +238,7 @@ function isApprovedProviderLink(provider: ProviderBrandProps["provider"], href: 
 }
 
 export function ProviderBrand(props: ProviderBrandProps) {
+  const [imageFailed, setImageFailed] = useState(false);
   const href = props.provider === "spotify" && props.purpose === "connect" ? undefined : props.href;
   // A provider response can never turn an official mark into an open redirect
   // or imply that non-provider content is supplied by Spotify or Apple Music.
@@ -247,7 +248,7 @@ export function ProviderBrand(props: ProviderBrandProps) {
   const className = `provider-brand provider-${props.provider}${props.provider === "apple-music" && props.variant === "music-icon" ? " provider-apple-icon" : ""}${props.compact ? " provider-compact" : ""}`;
   // Official provider artwork is rendered without an optimization transform.
   // eslint-disable-next-line @next/next/no-img-element
-  const content = <img src={image} alt={alt} width={props.provider === "spotify" ? 96 : props.variant === "music-icon" ? 56 : 111} height={props.provider === "spotify" ? 40 : props.variant === "music-icon" ? 56 : 33} referrerPolicy="strict-origin" />;
+  const content = imageFailed ? <span className="provider-brand-fallback">{props.provider === "spotify" ? "Spotify" : "Apple Music"}</span> : <img src={image} alt={alt} width={props.provider === "spotify" ? 96 : props.variant === "music-icon" ? 56 : 111} height={props.provider === "spotify" ? 40 : props.variant === "music-icon" ? 56 : 33} referrerPolicy="strict-origin" onError={() => setImageFailed(true)} />;
   return href ? <a className={className} href={href} target="_blank" rel="noreferrer">{content}<span className="sr-only"> (opens in a new tab)</span></a> : <span className={className}>{content}</span>;
 }
 
@@ -273,7 +274,7 @@ export function ProductShell({ children, guest = false, roomId, displayName, roo
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [open]);
   useEffect(() => {
-    if (!open || guest) return;
+    if (!open) return;
     const rail = railRef.current;
     if (!rail) return;
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -312,7 +313,7 @@ export function ProductShell({ children, guest = false, roomId, displayName, roo
   }
   return <div className={`product-shell${guest ? " is-guest" : ""}`}>
     <a href="#main-content" className="skip-link" aria-hidden={open || undefined} tabIndex={open ? -1 : undefined}>Skip to main content</a>
-    <header className="mobile-bar"><Brand compact /><button ref={menuButtonRef} className="icon-button" onClick={() => setOpen(!open)} aria-expanded={open} aria-controls="app-nav" aria-label={open ? "Close navigation" : "Open navigation"}>{open ? <X /> : <Menu />}</button></header>
+    <header className="mobile-bar"><Brand compact /><div className="mobile-bar-actions">{roomId && pathname === `/room/${roomId}` ? <button type="button" className="mobile-add-song" onClick={() => document.querySelector<HTMLElement>(".contribute-card")?.scrollIntoView({ behavior: "smooth", block: "start" })}><Music2 size={18} /> Add song</button> : null}<button ref={menuButtonRef} className="icon-button" onClick={() => setOpen(!open)} aria-expanded={open} aria-controls="app-nav" aria-label={open ? "Close navigation" : "Open navigation"}>{open ? <X /> : <Menu />}</button></div></header>
     {open ? <button type="button" className="nav-scrim" aria-label="Close navigation" onClick={() => { setOpen(false); menuButtonRef.current?.focus(); }} /> : null}
     <aside ref={railRef} className={`rail${open ? " is-open" : ""}`} id="app-nav" role={open ? "dialog" : undefined} aria-modal={open || undefined} aria-label={open ? "UniJam navigation" : undefined}><Brand />
       {guest ? <div className="guest-rail-copy"><span className="utility">GUEST ACCESS</span><strong>{roomName}</strong><p>Your session only opens this room.</p></div> : <nav aria-label="Host workspace">{navItems.map((item) => { const active = pathname === item.href || item.href === "/connections" && pathname.startsWith("/connections/"); const Icon = item.icon; return <Link key={item.href} href={item.href} className={active ? "active" : ""} aria-current={active ? "page" : undefined} onClick={() => setOpen(false)}><Icon size={19} />{item.label}</Link>; })}</nav>}
@@ -350,12 +351,17 @@ export function SegmentedControl<T extends string>({ label, value, options, onCh
   return <div className="segmented" role="radiogroup" aria-label={label}>{options.map((option, index) => <button key={option.value} ref={(node) => { refs.current[index] = node; }} type="button" role="radio" aria-checked={value === option.value} tabIndex={value === option.value ? 0 : -1} onClick={() => onChange(option.value)} onKeyDown={(event) => onKeyDown(event, index)}>{option.label}</button>)}</div>;
 }
 
-function QueueArtwork({ item }: { item: RoomOccurrence }) {
+export function RecordingArtwork({ display, title, className = "recording-artwork", size = 58 }: { display?: RecordingDisplay; title: string; className?: string; size?: number }) {
   const [failed, setFailed] = useState(false);
-  if (!item.display?.artwork || failed) return <span className="queue-artwork artwork-fallback" aria-hidden="true"><Music2 /></span>;
+  if (!display?.artwork || failed) return <span className={`${className} artwork-fallback`} aria-hidden="true"><Music2 /></span>;
   // Provider artwork remains direct and untransformed.
   // eslint-disable-next-line @next/next/no-img-element
-  return <img className="queue-artwork" src={item.display.artwork.url} width={item.display.artwork.width} height={item.display.artwork.height} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} />;
+  const artwork = <img className={className} src={display.artwork.url} width={size} height={size} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} />;
+  return <a className="recording-art-link" href={display.providerUrl} target="_blank" rel="noreferrer" aria-label={`Open ${title} on ${display.provider === "spotify" ? "Spotify" : "Apple Music"} in a new tab`}>{artwork}</a>;
+}
+
+function QueueArtwork({ item }: { item: RoomOccurrence }) {
+  return <RecordingArtwork display={item.display} title={item.title} className="queue-artwork" />;
 }
 
 export function LivingSetlist({ snapshot, guest, actorId, onRefresh }: { snapshot: RoomSnapshot; guest: boolean; actorId: string; onRefresh: () => void }) {
@@ -395,7 +401,7 @@ export function LivingSetlist({ snapshot, guest, actorId, onRefresh }: { snapsho
         {group.key === "played" && <CircleCheck className="played-check" aria-label="Played" />}
       </article>;
     })}</div></div>)}</div>}
-    {!guest && now && <div className="setlist-controls"><div><strong>{now.playbackConfirmedAtMs ? "Playback confirmed" : `Did ${now.title} start?`}</strong><span>{now.playbackConfirmedAtMs ? "Advance when the track finishes, or skip it if playback stops." : "Confirm only after you hear it begin. Advance stays locked until then."}</span></div><div className="setlist-control-actions"><button className="button button-quiet" disabled={pendingId === now.occurrenceId} onClick={() => void command(now.occurrenceId, "queue.skip", { occurrenceId: now.occurrenceId }, `${now.title} was skipped`)}>Skip</button><button className="button button-primary" disabled={!now.playbackConfirmedAtMs || pendingId === now.occurrenceId} title={!now.playbackConfirmedAtMs ? "Confirm playback before advancing" : undefined} onClick={() => void command(now.occurrenceId, "queue.advance", { occurrenceId: now.occurrenceId }, `${now.title} moved to Played`)}>Advance <ArrowRight size={19} /></button><button className="button button-quiet" disabled={Boolean(now.playbackConfirmedAtMs) || pendingId === now.occurrenceId} onClick={() => void command(now.occurrenceId, "playback.confirm", { occurrenceId: now.occurrenceId }, `Playback confirmed for ${now.title}`)}>{now.playbackConfirmedAtMs ? <><Check size={19} /> Confirmed</> : "Confirm playback"}</button></div></div>}
+    {!guest && now && <div className="setlist-controls"><div><strong>{now.playbackConfirmedAtMs ? "Playback confirmed" : `Did ${now.title} start?`}</strong><span>{now.playbackConfirmedAtMs ? "Advance when the track finishes, or skip it if playback stops." : "Confirm only after you hear it begin. Advance stays locked until then."}</span></div><div className="setlist-control-actions"><button className="button button-quiet" disabled={pendingId === now.occurrenceId} onClick={() => void command(now.occurrenceId, "queue.skip", { occurrenceId: now.occurrenceId }, `${now.title} was skipped`)}>Skip</button><button className={`button ${now.playbackConfirmedAtMs ? "button-quiet" : "button-primary"}`} disabled={Boolean(now.playbackConfirmedAtMs) || pendingId === now.occurrenceId} onClick={() => void command(now.occurrenceId, "playback.confirm", { occurrenceId: now.occurrenceId }, `Playback confirmed for ${now.title}`)}>{now.playbackConfirmedAtMs ? <><Check size={19} /> Confirmed</> : "Confirm playback"}</button><button className={`button ${now.playbackConfirmedAtMs ? "button-primary" : "button-quiet"}`} disabled={!now.playbackConfirmedAtMs || pendingId === now.occurrenceId} title={!now.playbackConfirmedAtMs ? "Confirm playback before advancing" : undefined} onClick={() => void command(now.occurrenceId, "queue.advance", { occurrenceId: now.occurrenceId }, `${now.title} moved to Played`)}>Advance <ArrowRight size={19} /></button></div></div>}
   </section>;
 }
 

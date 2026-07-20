@@ -20,7 +20,7 @@ export async function GET(request: Request, context: Context): Promise<Response>
   const access = await authenticateRoomActor(env as RoomAuthorityEnv, request, roomId);
   if (!access) return apiError("UNAUTHENTICATED", "Join this room before opening a handoff", 401);
   const snapshot = await canonicalRoomSnapshot(env as RoomAuthorityEnv, roomId) as {
-    occurrences?: Array<{ occurrenceId: string; recordingId: string; title: string; status: string }>;
+    occurrences?: Array<{ occurrenceId: string; recordingId: string; title: string; status: string; display?: { artists: string[]; album?: string; durationMs?: number; explicit?: boolean; provider: MusicProvider; providerUrl: string; artwork?: { url: string; width: number; height: number } } }>;
   };
   const occurrence = snapshot.occurrences?.find((item) => item.status === "now");
   if (!occurrence) return apiError("NOTHING_PLAYING", "There is no Now occurrence to hand off", 409);
@@ -52,6 +52,7 @@ export async function GET(request: Request, context: Context): Promise<Response>
       recordingId: occurrence.recordingId,
       title: occurrence.title,
       provider,
+      ...(occurrence.display?.provider === provider ? { display: occurrence.display } : {}),
       links: createProviderHandoffLinks(provider, match.provider_recording_id),
     });
   } catch {

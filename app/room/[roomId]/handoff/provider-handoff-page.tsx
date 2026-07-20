@@ -5,7 +5,7 @@ import { useParams } from "next/navigation";
 import { ArrowLeft, Check, CircleAlert, ExternalLink } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { ErrorPanel, LoadingPanel, ProductShell, ProviderBrand, useRoomState } from "@/app/components/product";
+import { ErrorPanel, LoadingPanel, ProductShell, ProviderBrand, RecordingArtwork, useRoomState, type RecordingDisplay } from "@/app/components/product";
 
 type PublicProvider = "spotify" | "apple-music";
 type ProviderValue = "spotify" | "apple_music";
@@ -14,13 +14,12 @@ type Handoff = {
   recordingId: string;
   title: string;
   provider: ProviderValue;
+  display?: RecordingDisplay;
   links: { universalUrl: string; nativeUri: string; storefront: "US" };
 };
 type Envelope<T> = { data: T | null; error: { code: string; message: string } | null };
 
-function providerName(provider: PublicProvider) {
-  return provider === "spotify" ? "Spotify" : "Apple Music";
-}
+const providerName = (provider: PublicProvider) => provider === "spotify" ? "Spotify" : "Apple Music";
 
 export function ProviderHandoffPage({ provider }: { provider: PublicProvider }) {
   const { roomId } = useParams<{ roomId: string }>();
@@ -76,11 +75,22 @@ export function ProviderHandoffPage({ provider }: { provider: PublicProvider }) 
     catch (cause) { setMessage(cause instanceof Error ? cause.message : "The handoff could not be confirmed."); }
   }
 
-  if (room.status === "loading" || status === "loading") return <ProductShell guest roomId={roomId}><LoadingPanel label="Preparing a safe handoff…" /></ProductShell>;
+  if (room.status === "loading" || status === "loading") return <ProductShell guest roomId={roomId}><LoadingPanel label="Preparing the handoff…" /></ProductShell>;
   if (room.status === "error" || !room.data) return <ProductShell guest roomId={roomId}><ErrorPanel title="Room unavailable" message={room.error?.message ?? "The room could not be loaded."} onRetry={room.refresh} /></ProductShell>;
   const guest = room.data.actor.role === "guest" || room.data.actor.role === "viewer";
   const canConfirm = room.data.actor.role === "host" || room.data.actor.role === "cohost";
   if (status === "error" || !handoff) return <ProductShell guest={guest} roomId={roomId} displayName={room.data.actor.nickname}><div className="handoff-page"><Link href={`/room/${roomId}`} className="back-link"><ArrowLeft size={17} /> Back to room</Link><ErrorPanel title={`${providerName(provider)} handoff unavailable`} message={message} /></div></ProductShell>;
 
-  return <ProductShell guest={guest} roomId={roomId} displayName={room.data.actor.nickname}><div className="handoff-page"><Link href={`/room/${roomId}`} className="back-link"><ArrowLeft size={17} /> Back to room</Link><section className="handoff-sheet"><p className="eyebrow">NATIVE HANDOFF · US</p><h1>{handoff.title}</h1><p className="handoff-artist">UniJam matched one exact recording. Opening it is not treated as playback.</p>{message ? <p className="inline-error" role="alert">{message}</p> : null}{!prepared ? <button className="button button-primary" onClick={() => void prepare()}>Prepare {providerName(provider)} handoff</button> : <div className="handoff-destination">{provider === "spotify" ? <ProviderBrand provider="spotify" background="light" purpose="handoff" href={handoff.links.universalUrl} label={`Open ${handoff.title} on Spotify`} /> : <ProviderBrand provider="apple-music" variant="listen-badge" background="light" purpose="handoff" href={handoff.links.universalUrl} label={`Listen to ${handoff.title} on Apple Music`} />}<a className="button button-quiet" href={handoff.links.universalUrl} target="_blank" rel="noreferrer" onClick={recordOpen}>Open web player <ExternalLink size={17} /></a></div>}<div className="handoff-rule"><CircleAlert /><div><strong>Playback is never inferred</strong><p>UniJam records only that this handoff was requested, opened, or explicitly confirmed by a host.</p></div></div>{canConfirm && prepared ? <button className="button button-quiet" disabled={confirmed} onClick={() => void confirm()}>{confirmed ? <><Check size={18} /> Handoff confirmed</> : "Confirm handoff opened"}</button> : null}</section></div></ProductShell>;
+  return <ProductShell guest={guest} roomId={roomId} displayName={room.data.actor.nickname}>
+    <div className="handoff-page"><Link href={`/room/${roomId}`} className="back-link"><ArrowLeft size={17} /> Back to room</Link>
+      <section className="handoff-sheet">
+        <p className="eyebrow">OPEN IN {providerName(provider).toUpperCase()}</p>
+        <div className="handoff-recording"><RecordingArtwork display={handoff.display} title={handoff.title} className="handoff-artwork" size={160} /><div><h1>{handoff.title}</h1><p className="handoff-artist">{handoff.display?.artists.join(", ") || "Exact matched recording"}{handoff.display?.album ? ` · ${handoff.display.album}` : ""}</p></div></div>
+        {message ? <p className="inline-error" role="alert">{message}</p> : null}
+        {!prepared ? <button className="button button-primary button-wide" onClick={() => void prepare()}>Continue to {providerName(provider)}</button> : <div className="handoff-destination">{provider === "spotify" ? <ProviderBrand provider="spotify" background="light" purpose="handoff" href={handoff.links.universalUrl} label={`Open ${handoff.title} on Spotify`} /> : <ProviderBrand provider="apple-music" variant="listen-badge" background="light" purpose="handoff" href={handoff.links.universalUrl} label={`Listen to ${handoff.title} on Apple Music`} />}<a className="button button-primary" href={handoff.links.universalUrl} target="_blank" rel="noreferrer" onClick={recordOpen}>Open now <ExternalLink size={17} /></a></div>}
+        <div className="handoff-rule"><CircleAlert /><div><strong>You stay in control</strong><p>Opening the song never tells UniJam that playback started. A host confirms only after hearing it.</p></div></div>
+        {canConfirm && prepared ? <button className="button button-quiet button-wide" disabled={confirmed} onClick={() => void confirm()}>{confirmed ? <><Check size={18} /> Handoff confirmed</> : "I hear it playing"}</button> : null}
+      </section>
+    </div>
+  </ProductShell>;
 }

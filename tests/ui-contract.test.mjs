@@ -16,7 +16,8 @@ test("provider artwork is centralized and official", async () => {
     "app/room/[roomId]/recap/page.tsx",
   ].map(read));
   assert.match(product, /Full_Logo_Black_RGB\.svg/);
-  assert.match(product, /marketing\.services\.apple\/api\/storage\/images/);
+  assert.doesNotMatch(product, /marketing\.services\.apple\/api\/storage\/images/);
+  assert.match(product, /marketing\.services\.apple\/mdsa\/assets\/storage\/blobs\/images/);
   assert.match(product, /640a26dd7251da00075dc811/);
   assert.match(product, /url\.hostname === "open\.spotify\.com"/);
   assert.match(product, /url\.hostname === "music\.apple\.com"/);
@@ -342,6 +343,33 @@ test("pilot UI exposes real room, invite, handoff, and publishing operations", a
   assert.match(publish, /action: "retry" \| "cancel"/);
   assert.match(publish, /operations\/\$\{encodeURIComponent\(operationId\)\}\/\$\{action\}/);
   assert.doesNotMatch(publish, /Publishing API not deployed|Publishing unavailable/);
+});
+
+test("resolved recording artwork and useful metadata survive the complete room journey", async () => {
+  const [product, review, handoffRoute, handoffPage, recap, css] = await Promise.all([
+    read("app/components/product.tsx"),
+    read("app/room/[roomId]/review/page.tsx"),
+    read("app/api/v1/rooms/[roomId]/handoff/[provider]/route.ts"),
+    read("app/room/[roomId]/handoff/provider-handoff-page.tsx"),
+    read("app/room/[roomId]/recap/page.tsx"),
+    read("app/globals.css"),
+  ]);
+  assert.match(product, /export function RecordingArtwork/);
+  assert.match(product, /display\.artwork\.url/);
+  assert.match(product, /onError=\{\(\) => setFailed\(true\)\}/);
+  assert.match(product, /onError=\{\(\) => setImageFailed\(true\)\}/);
+  assert.match(review, /RecordingArtwork display=\{display\}/);
+  assert.match(review, /display\?\.artists\.join/);
+  assert.match(review, /display\?\.durationMs/);
+  assert.match(review, /Open on \{display\.provider/);
+  assert.match(handoffRoute, /occurrence\.display\?\.provider === provider/);
+  assert.match(handoffPage, /RecordingArtwork display=\{handoff\.display\}/);
+  assert.match(recap, /RecordingArtwork display=\{item\.display\}/);
+  assert.match(recap, /item\.display\?\.artists\.join/);
+  assert.doesNotMatch(recap, /<code>\{item\.occurrenceId\}<\/code>/);
+  assert.match(css, /\.queue-artwork \{[^}]*object-fit: cover/);
+  assert.match(css, /\.library-artwork \{[^}]*object-fit: cover/);
+  assert.doesNotMatch(css, /@media \(max-width: 760px\)[\s\S]*?\.queue-label strong \{ display: none/);
 });
 
 test("account logout also clears linked room authority", async () => {

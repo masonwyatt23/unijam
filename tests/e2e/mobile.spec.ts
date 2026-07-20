@@ -20,6 +20,26 @@ async function expectNoHorizontalOverflow(page: Page) {
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 }
 
+async function mockArtworkRoom(page: Page) {
+  const display = {
+    artists: ["The Test Artists"], album: "A Real Album", durationMs: 214_000,
+    explicit: false, provider: "spotify", providerUrl: "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC",
+    artwork: { url: "/brand/spotify/Full_Logo_Black_RGB.svg", width: 640, height: 640 },
+  };
+  const snapshot = {
+    roomId: "mobile-room", seq: 8, lifecycle: "ended",
+    rules: { contributionLimit: 3, approvalMode: "host", explicitContent: "allow", versionPreference: "original", locked: false, speakerDuty: "host" },
+    participants: { host_1: { participantId: "host_1", nickname: "Room Host", role: "host", ready: true } },
+    suggestions: { sug_1: { suggestionId: "sug_1", recordingId: "rec_1", title: "A Great Song", submittedBy: "host_1", status: "approved", occurrenceId: "occ_1", display } },
+    occurrences: [{ occurrenceId: "occ_1", recordingId: "rec_1", suggestionId: "sug_1", title: "A Great Song", status: "played", position: 0, cosignerIds: [], voterIds: ["host_1"], playbackConfirmedAtMs: 1, display }],
+    updatedAtMs: Date.now(),
+  };
+  await page.route("**/api/v1/rooms/mobile-room/state*", (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ data: { actor: { participantId: "host_1", nickname: "Room Host", role: "host" }, state: { type: "snapshot", snapshot } }, error: null, requestId: "req_mobile_artwork" }),
+  }));
+}
+
 test("mobile landing and join reflow without horizontal overflow", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "One room. Every listener." })).toBeVisible();
@@ -50,4 +70,14 @@ test("mobile workspace makes music connection obvious and contains navigation", 
     .map((element) => ({ label: (element.getAttribute("aria-label") || element.textContent || "").trim(), height: element.getBoundingClientRect().height }))
     .filter(({ height }) => height < 44));
   expect(undersized).toEqual([]);
+});
+
+test("mobile recap keeps real recording artwork, metadata, and actions readable", async ({ page }) => {
+  await mockArtworkRoom(page);
+  await page.goto("/room/mobile-room/recap");
+  await expect(page.getByRole("heading", { name: "The night’s set" })).toBeVisible();
+  await expect(page.getByText("The Test Artists · A Real Album")).toBeVisible();
+  await expect(page.locator("img.recap-artwork")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Save the setlist" })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
 });
