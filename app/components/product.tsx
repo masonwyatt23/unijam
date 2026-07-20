@@ -425,4 +425,57 @@ export function CopyButton({ value, children = "Copy link" }: { value: string; c
   return <button className="button button-quiet" onClick={() => void copy()}>{copied ? <Check size={18} /> : <Copy size={18} />}{copied ? "Copied" : children}</button>;
 }
 
+export function ShareButton({ value, title = "Join my UniJam room", children = "Share invite" }: { value: string; title?: string; children?: ReactNode }) {
+  const [state, setState] = useState<"idle" | "working" | "copied" | "error">("idle");
+  const resetTimer = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+  }, []);
+  function resetLater() {
+    if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+    resetTimer.current = window.setTimeout(() => setState("idle"), 2600);
+  }
+  async function share() {
+    setState("working");
+    try {
+      if (typeof navigator.share === "function") {
+        // Pass the capability URL through untouched: the #cap fragment must
+        // reach the guest exactly as issued and must never be sent to UniJam.
+        await navigator.share({ title, url: value });
+        setState("idle");
+        return;
+      }
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard access is unavailable.");
+      await navigator.clipboard.writeText(value);
+      setState("copied");
+      resetLater();
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === "AbortError") {
+        setState("idle");
+        return;
+      }
+      try {
+        if (!navigator.clipboard?.writeText) throw new Error("Clipboard access is unavailable.");
+        await navigator.clipboard.writeText(value);
+        setState("copied");
+      } catch {
+        setState("error");
+      }
+      resetLater();
+    }
+  }
+  const message = state === "copied"
+    ? "Invite copied. Paste it into your group chat."
+    : state === "error"
+      ? "Sharing is unavailable. Copy the private invite shown above."
+      : "";
+  return <span className="share-control">
+    <button type="button" className="button button-primary" disabled={state === "working"} onClick={() => void share()}>
+      {state === "copied" ? <Check size={18} /> : <Share2 size={18} />}
+      {state === "working" ? "Opening share sheet…" : state === "copied" ? "Invite copied" : children}
+    </button>
+    {message ? <span className={state === "error" ? "share-error" : "sr-only"} role={state === "error" ? "alert" : "status"}>{message}</span> : null}
+  </span>;
+}
+
 export { ArrowRight, Check, CircleAlert, CircleCheck, ExternalLink, KeyRound, Music2, Settings2, Share2, Sparkles, Users };

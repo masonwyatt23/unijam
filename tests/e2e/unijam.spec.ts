@@ -160,12 +160,17 @@ test("a guest who chooses Spotify gets a direct account action without borrowing
   }));
 
   await gotoReady(page, "/room/ROOM1234");
+  const spotifyAccountPath = "/host/sign-in?returnTo=%2Fconnections%2Fspotify%3FreturnTo%3D%252Froom%252FROOM1234";
+  await expect(page.getByRole("link", { name: "Continue with Spotify" })).toHaveAttribute("href", spotifyAccountPath);
   await page.getByLabel(/song link, title, or artist/i).fill("Room Artist — Canonical Pick");
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem("unijam.song-draft.ROOM1234.guest_12345678"))).toBe("Room Artist — Canonical Pick");
+  await page.reload();
+  await expect(page.getByLabel(/song link, title, or artist/i)).toHaveValue("Room Artist — Canonical Pick");
   await page.getByRole("button", { name: /find and add song/i }).click();
   await expect(page.getByRole("alert")).toContainText("Spotify search belongs to your own account");
-  await expect(page.getByRole("link", { name: /sign in or create account/i })).toHaveAttribute("href", "/host/sign-in?returnTo=%2Froom%2FROOM1234");
+  await expect(page.getByRole("link", { name: "Continue with Spotify" }).last()).toHaveAttribute("href", spotifyAccountPath);
   await page.getByLabel(/search in/i).selectOption("apple-music");
-  await expect(page.getByRole("link", { name: /sign in or create account/i })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Continue with Spotify" })).toHaveCount(0);
 });
 
 test("a temporary account-status outage never turns into an account-creation prompt", async ({ page }) => {
@@ -471,6 +476,7 @@ test("room creation works by keyboard and reflows at 320px", async ({ page }) =>
     body: JSON.stringify({ data: { accountId: "account_12345678", displayName: "Room Host", recentPasskey: true, recoveryEnrollmentAvailable: false }, error: null, requestId: "req_create_host" }),
   }));
   await gotoReady(page, "/rooms/new");
+  await page.getByRole("button", { name: "Customize" }).click();
   const hostApproval = page.getByRole("radio", { name: /host approves/i });
   const openApproval = page.getByRole("radio", { name: /add immediately/i });
   // A Vinext development page can become visible just before its client
@@ -488,7 +494,7 @@ test("room creation works by keyboard and reflows at 320px", async ({ page }) =>
 
   await page.setViewportSize({ width: 320, height: 800 });
   const heading = await page.evaluate(() => document.querySelector("h1")?.textContent);
-  expect(heading).toMatch(/set the room rules/i);
+  expect(heading).toMatch(/start a room/i);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   expect(overflow).toBeLessThanOrEqual(1);
 });
@@ -519,7 +525,7 @@ test("room creation is gated by host identity and recovers after session expiry"
     body: JSON.stringify({ data: null, error: { code: "UNAUTHENTICATED", message: "Sign in with a passkey to create a room" }, requestId: "req_create_expired" }),
   }));
   await gotoReady(page, "/rooms/new");
-  await page.getByRole("button", { name: /create room/i }).click();
+  await page.getByRole("button", { name: "Start with recommended settings" }).click();
   await expect(page.getByRole("alert")).toContainText("Sign in with a passkey to create a room");
   await expect(page.getByRole("link", { name: "Sign in again and return" })).toHaveAttribute(
     "href",
@@ -591,7 +597,7 @@ test("a signed-in invitee gets a one-tap name-prefilled join", async ({ page }) 
 });
 
 test("listening preference is local, explicit, and drives the next catalog search", async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem("unijam.listening-preference", "apple-music"));
+  await page.addInitScript(() => sessionStorage.setItem("unijam.listening-preference.ROOM1234", "apple-music"));
   await mockRoom(page, "guest");
   let requestedProvider = "";
   await page.route("**/api/v1/rooms/ROOM1234/resolve", (route) => {
@@ -660,9 +666,9 @@ test("native handoff records request and host confirmation around an exact provi
   });
 
   await gotoReady(page, "/room/ROOM1234/handoff/spotify");
-  await page.getByRole("button", { name: "Prepare Spotify handoff" }).click();
+  await page.getByRole("button", { name: "Continue to Spotify" }).click();
   await expect(page.getByRole("link", { name: /Open Confirmed Pick on Spotify/ })).toHaveAttribute("href", "https://open.spotify.com/track/4iV5W9uYEdYUVa79Axb7Rh");
-  await page.getByRole("button", { name: "Confirm handoff opened" }).click();
+  await page.getByRole("button", { name: "I hear it playing" }).click();
   await expect(page.getByRole("button", { name: "Handoff confirmed" })).toBeDisabled();
   expect(actions).toEqual(["handoff.request", "handoff.confirm"]);
   const accessibility = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"]).analyze();

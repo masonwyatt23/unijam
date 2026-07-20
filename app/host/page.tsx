@@ -1,17 +1,18 @@
 "use client";
 
 import { startRegistration } from "@simplewebauthn/browser";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Clock3, KeyRound, Link2, Plus, Radio, Users } from "lucide-react";
+import { ArrowRight, Check, Clock3, KeyRound, Link2, Plus, Radio, Share2, Users } from "lucide-react";
 import { ErrorPanel, LoadingPanel, PageHeader, ProductShell, useCurrentHost } from "@/app/components/product";
+import { useProviderStatus } from "@/app/connections/provider-status";
 import { hostSignInPath } from "@/lib/host-return-to";
 
 type Envelope<T> = { data: T | null; error: { message?: string } | null };
 type HostRoom = { roomId: string; lifecycle: "active" | "ended"; inviteEpoch: number; createdAtMs: number; updatedAtMs: number; endedAtMs: number | null };
 type JoinedRoom = { roomId: string; nickname: string; lifecycle: "active" | "ended"; joinedAtMs: number; lastJoinedAtMs: number; endedAtMs: number | null };
 
-function HostRoomIndex() {
+function HostRoomIndex({ onRoomsLoaded }: { onRoomsLoaded: (rooms: HostRoom[]) => void }) {
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [rooms, setRooms] = useState<HostRoom[]>([]);
   const [message, setMessage] = useState("");
@@ -22,14 +23,14 @@ function HostRoomIndex() {
       .then(async (response) => {
         const body = await response.json() as Envelope<{ rooms: HostRoom[] }>;
         if (!response.ok || body.error || !body.data) throw new Error(body.error?.message ?? "Rooms could not be loaded.");
-        setRooms(body.data.rooms); setState("ready");
+        setRooms(body.data.rooms); onRoomsLoaded(body.data.rooms); setState("ready");
       })
       .catch((cause: Error | DOMException) => {
         if (cause instanceof DOMException && cause.name === "AbortError") return;
         setMessage(cause instanceof Error ? cause.message : "Rooms could not be loaded."); setState("error");
       });
     return () => controller.abort();
-  }, [attempt]);
+  }, [attempt, onRoomsLoaded]);
   if (state === "loading") return <section className="room-card honest-empty" aria-busy="true"><span className="state-spinner" /><h2>Loading rooms</h2><p>Reading your room registry…</p></section>;
   if (state === "error") return <section className="room-card honest-empty" role="alert"><Radio /><h2>Room history unavailable</h2><p>{message}</p><button className="button button-quiet" onClick={() => { setState("loading"); setAttempt((value) => value + 1); }}>Retry room history</button></section>;
   if (rooms.length === 0) return <section className="room-card honest-empty"><Radio /><h2>No rooms yet</h2><p>Create your first room, copy its private invite, and start the setlist.</p></section>;
@@ -63,8 +64,12 @@ function JoinedRoomIndex() {
 
 export default function HostWorkspacePage() {
   const host = useCurrentHost();
+  const spotify = useProviderStatus("spotify");
+  const appleMusic = useProviderStatus("apple-music");
+  const [hostRooms, setHostRooms] = useState<HostRoom[] | null>(null);
   const [passkeyState, setPasskeyState] = useState<"idle" | "working" | "success" | "error">("idle");
   const [passkeyMessage, setPasskeyMessage] = useState("");
+  const rememberRooms = useCallback((rooms: HostRoom[]) => setHostRooms(rooms), []);
 
   async function addPasskey() {
     if (!host.data) return;
@@ -100,12 +105,18 @@ export default function HostWorkspacePage() {
 
   if (host.status === "loading") return <ProductShell><LoadingPanel label="Loading your workspace…" /></ProductShell>;
   if (host.status === "error" || !host.data) return <ProductShell><ErrorPanel title="Host session required" message={host.error?.message ?? "Sign in with a passkey to open the host workspace."} onRetry={host.refresh} /></ProductShell>;
-  return <ProductShell displayName={host.data.displayName}><PageHeader eyebrow="HOST WORKSPACE" title={`Welcome, ${host.data.displayName}`} description="Create a room, return to an active setlist, or open an ended room’s recap." actions={<Link href="/rooms/new" className="button button-primary"><Plus size={19} /> Create room</Link>} />
-    <section className="connect-music-callout" aria-labelledby="connect-music-title"><Link2 /><div><p className="eyebrow">MAKE THE ROOM YOURS</p><h2 id="connect-music-title">Connect your music</h2><p>{host.data.recentPasskey ? "Bring in your Apple Music or Spotify library, then choose songs directly from the room." : "Confirm your passkey, then choose Apple Music or Spotify on a dedicated, provider-specific screen."}</p></div><Link href={host.data.recentPasskey ? "/connections" : hostSignInPath("/connections")} className="button button-primary"><Link2 size={18} /> {host.data.recentPasskey ? "Connect Apple Music or Spotify" : "Confirm passkey to connect"}<ArrowRight size={18} /></Link></section>
+  const connectedServices = [spotify.data?.connected ? "Spotify" : null, appleMusic.data?.connected ? "Apple Music" : null].filter(Boolean) as string[];
+  const activeRoom = hostRooms?.find((room) => room.lifecycle === "active") ?? null;
+  return <ProductShell displayName={host.data.displayName}><PageHeader eyebrow="HOST WORKSPACE" title={`Welcome, ${host.data.displayName}`} description="Three steps from sign-in to a shared live setlist." actions={<Link href="/rooms/new" className="button button-primary"><Plus size={19} /> Start room</Link>} />
+    <section className="host-launch-path" aria-labelledby="launch-path-title"><div className="host-launch-heading"><p className="eyebrow">YOUR NEXT MOVE</p><h2 id="launch-path-title">Ready the room</h2><p>Connect once, start a room, then send its private invite to the group chat.</p></div><ol>
+      <li className={connectedServices.length ? "is-complete" : "is-current"}><span className="launch-step-icon">{connectedServices.length ? <Check /> : <Link2 />}</span><div><strong>Connect music</strong><small>{connectedServices.length ? `${connectedServices.join(" and ")} connected` : "Connect Apple Music or Spotify"}</small></div><Link href={host.data.recentPasskey ? "/connections" : hostSignInPath("/connections")}>{connectedServices.length ? "Manage" : host.data.recentPasskey ? "Connect" : "Confirm passkey"}<ArrowRight /></Link></li>
+      <li className={activeRoom ? "is-complete" : connectedServices.length ? "is-current" : ""}><span className="launch-step-icon">{activeRoom ? <Check /> : <Plus />}</span><div><strong>Start a room</strong><small>{activeRoom ? `Room ${activeRoom.roomId} is live` : "Recommended settings take one tap"}</small></div><Link href={activeRoom ? `/room/${activeRoom.roomId}` : "/rooms/new"}>{activeRoom ? "Open" : "Start"}<ArrowRight /></Link></li>
+      <li className={activeRoom ? "is-current" : ""}><span className="launch-step-icon"><Share2 /></span><div><strong>Share the invite</strong><small>{activeRoom ? "Open the live room or use the invite shown after creation" : "Your private link appears after room creation"}</small></div>{activeRoom ? <Link href={`/room/${activeRoom.roomId}`}>Open room<ArrowRight /></Link> : <span className="launch-wait">UP NEXT</span>}</li>
+    </ol></section>
     {host.data.recoveryEnrollmentAvailable && <section className="recovery-passkey-callout" aria-labelledby="recovery-passkey-title"><KeyRound /><div><p className="eyebrow">RECOVERY SESSION</p><h2 id="recovery-passkey-title">Add a passkey now</h2><p>Recovery access cannot manage providers or destructive room actions. The server’s single-use recovery enrollment grant expires after 15 minutes.</p>{passkeyMessage && <p className={passkeyState === "error" ? "inline-error" : "inline-success"} role={passkeyState === "error" ? "alert" : "status"}>{passkeyMessage}</p>}</div><button className="button button-primary" disabled={passkeyState === "working" || passkeyState === "success"} onClick={() => void addPasskey()}>{passkeyState === "working" ? "Waiting for your device…" : passkeyState === "success" ? "Passkey added" : "Add a passkey"}</button></section>}
     {host.data.recentPasskey && !host.data.recoveryEnrollmentAvailable && <section className="security-note"><KeyRound /><div><strong>Add your own backup passkey</strong><p>Register another device or hardware key for this account. Cofounders should use separate pilot invites and accounts, never a shared passkey.</p>{passkeyMessage && <p className={passkeyState === "error" ? "inline-error" : "inline-success"} role={passkeyState === "error" ? "alert" : "status"}>{passkeyMessage}</p>}</div><button className="button button-quiet" disabled={passkeyState === "working" || passkeyState === "success"} onClick={() => void addPasskey()}>{passkeyState === "working" ? "Waiting for your device…" : passkeyState === "success" ? "Passkey added" : "Add another passkey"}</button></section>}
     {!host.data.recentPasskey && !host.data.recoveryEnrollmentAvailable && <section className="security-note"><KeyRound /><div><strong>Recent passkey confirmation required</strong><p>Sign in again before connecting providers, publishing, rotating invites, or ending rooms.</p></div><Link href="/host/sign-in">Confirm passkey <ArrowRight size={16} /></Link></section>}
-    <section className="workspace-grid"><Link href="/rooms/new" className="room-card empty-room-card"><Plus /><strong>Start a room</strong><span>Create an authoritative room with your rules, then share its private invite.</span></Link><HostRoomIndex /><JoinedRoomIndex /></section>
+    <section className="workspace-grid"><Link href="/rooms/new" className="room-card empty-room-card"><Plus /><strong>Start a room</strong><span>Use the recommended setup, then share the private invite from the confirmation screen.</span></Link><HostRoomIndex onRoomsLoaded={rememberRooms} /><JoinedRoomIndex /></section>
     <section className="security-note"><KeyRound /><div><strong>Passkey protected</strong><p>{host.data.recentPasskey ? "Your passkey was confirmed recently." : "Sensitive provider and destructive actions remain unavailable until a passkey is enrolled and verified."}</p></div><Link href="/rooms/new">Create a room <ArrowRight size={16} /></Link></section>
   </ProductShell>;
 }

@@ -274,9 +274,9 @@ test("a provider status failure has an operable retry without blocking the other
   }));
 
   await gotoReady(page, "/connections");
-  await expect(page.getByRole("link", { name: "Manage Apple Music" })).toBeVisible();
-  await page.getByRole("button", { name: "Retry Spotify status" }).click();
-  await expect(page.getByRole("link", { name: "Manage Spotify" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open Apple Music setup" })).toBeVisible();
+  await page.getByRole("button", { name: "Check again" }).click();
+  await expect(page.getByRole("link", { name: "Open Spotify setup" })).toBeVisible();
   expect(spotifyAttempts).toBe(2);
 });
 

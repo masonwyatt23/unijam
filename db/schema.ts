@@ -90,7 +90,7 @@ export const passkeys = sqliteTable("passkeys", {
 
 export const passkeyChallenges = sqliteTable("passkey_challenges", {
   challengeHash: text("challenge_hash").primaryKey(), challenge: text("challenge").notNull(), kind: text("kind").notNull(), accountId: text("account_id"),
-  enrollmentCodeHash: text("enrollment_code_hash"), expiresAtMs: integer("expires_at_ms").notNull(), consumedAtMs: integer("consumed_at_ms"), createdAtMs: integer("created_at_ms").notNull(),
+  enrollmentCodeHash: text("enrollment_code_hash"), displayName: text("display_name"), expiresAtMs: integer("expires_at_ms").notNull(), consumedAtMs: integer("consumed_at_ms"), createdAtMs: integer("created_at_ms").notNull(),
 }, (table) => [uniqueIndex("passkey_challenges_value_idx").on(table.challenge), index("passkey_challenges_expiry_idx").on(table.expiresAtMs)]);
 
 export const hostEnrollmentCodes = sqliteTable("host_enrollment_codes", {

@@ -2,7 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { safeHostReturnTo } from "../host-return-to.ts";
-import { assertCounterAdvanced, normalizeEnrollmentCode, publicRegistrationOptions, registrationAccountId } from "./passkeys.ts";
+import {
+  assertCounterAdvanced,
+  bootstrapPasskeyUserName,
+  normalizeBootstrapDisplayName,
+  normalizeEnrollmentCode,
+  publicRegistrationOptions,
+  registrationAccountId,
+  resolveBootstrapDisplayName,
+} from "./passkeys.ts";
 
 test("bootstrap registration cannot select an existing account", () => {
   const victimAccountId = "victim-account";
@@ -33,11 +41,34 @@ test("public membership persists a ceremony kind distinct from pilot enrollment"
     APP_ENV: "development",
     APP_ORIGIN: "http://localhost:3000",
     WEBAUTHN_RP_ID: "localhost",
-  }, { userName: "listener@example.test", displayName: "Listener" });
+  }, { displayName: "Listener" });
   assert.match(result.accountId, /^[0-9a-f-]{36}$/);
   const challengeInsert = writes.find(({ sql }) => sql.includes("INSERT INTO passkey_challenges"));
   assert.equal(challengeInsert?.values[2], "public_registration");
   assert.equal(challengeInsert?.values[4], null);
+  assert.equal(challengeInsert?.values[5], "Listener");
+});
+
+test("bootstrap passkey labels contain no internal account identifier", () => {
+  assert.equal(bootstrapPasskeyUserName("Listener"), "Listener");
+  assert.doesNotMatch(bootstrapPasskeyUserName("Listener"), /11111111/);
+});
+
+test("bootstrap display names use one normalized control-safe validation path", () => {
+  assert.equal(normalizeBootstrapDisplayName("  Listener  "), "Listener");
+  assert.equal(normalizeBootstrapDisplayName("Listener\nAdmin"), null);
+  assert.equal(normalizeBootstrapDisplayName(`Listener${String.fromCharCode(127)}`), null);
+  assert.equal(normalizeBootstrapDisplayName("x".repeat(81)), null);
+  assert.equal(normalizeBootstrapDisplayName(null), null);
+});
+
+test("bootstrap verification is bound to the challenge display name", () => {
+  assert.equal(resolveBootstrapDisplayName("Listener", " Listener "), "Listener");
+  assert.throws(() => resolveBootstrapDisplayName("Listener", "Administrator"), /does not match/);
+  assert.throws(() => resolveBootstrapDisplayName("Listener", "Listener\nAdministrator"), /invalid/);
+  // A nullable column preserves an already-issued pre-migration ceremony for
+  // at most the challenge TTL; all newly issued challenges store the name.
+  assert.equal(resolveBootstrapDisplayName(null, " Legacy Listener "), "Legacy Listener");
 });
 
 test("additional credential registration requires server-derived authentication", () => {

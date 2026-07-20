@@ -78,22 +78,54 @@ export function normalizeEnrollmentCode(value: string): string {
   return code;
 }
 
+/**
+ * WebAuthn requires a device-visible username even though UniJam authenticates
+ * by opaque account ID. The opaque user ID already provides uniqueness, so the
+ * device-visible label must not disclose any part of UniJam's internal ID.
+ */
+export function bootstrapPasskeyUserName(displayName: string): string {
+  return displayName;
+}
+
+/** Keep bootstrap identity validation identical at options and verification. */
+export function normalizeBootstrapDisplayName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const displayName = value.trim();
+  return displayName && displayName.length <= 80 && !/[\u0000-\u001f\u007f]/.test(displayName)
+    ? displayName
+    : null;
+}
+
+/**
+ * New challenges own the normalized name. A null challenge value is accepted
+ * only for a five-minute, pre-migration ceremony already in flight.
+ */
+export function resolveBootstrapDisplayName(challengeDisplayName: string | null, submittedDisplayName: unknown): string {
+  const submitted = normalizeBootstrapDisplayName(submittedDisplayName);
+  if (!submitted) throw new Error("Bootstrap display name is invalid");
+  if (challengeDisplayName === null) return submitted;
+  const stored = normalizeBootstrapDisplayName(challengeDisplayName);
+  if (!stored || stored !== submitted) throw new Error("Bootstrap display name does not match the registration challenge");
+  return stored;
+}
+
 async function saveChallenge(
   db: D1Database,
   challenge: string,
   kind: "registration" | "public_registration" | "additional_registration" | "authentication",
   accountId: string | null,
   enrollmentCodeHash: string | null = null,
+  displayName: string | null = null,
   now = Date.now(),
 ): Promise<void> {
   await db.prepare(
-    `INSERT INTO passkey_challenges (challenge_hash, challenge, kind, account_id, enrollment_code_hash, expires_at_ms, created_at_ms)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).bind(await hashOpaqueToken(challenge), challenge, kind, accountId, enrollmentCodeHash, now + CHALLENGE_TTL_MS, now).run();
+    `INSERT INTO passkey_challenges (challenge_hash, challenge, kind, account_id, enrollment_code_hash, display_name, expires_at_ms, created_at_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(await hashOpaqueToken(challenge), challenge, kind, accountId, enrollmentCodeHash, displayName, now + CHALLENGE_TTL_MS, now).run();
   await db.prepare("DELETE FROM passkey_challenges WHERE expires_at_ms <= ?").bind(now).run();
 }
 
-type StoredChallenge = { challenge_hash: string; account_id: string | null; enrollment_code_hash: string | null };
+type StoredChallenge = { challenge_hash: string; account_id: string | null; enrollment_code_hash: string | null; display_name: string | null };
 
 export type VerifiedRegistrationCommit = {
   accountId: string;
@@ -122,7 +154,7 @@ async function loadChallenge(
   const now = Date.now();
   const challengeHash = await hashOpaqueToken(challenge);
   const row = await db.prepare(
-    `SELECT challenge_hash, account_id, enrollment_code_hash FROM passkey_challenges
+    `SELECT challenge_hash, account_id, enrollment_code_hash, display_name FROM passkey_challenges
      WHERE challenge_hash = ? AND kind = ? AND expires_at_ms > ? AND consumed_at_ms IS NULL LIMIT 1`,
   ).bind(challengeHash, kind, now).first<StoredChallenge>();
   return row ?? null;
@@ -293,11 +325,13 @@ export async function commitVerifiedRegistration(
 export async function registrationOptions(
   db: D1Database,
   env: PasskeyRuntimeConfig,
-  input: { userName: string; displayName: string; enrollmentCode: string },
+  input: { displayName: string; enrollmentCode: string },
 ) {
   // Bootstrap identity is always server-generated. Existing accounts use the
   // separately authenticated additional-credential ceremony below.
   const accountId = registrationAccountId("registration");
+  const displayName = normalizeBootstrapDisplayName(input.displayName);
+  if (!displayName) throw new Error("A valid name is required");
   const enrollmentCode = normalizeEnrollmentCode(input.enrollmentCode);
   const enrollmentCodeHash = await hashOpaqueToken(enrollmentCode);
   const enrollment = await db.prepare(
@@ -313,8 +347,8 @@ export async function registrationOptions(
     rpName: "UniJam",
     rpID: rpId,
     userID: new TextEncoder().encode(accountId),
-    userName: input.userName,
-    userDisplayName: input.displayName,
+    userName: bootstrapPasskeyUserName(displayName),
+    userDisplayName: displayName,
     timeout: CHALLENGE_TTL_MS,
     attestationType: "none",
     authenticatorSelection: { residentKey: "required", requireResidentKey: true, userVerification: "required" },
@@ -323,30 +357,32 @@ export async function registrationOptions(
       transports: JSON.parse(credential.transports_json) as AuthenticatorTransportFuture[],
     })),
   });
-  await saveChallenge(db, options.challenge, "registration", accountId, enrollmentCodeHash);
+  await saveChallenge(db, options.challenge, "registration", accountId, enrollmentCodeHash, displayName);
   return { accountId, options };
 }
 
 export async function publicRegistrationOptions(
   db: D1Database,
   env: PasskeyRuntimeConfig,
-  input: { userName: string; displayName: string },
+  input: { displayName: string },
 ) {
   const accountId = registrationAccountId("public_registration");
+  const displayName = normalizeBootstrapDisplayName(input.displayName);
+  if (!displayName) throw new Error("A valid name is required");
   const { rpId } = passkeyConfig(env);
   const options = await generateRegistrationOptions({
     rpName: "UniJam",
     rpID: rpId,
     userID: new TextEncoder().encode(accountId),
-    userName: input.userName,
-    userDisplayName: input.displayName,
+    userName: bootstrapPasskeyUserName(displayName),
+    userDisplayName: displayName,
     timeout: CHALLENGE_TTL_MS,
     attestationType: "none",
     authenticatorSelection: { residentKey: "required", requireResidentKey: true, userVerification: "required" },
   });
   // This distinct kind prevents a pilot invite ceremony from being replayed
   // against public membership (or vice versa).
-  await saveChallenge(db, options.challenge, "public_registration", accountId);
+  await saveChallenge(db, options.challenge, "public_registration", accountId, null, displayName);
   return { accountId, options };
 }
 
@@ -388,6 +424,9 @@ export async function finishRegistration(
   if (!clientData.challenge) throw new Error("Registration challenge is missing");
   const stored = await loadChallenge(db, clientData.challenge, ceremony);
   if (!stored || stored.account_id !== input.accountId) throw new Error("Registration challenge is invalid or expired");
+  const displayName = ceremony === "registration" || ceremony === "public_registration"
+    ? resolveBootstrapDisplayName(stored.display_name, input.displayName)
+    : input.displayName;
   const { origin, rpId } = passkeyConfig(env);
   const verification = await verifyRegistrationResponse({
     response: input.response,
@@ -410,7 +449,7 @@ export async function finishRegistration(
   }
   await commitVerifiedRegistration(db, {
     accountId: input.accountId,
-    displayName: input.displayName,
+    displayName,
     ceremony,
     challengeHash: stored.challenge_hash,
     enrollmentCodeHash: stored.enrollment_code_hash,

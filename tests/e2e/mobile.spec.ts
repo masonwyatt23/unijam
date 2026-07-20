@@ -14,6 +14,13 @@ async function mockHostWorkspace(page: Page) {
       body: JSON.stringify({ data: { rooms: [] }, error: null, requestId: `req_mobile_${endpoint.replace("/", "_")}` }),
     }));
   }
+  for (const provider of ["spotify", "apple-music"]) {
+    await page.route(`**/api/v1/providers/${provider}/status`, (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { connected: provider === "spotify", enabled: true, publishingEnabled: false, storefront: "us" }, error: null, requestId: `req_mobile_${provider}` }),
+    }));
+  }
 }
 
 async function expectNoHorizontalOverflow(page: Page) {
@@ -52,10 +59,12 @@ test("mobile landing and join reflow without horizontal overflow", async ({ page
 });
 
 test("mobile workspace makes music connection obvious and contains navigation", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   await mockHostWorkspace(page);
   await page.goto("/host");
-  await expect(page.getByRole("heading", { name: "Connect your music" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Connect Apple Music or Spotify" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Ready the room" })).toBeVisible();
+  await expect(page.getByText("Spotify connected")).toBeVisible();
+  await expect(page.getByText("Recommended settings take one tap")).toBeVisible();
   await expectNoHorizontalOverflow(page);
   const menu = page.getByRole("button", { name: "Open navigation" });
   await menu.click();
@@ -70,6 +79,36 @@ test("mobile workspace makes music connection obvious and contains navigation", 
     .map((element) => ({ label: (element.getAttribute("aria-label") || element.textContent || "").trim(), height: element.getBoundingClientRect().height }))
     .filter(({ height }) => height < 44));
   expect(undersized).toEqual([]);
+});
+
+test("mobile quick-start shares the exact private invite without stripping its fragment", async ({ page }) => {
+  const invite = "https://staging.unijam.ashlr.ai/join/mobile-room#cap=private-test-capability";
+  let submittedRules: unknown = null;
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "share", {
+      configurable: true,
+      value: async (payload: ShareData) => { (window as unknown as { __sharePayload: ShareData }).__sharePayload = payload; },
+    });
+  });
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ data: { accountId: "account_12345678", displayName: "Room Host", recentPasskey: true, recoveryEnrollmentAvailable: false }, error: null, requestId: "req_create_host" }),
+  }));
+  await page.route("**/api/v1/rooms", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    submittedRules = route.request().postDataJSON();
+    await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ data: { roomId: "mobile-room", roomUrl: "/room/mobile-room", guestInvite: invite }, error: null, requestId: "req_create_room" }) });
+  });
+
+  await page.goto("/rooms/new");
+  await expect(page.getByRole("heading", { name: "A smooth first jam" })).toBeVisible();
+  await page.getByRole("button", { name: "Start with recommended settings" }).click();
+  await expect(page.getByRole("heading", { name: "Room mobile-room" })).toBeVisible();
+  await page.getByRole("button", { name: "Share guest invite" }).click();
+
+  expect(submittedRules).toEqual({ rules: { contributionLimit: 3, approvalMode: "host", explicitContent: "hold", versionPreference: "original" } });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __sharePayload?: ShareData }).__sharePayload?.url)).toBe(invite);
+  await expectNoHorizontalOverflow(page);
 });
 
 test("mobile recap keeps real recording artwork, metadata, and actions readable", async ({ page }) => {

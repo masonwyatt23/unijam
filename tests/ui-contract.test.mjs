@@ -100,7 +100,12 @@ test("public membership is passkey-first, provider-optional, and isolated from p
   assert.match(signIn, /public-registration\/verify/);
   assert.match(signIn, /without connecting a music service/);
   assert.match(signIn, /I have a pilot invite/);
+  assert.doesNotMatch(signIn, /Account label|name="userName"/);
   assert.match(passkeys, /"public_registration"/);
+  assert.match(passkeys, /bootstrapPasskeyUserName/);
+  assert.doesNotMatch(passkeys, /accountId\.slice\(0, 8\)/);
+  assert.match(passkeys, /return displayName/);
+  assert.match(passkeys, /display_name/);
   assert.match(passkeys, /mode === "pilot" \? "registration" : "public_registration"/);
   assert.match(passkeys, /\[\.\.\.recovery\.statements, session\.statement\]/);
   assert.match(publicOptions, /public-registration-options:ip/);
@@ -185,7 +190,12 @@ test("live contributions resolve before staging a canonical suggestion", async (
   assert.match(room, /Choose this version/);
   assert.match(room, /source_metadata_incomplete/);
   assert.match(room, /listening-preference/);
-  assert.match(room, /localStorage\.setItem\("unijam\.listening-preference"/);
+  assert.match(room, /sessionStorage\.setItem\(`unijam\.listening-preference\.\$\{roomId\}`/);
+  assert.match(room, /unijam\.song-draft\.\$\{roomId\}\.\$\{participantId\}/);
+  assert.match(room, /sessionStorage\.setItem\(draftKey, value\)/);
+  assert.doesNotMatch(room, /localStorage/);
+  assert.match(room, /Continue with Spotify/);
+  assert.match(room, /spotifyConnectionReturnTo/);
   assert.match(room, /Sign in or create an account/);
   assert.match(room, /LISTENER_CONNECTION_REQUIRED/);
   assert.match(room, /PROVIDER_NOT_CONNECTED/);

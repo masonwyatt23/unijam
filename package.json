@@ -32,7 +32,7 @@
     "test:provider-state-engine": "node --test lib/provider-state-engine.test.ts",
     "test:rendered": "node --import=./scripts/register-cloudflare-validation-loader.mjs --test tests/rendered-html.test.mjs",
     "test:ui": "node --test tests/ui-contract.test.mjs",
-    "test:release-ops": "node --test tests/release-operations.test.mjs tests/room-hibernation-assurance.test.mjs tests/pilot-acceptance-evidence.test.mjs tests/pilot-enrollment-admin.test.mjs tests/membership-migration.test.mjs",
+    "test:release-ops": "node --test tests/release-operations.test.mjs tests/room-hibernation-assurance.test.mjs tests/pilot-acceptance-evidence.test.mjs tests/pilot-enrollment-admin.test.mjs tests/membership-migration.test.mjs tests/passkey-challenge-migration.test.mjs",
     "preflight:staging": "node scripts/pilot-preflight.mjs --env staging",
     "preflight:production": "node scripts/pilot-preflight.mjs --env production",
     "test:e2e": "playwright test",

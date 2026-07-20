@@ -55,7 +55,7 @@ test("connections gives an expired session one clear passkey recovery action", a
   }));
 
   await page.goto("/connections");
-  await expect(page.getByRole("heading", { name: "Sign in to manage connections" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sign in to connect your music" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Sign in with a passkey" })).toHaveAttribute(
     "href",
     "/host/sign-in?returnTo=%2Fconnections",

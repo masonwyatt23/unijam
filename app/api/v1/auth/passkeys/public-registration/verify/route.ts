@@ -4,7 +4,7 @@ import type { RegistrationResponseJSON } from "@simplewebauthn/server";
 import { apiError, apiResponse } from "@/lib/server/api-response";
 import { BoundedBodyError, readBoundedJson } from "@/lib/server/bounded-body";
 import { consumeAuthRateLimit, requestIp } from "@/lib/server/auth-rate-limit";
-import { finishBootstrapRegistration } from "@/lib/server/passkeys";
+import { finishBootstrapRegistration, normalizeBootstrapDisplayName } from "@/lib/server/passkeys";
 
 const VERIFY_BODY_LIMIT = 32_768;
 
@@ -19,9 +19,8 @@ export async function POST(request: Request): Promise<Response> {
     if (typeof body?.accountId !== "string" || typeof body.displayName !== "string" || !body.response) {
       return apiError("INVALID_REGISTRATION", "Registration response is incomplete", 400);
     }
-    const displayName = body.displayName.trim();
-    if (!/^[0-9a-f-]{36}$/.test(body.accountId) || !displayName || displayName.length > 80 ||
-        /[\u0000-\u001f\u007f]/.test(displayName)) {
+    const displayName = normalizeBootstrapDisplayName(body.displayName);
+    if (!/^[0-9a-f-]{36}$/.test(body.accountId) || !displayName) {
       return apiError("INVALID_REGISTRATION", "Registration response is incomplete", 400);
     }
     if (!await consumeAuthRateLimit(env.DB, `public-registration-verify:ip:${requestIp(request)}`, 20) ||

@@ -4,7 +4,7 @@ import type { RegistrationResponseJSON } from "@simplewebauthn/server";
 import { apiError, apiResponse } from "@/lib/server/api-response";
 import { consumeAuthRateLimit, requestIp } from "@/lib/server/auth-rate-limit";
 import { BoundedBodyError, readBoundedJson } from "@/lib/server/bounded-body";
-import { finishBootstrapRegistration } from "@/lib/server/passkeys";
+import { finishBootstrapRegistration, normalizeBootstrapDisplayName } from "@/lib/server/passkeys";
 
 const VERIFY_BODY_LIMIT = 32_768;
 
@@ -15,8 +15,8 @@ export async function POST(request: Request): Promise<Response> {
     if (typeof body?.accountId !== "string" || typeof body.displayName !== "string" || !body.response) {
       return apiError("INVALID_REGISTRATION", "Registration response is incomplete", 400);
     }
-    const displayName = body.displayName.trim();
-    if (!displayName || displayName.length > 80) return apiError("INVALID_REGISTRATION", "Registration response is incomplete", 400);
+    const displayName = normalizeBootstrapDisplayName(body.displayName);
+    if (!displayName) return apiError("INVALID_REGISTRATION", "Registration response is incomplete", 400);
     if (!await consumeAuthRateLimit(env.DB, `registration-verify:ip:${requestIp(request)}`, 20) ||
         !await consumeAuthRateLimit(env.DB, `registration-verify:account:${body.accountId}`, 10)) {
       return apiError("RATE_LIMITED", "Enrollment cannot be completed right now", 429, true);
