@@ -4,6 +4,7 @@ import {
   readBearerToken,
 } from "@/lib/server/participant-session";
 import {
+  authorizeLegacyRoomApi,
   authorizeRoomRequest,
   ensureRoomSchema,
   roomDatabase,
@@ -20,6 +21,7 @@ function json(body: unknown, status = 200, headers?: HeadersInit): Response {
 
 export async function POST(request: Request, context: RouteContext): Promise<Response> {
   try {
+    if (!authorizeLegacyRoomApi(request)) return json({ error: "Legacy room API is disabled" }, 404);
     const db = roomDatabase();
     if (!db) return json({ error: "Room persistence is not configured", mode: "local" }, 503);
     const roomId = (await context.params).roomId;

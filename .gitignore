@@ -45,3 +45,5 @@ next-env.d.ts
 /.sites-runtime/
 /outputs/
 /work/
+/test-results/
+/load-manifest*.json

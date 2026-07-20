@@ -1,4 +1,5 @@
 import {
+  authorizeLegacyRoomApi,
   ensureRoomSchema,
   hashCapabilityToken,
   normalizeCapabilityToken,
@@ -24,6 +25,7 @@ function json(body: unknown, status = 200): Response {
 
 export async function POST(request: Request): Promise<Response> {
   try {
+    if (!authorizeLegacyRoomApi(request)) return json({ error: "Legacy room writes are disabled" }, 404);
     const db = roomDatabase();
     if (!db) return json({ error: "Room persistence is not configured", mode: "local" }, 503);
     const input = await request.json() as BootstrapInput;

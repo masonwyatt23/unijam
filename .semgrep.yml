@@ -1,0 +1,54 @@
+rules:
+  - id: no-client-supplied-room-authority
+    message: Actor identity and room authority must be derived from the server session.
+    severity: ERROR
+    languages: [typescript]
+    patterns:
+      - pattern-either:
+          - pattern: $BODY.role
+          - pattern: $BODY.participantId
+          - pattern: $BODY.hostId
+      - metavariable-pattern:
+          metavariable: $BODY
+          pattern-either:
+            - pattern: req.body
+            - pattern: request.body
+    paths:
+      include:
+        - /app/api/**/*.ts
+        - /worker/**/*.ts
+
+  - id: no-provider-tokens-in-logs
+    message: Provider credentials and tokens must never be written to logs.
+    severity: ERROR
+    languages: [typescript, javascript]
+    patterns:
+      - pattern-either:
+          - pattern: console.$METHOD(..., $X.accessToken, ...)
+          - pattern: console.$METHOD(..., $X.refreshToken, ...)
+          - pattern: console.$METHOD(..., $X.musicUserToken, ...)
+
+  - id: no-unverified-jwt-decode
+    message: Do not treat an unverified decoded JWT as authenticated data.
+    severity: ERROR
+    languages: [typescript, javascript]
+    pattern-either:
+      - pattern: jwt.decode(...)
+      - pattern: jose.decodeJwt(...)
+
+  - id: no-weak-token-randomness
+    message: Security tokens and capability IDs require cryptographic randomness.
+    severity: ERROR
+    languages: [typescript, javascript]
+    pattern-either:
+      - pattern: Math.random().toString(...)
+      - pattern: String(Math.random())
+
+  - id: no-open-redirect-from-query
+    message: Redirect destinations must come from an allowlist, not a query parameter.
+    severity: ERROR
+    languages: [typescript, javascript]
+    patterns:
+      - pattern-either:
+          - pattern: Response.redirect($URL.searchParams.get($KEY), ...)
+          - pattern: redirect($URL.searchParams.get($KEY))

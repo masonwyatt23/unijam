@@ -1,0 +1,94 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "unijam-connectors",
+  "main": "./connectors/index.ts",
+  "workers_dev": false,
+  "preview_urls": false,
+  "compatibility_date": "2026-07-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  "triggers": { "crons": ["17 * * * *"] },
+  "analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "unijam_connectors_development" }],
+  "vars": {
+    "PUBLIC_APP_ORIGIN": "http://localhost:3000",
+    "SPOTIFY_ENABLED": "false",
+    "APPLE_MUSIC_ENABLED": "false",
+    "SPOTIFY_PUBLISHING_ENABLED": "false",
+    "APPLE_MUSIC_PUBLISHING_ENABLED": "false"
+  },
+  "d1_databases": [{
+    "binding": "CONNECTOR_DB",
+    "database_name": "unijam-connectors-development",
+    "database_id": "00000000-0000-4000-8000-000000000010",
+    "migrations_dir": "connectors/migrations"
+  }],
+  "queues": {
+    "producers": [{ "binding": "PUBLISH_QUEUE", "queue": "unijam-publishing-development" }],
+    "consumers": [{
+      "queue": "unijam-publishing-development",
+      "dead_letter_queue": "unijam-publishing-development-dlq",
+      "max_batch_size": 10,
+      "max_retries": 5
+    }]
+  },
+  "env": {
+    "production": {
+      "name": "unijam-connectors-production",
+      "workers_dev": false,
+      "preview_urls": false,
+      "observability": { "enabled": true, "head_sampling_rate": 1 },
+      "analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "unijam_connectors_production" }],
+      "vars": {
+        "PUBLIC_APP_ORIGIN": "https://unijam.ashlr.ai",
+        "SPOTIFY_ENABLED": "false",
+        "APPLE_MUSIC_ENABLED": "false",
+        "SPOTIFY_PUBLISHING_ENABLED": "false",
+        "APPLE_MUSIC_PUBLISHING_ENABLED": "false"
+      },
+      "d1_databases": [{
+        "binding": "CONNECTOR_DB",
+        "database_name": "unijam-connectors-production",
+        "database_id": "292d9488-acb6-4e4e-b463-1a0d37e26c64",
+        "migrations_dir": "connectors/migrations"
+      }],
+      "queues": {
+        "producers": [{ "binding": "PUBLISH_QUEUE", "queue": "unijam-publishing-production" }],
+        "consumers": [{
+          "queue": "unijam-publishing-production",
+          "dead_letter_queue": "unijam-publishing-production-dlq",
+          "max_batch_size": 10,
+          "max_retries": 5
+        }]
+      }
+    },
+    "staging": {
+      "name": "unijam-connectors-staging",
+      "workers_dev": false,
+      "preview_urls": false,
+      "observability": { "enabled": true, "head_sampling_rate": 1 },
+      "analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "unijam_connectors_staging" }],
+      "vars": {
+        "PUBLIC_APP_ORIGIN": "https://staging.unijam.ashlr.ai",
+        "SPOTIFY_ENABLED": "false",
+        "APPLE_MUSIC_ENABLED": "true",
+        "SPOTIFY_PUBLISHING_ENABLED": "false",
+        "APPLE_MUSIC_PUBLISHING_ENABLED": "false"
+      },
+      "d1_databases": [{
+        "binding": "CONNECTOR_DB",
+        "database_name": "unijam-connectors-staging",
+        "database_id": "e50c03b1-859a-47fd-b57c-48acfce9beed",
+        "migrations_dir": "connectors/migrations"
+      }],
+      "queues": {
+        "producers": [{ "binding": "PUBLISH_QUEUE", "queue": "unijam-publishing-staging" }],
+        "consumers": [{
+          "queue": "unijam-publishing-staging",
+          "dead_letter_queue": "unijam-publishing-staging-dlq",
+          "max_batch_size": 10,
+          "max_retries": 3
+        }]
+      }
+    }
+  }
+}
