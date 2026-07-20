@@ -99,9 +99,17 @@ const worker = {
       return withSecurityHeaders(response, environment, scriptNonce);
     }
 
+    let routedResponse: Response;
     try {
-      return withSecurityHeaders(await handler.fetch(routedRequest, env, ctx), environment, scriptNonce);
+      routedResponse = await handler.fetch(routedRequest, env, ctx);
     } catch {
+      console.error("route_handler_failed", { method: request.method, path: url.pathname });
+      return withSecurityHeaders(apiError("INTERNAL_ERROR", "The request could not be completed", 500, true), environment, scriptNonce);
+    }
+    try {
+      return withSecurityHeaders(routedResponse, environment, scriptNonce);
+    } catch {
+      console.error("response_security_failed", { method: request.method, path: url.pathname });
       return withSecurityHeaders(apiError("INTERNAL_ERROR", "The request could not be completed", 500, true), environment, scriptNonce);
     }
   },
