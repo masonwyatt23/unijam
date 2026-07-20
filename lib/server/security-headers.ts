@@ -33,7 +33,7 @@ export function securityHeaders(environment: SecurityEnvironment, scriptNonce?: 
       "form-action 'self'",
       "frame-ancestors 'none'",
       "frame-src https://embed.music.apple.com",
-      "img-src 'self' data: https://i.scdn.co https://*.mzstatic.com https://marketing.services.apple",
+      "img-src 'self' data: https://i.scdn.co https://*.mzstatic.com https://marketing.services.apple https://medusa-prod-resources-e2a1a74.s3.us-west-2.amazonaws.com",
       "object-src 'none'",
       `script-src ${scriptSources}`,
       "script-src-attr 'none'",

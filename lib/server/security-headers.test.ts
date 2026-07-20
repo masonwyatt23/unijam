@@ -40,6 +40,7 @@ test("production responses deny embedding and constrain executable scripts with 
   assert.match(headers["Content-Security-Policy"], /script-src-attr 'none'/);
   assert.doesNotMatch(headers["Content-Security-Policy"], /'unsafe-inline'.*https:\/\/js-cdn\.music\.apple\.com/);
   assert.match(headers["Content-Security-Policy"], /marketing\.services\.apple/);
+  assert.match(headers["Content-Security-Policy"], /medusa-prod-resources-e2a1a74\.s3\.us-west-2\.amazonaws\.com/);
   assert.match(headers["Content-Security-Policy"], /wss:\/\/unijam\.ashlr\.ai/);
   assert.equal(headers["X-Content-Type-Options"], "nosniff");
   assert.match(headers["Strict-Transport-Security"], /max-age=31536000/);
